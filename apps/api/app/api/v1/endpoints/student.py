@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.db.supabase import SupabaseAPIError, SupabaseConnectionError, SupabaseFKError
 from app.schemas.onboarding import (
     OnboardingCompleteResponse,
@@ -116,7 +116,8 @@ def get_student_onboarding(
 )
 def upsert_student_onboarding(
     body: StudentOnboardingUpsert,
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: onboarding rows FK public.users — provision fresh users.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> StudentOnboardingResponse:
     return StudentOnboardingService(db).upsert_onboarding(user_id, body)
@@ -128,7 +129,7 @@ def upsert_student_onboarding(
     summary="Mark universal student onboarding complete",
 )
 def complete_student_onboarding(
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> OnboardingCompleteResponse:
     completed_at = StudentOnboardingService(db).mark_complete(user_id)
@@ -163,7 +164,8 @@ def get_opportunity_heatmap(
 )
 def upsert_student_profile(
     body: StudentProfileUpsert,
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: student_profiles FKs public.users — provision fresh users.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> StudentProfileResponse:
     service = StudentProfileService(db)

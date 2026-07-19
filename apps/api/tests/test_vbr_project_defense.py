@@ -992,3 +992,290 @@ def test_build_evidence_chips_sanitizes_unsafe_transcript_segment_text() -> None
     assert summary == "Python demo [redacted] [redacted]"
     for unsafe in ("storage_path", "vbr/sessions", "signed_url", "token=", "https://"):
         assert unsafe not in summary
+
+
+# ── Project Defense inspection cards (recruiter inspection layer) ─────────────
+#
+# The inspection builder is a pure projection over the answer-evidence objects,
+# adding the safe clip locator, "what this demonstrates" / corroboration wording,
+# and the ``public_safe`` gate. These tests exercise the exact-mapping and
+# safe-locator rules directly on the builder.
+
+
+def _ml_answer_objects():
+    """One ML-mapped answered question + one untargeted generic answer."""
+    from app.services.defense_answer_evidence_service import (
+        build_defense_answer_evidence,
+    )
+
+    return build_defense_answer_evidence(
+        questions=[
+            {
+                "id": "q-ml",
+                "question_text": "How does your model make predictions?",
+                "target_ref": {"kind": "skill_link", "skill": "Machine Learning"},
+                "sort_order": 0,
+            }
+        ],
+        segments=[
+            {
+                "question_id": "q-ml",
+                "text": (
+                    "I trained a regression model on the housing dataset and use it "
+                    "for inference; the prediction endpoint returns the model output "
+                    "after feature validation."
+                ),
+            },
+            # Untargeted transcript moment (no question_id) — becomes at most one
+            # generic project-level object that maps NO skill.
+            {"text": "Overall it was a really fun project and I learned a lot about deployment."},
+        ],
+        claimed_skills=["Machine Learning"],
+        attached_proofs={},
+        privacy_scan_status="clean",
+    )
+
+
+def test_inspection_untargeted_transcript_never_maps_to_a_skill() -> None:
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], project_title="Boston"
+    )
+    # The ML-targeted answer maps ML; the untargeted moment maps no skill.
+    mapped = [c["mapped_skill"] for c in cards]
+    assert "Machine Learning" in mapped
+    generic = [c for c in cards if c["mapped_skill"] is None]
+    assert generic, "expected one generic, un-skilled project-context card"
+    # A generic answer is framed as 'not assessed', never as skill proof.
+    assert "not assessed" in generic[0]["what_this_demonstrates"].lower()
+
+
+def test_inspection_skill_scoped_view_drops_untargeted_and_other_skills() -> None:
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    # Scope to Machine Learning: only the ML-mapped Q/A survives.
+    ml_only = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], only_skill="Machine Learning"
+    )
+    assert [c["mapped_skill"] for c in ml_only] == ["Machine Learning"]
+
+    # Scope to an UNRELATED skill: nothing maps (no generic transcript leaks in).
+    frontend_only = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], only_skill="Frontend Development"
+    )
+    assert frontend_only == []
+
+
+def test_inspection_clip_locator_is_safe_and_carries_no_content() -> None:
+    from app.services.project_defense_inspection_service import (
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    chips = [
+        {
+            "label": "Video 03:12",
+            "timestamp_start_s": 192.0,
+            "timestamp_end_s": 205.0,
+            # The chip summary is answer-derived and must NEVER reach the card.
+            "short_summary": "secret spoken sentence about my model",
+            "related_skill": "Machine Learning",
+            "question_id": "q-ml",
+        }
+    ]
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=chips, only_skill="Machine Learning"
+    )
+    card = cards[0]
+    assert card["clip_available"] is True
+    assert card["timestamp_label"] == "Video 03:12"
+    assert card["clip_start_seconds"] == 192.0
+    assert card["clip_end_seconds"] == 205.0
+    # The clip is a locator only — the chip's spoken summary is never copied in.
+    assert "secret spoken sentence" not in str(card)
+
+
+def test_inspection_labels_defense_as_explanation_not_implementation() -> None:
+    from app.services.project_defense_inspection_service import (
+        PROJECT_DEFENSE_INSPECTION_LIMITATION,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers, video_chips=[], only_skill="Machine Learning"
+    )
+    card = cards[0]
+    # Conservative framing: explanation / understanding, never verified impl.
+    demo = card["what_this_demonstrates"].lower()
+    assert "explained" in demo
+    for banned in ("verified implementation", "proves authorship", "guarantee"):
+        assert banned not in demo
+    # A GitHub-less skill answer stays honest about the missing artifact evidence.
+    assert card["limitation"]
+    # No numeric confidence anywhere on the card.
+    assert "confidence" not in str(card).lower()
+
+
+# ── Owner playable evidence: safe transcript excerpt + recording playback ─────
+
+
+def test_inspection_owner_view_includes_bounded_transcript_excerpt() -> None:
+    from app.services.project_defense_inspection_service import (
+        TRANSCRIPT_EXCERPT_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    excerpts = {
+        "q-ml": {
+            "safe_transcript_excerpt": "I trained a regression model and validated features before inference.",
+            "transcript_excerpt_start_label": "03:10",
+            "transcript_excerpt_end_label": "03:25",
+        }
+    }
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=[],
+        only_skill="Machine Learning",
+        answer_excerpts=excerpts,
+        is_owner_view=True,
+    )
+    card = cards[0]
+    assert card["transcript_excerpt_available"] is True
+    assert "regression model" in card["safe_transcript_excerpt"]
+    # Bounded — never a full transcript dump.
+    assert len(card["safe_transcript_excerpt"]) <= 800
+    assert card["transcript_excerpt_start_label"] == "03:10"
+    assert card["transcript_excerpt_end_label"] == "03:25"
+    assert card["transcript_access_note"] == TRANSCRIPT_EXCERPT_NOTE
+    assert card["is_private_owner_view"] is True
+    # The raw segments array is never carried on the card.
+    assert "transcript_segments" not in card
+
+
+def test_inspection_transcript_excerpt_only_in_owner_view() -> None:
+    from app.services.project_defense_inspection_service import (
+        TRANSCRIPT_NONE_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    excerpts = {"q-ml": {"safe_transcript_excerpt": "secret answer text"}}
+    # Not owner view (e.g. the plain builder default) → excerpt is NOT attached.
+    cards = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=[],
+        only_skill="Machine Learning",
+        answer_excerpts=excerpts,
+        is_owner_view=False,
+    )
+    card = cards[0]
+    assert card["transcript_excerpt_available"] is False
+    assert card["safe_transcript_excerpt"] is None
+    assert card["transcript_access_note"] == TRANSCRIPT_NONE_NOTE
+    assert "secret answer text" not in str(card)
+
+
+def test_inspection_recording_playback_is_owner_only() -> None:
+    from app.services.project_defense_inspection_service import (
+        RECORDING_PLAYABLE_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    chips = [
+        {
+            "label": "Video 03:12",
+            "timestamp_start_s": 192.0,
+            "timestamp_end_s": 205.0,
+            "related_skill": "Machine Learning",
+            "question_id": "q-ml",
+        }
+    ]
+    recording = {"available": True, "playback_url": "https://signed.example/full.webm?token=xyz"}
+
+    owner = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=chips,
+        only_skill="Machine Learning",
+        recording=recording,
+        is_owner_view=True,
+    )[0]
+    assert owner["video_available"] is True
+    assert owner["video_playback_url"] == "https://signed.example/full.webm?token=xyz"
+    # The clip playback URL is the same signed URL plus a #t media fragment.
+    assert owner["clip_playback_url"] == "https://signed.example/full.webm?token=xyz#t=192.0,205.0"
+    assert owner["recording_access_note"] == RECORDING_PLAYABLE_NOTE
+
+    # Same recording, NOT owner view → no playback URL is attached.
+    non_owner = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=chips,
+        only_skill="Machine Learning",
+        recording=recording,
+        is_owner_view=False,
+    )[0]
+    assert non_owner["video_playback_url"] is None
+    assert non_owner["clip_playback_url"] is None
+    assert non_owner["video_available"] is False
+
+
+def test_inspection_recording_exists_but_no_playback_url() -> None:
+    from app.services.project_defense_inspection_service import (
+        RECORDING_EXISTS_NO_PLAYBACK_NOTE,
+        build_project_defense_inspection_cards,
+    )
+
+    answers = _ml_answer_objects()
+    # Recording exists (available) but no signed URL could be minted.
+    recording = {"available": True, "playback_url": None}
+    card = build_project_defense_inspection_cards(
+        answer_evidence=answers,
+        video_chips=[],
+        only_skill="Machine Learning",
+        recording=recording,
+        is_owner_view=True,
+    )[0]
+    assert card["video_available"] is True
+    assert card["video_playback_url"] is None
+    assert card["recording_access_note"] == RECORDING_EXISTS_NO_PLAYBACK_NOTE
+
+
+def test_build_safe_answer_excerpts_is_bounded_and_sanitized() -> None:
+    """The excerpt helper concatenates a question's segments into ONE bounded,
+    sanitized snippet with safe mm:ss labels — never the raw segment array."""
+    from app.services.defense_evidence_access_service import (
+        TRANSCRIPT_EXCERPT_MAX_CHARS,
+        build_safe_answer_excerpts,
+    )
+
+    long_text = "I explained the model in detail. " * 60  # > cap
+    db = {
+        "vbr_transcripts": {"t1": {"id": "t1", "session_id": "sess-1"}},
+        "vbr_transcript_segments": {
+            "seg1": {
+                "transcript_id": "t1",
+                "question_id": "q-ml",
+                "text": long_text + " see storage_path=vbr/sessions/abc token=secret123",
+                "start_s": 190.0,
+                "end_s": 210.0,
+            },
+        },
+    }
+    out = build_safe_answer_excerpts(db, "sess-1")
+    assert "q-ml" in out
+    excerpt = out["q-ml"]["safe_transcript_excerpt"]
+    assert len(excerpt) <= TRANSCRIPT_EXCERPT_MAX_CHARS + 1  # +1 for the ellipsis
+    # Storage path / token fragments are redacted out of the excerpt.
+    assert "storage_path=vbr/sessions/abc" not in excerpt
+    assert "secret123" not in excerpt
+    assert out["q-ml"]["transcript_excerpt_start_label"] == "03:10"
+    assert out["q-ml"]["transcript_excerpt_end_label"] == "03:30"

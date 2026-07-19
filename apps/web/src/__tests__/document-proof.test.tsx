@@ -104,10 +104,10 @@ describe("DocumentProofPanel", () => {
     expect(syncDocumentProofToSkillGraph).not.toHaveBeenCalled()
 
     // The explicit save action is now available for the newly analyzed document.
-    expect(await screen.findByRole("button", { name: /save to skill graph/i })).toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: /save skill suggestions/i })).toBeInTheDocument()
   })
 
-  it("calls syncDocumentProofToSkillGraph with the document id when 'Save to Skill Graph' is clicked", async () => {
+  it("calls syncDocumentProofToSkillGraph with the document id when 'Save skill suggestions' is clicked", async () => {
     const analyzed = makeProof({
       id: "doc-1",
       status: "analyzed",
@@ -118,13 +118,13 @@ describe("DocumentProofPanel", () => {
 
     render(<DocumentProofPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: /save to skill graph/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /save skill suggestions/i }))
 
     await waitFor(() => expect(syncDocumentProofToSkillGraph).toHaveBeenCalledWith("doc-1"))
-    expect(await screen.findByText(/saved to skill graph/i)).toBeInTheDocument()
+    expect(await screen.findByText(/skill suggestions saved/i)).toBeInTheDocument()
   })
 
-  it("shows 'Couldn't save to Skill Graph' with Retry on failure, and recovers on retry", async () => {
+  it("shows the skill-suggestion failure state with Retry on failure, and recovers on retry", async () => {
     const analyzed = makeProof({
       id: "doc-2",
       status: "analyzed",
@@ -135,16 +135,16 @@ describe("DocumentProofPanel", () => {
 
     render(<DocumentProofPanel />)
 
-    fireEvent.click(await screen.findByRole("button", { name: /save to skill graph/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /save skill suggestions/i }))
 
-    expect(await screen.findByText(/couldn.t save to skill graph/i)).toBeInTheDocument()
-    expect(screen.queryByText(/saved to skill graph/i)).not.toBeInTheDocument()
+    expect(await screen.findByText(/couldn.t save skill suggestions/i)).toBeInTheDocument()
+    expect(screen.queryByText(/skill suggestions saved/i)).not.toBeInTheDocument()
 
     vi.mocked(syncDocumentProofToSkillGraph).mockResolvedValueOnce(makeSyncResult())
-    fireEvent.click(await screen.findByRole("button", { name: /save to skill graph/i }))
+    fireEvent.click(await screen.findByRole("button", { name: /save skill suggestions/i }))
 
     await waitFor(() => expect(syncDocumentProofToSkillGraph).toHaveBeenCalledTimes(2))
-    expect(await screen.findByText(/saved to skill graph/i)).toBeInTheDocument()
+    expect(await screen.findByText(/skill suggestions saved/i)).toBeInTheDocument()
   })
 
   it("never renders the full raw text of a long evidence snippet", async () => {
@@ -220,5 +220,51 @@ describe("DocumentProofPanel", () => {
 
     await waitFor(() => expect(submitDocumentProof).toHaveBeenCalled())
     expect(mockRouterPush).not.toHaveBeenCalled()
+  })
+})
+
+// ── Canonical relationship chip (skill-evidence-map-fix) ──────────────────────
+// Attachment status renders ONLY from the canonical relationship fields the
+// Passport/reports read — a display title can never fake "attached".
+
+describe("DocumentProofPanel — canonical project relationship", () => {
+  it("shows 'Attached to <project>' only when the canonical relationship is directly_linked", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeProof({
+        id: "doc-attached",
+        status: "analyzed",
+        title: "VeriBridge Rich Document Proof Test",
+        project_id: "proj-veribridge",
+        project_title: "VeriBridge",
+        project_relationship_state: "directly_linked",
+      }),
+    ])
+    render(<DocumentProofPanel />)
+    const chip = await screen.findByTestId("document-relationship-state")
+    expect(chip).toHaveAttribute("data-state", "directly_linked")
+    expect(chip).toHaveTextContent("Attached to VeriBridge")
+  })
+
+  it("shows the honest needs-attachment state for a vault-only document, with the attach panel", async () => {
+    vi.mocked(listDocumentProofs).mockResolvedValue([
+      makeProof({
+        id: "doc-vault",
+        status: "analyzed",
+        title: "VeriBridge Rich Document Proof Test", // display title must NOT imply attachment
+        project_relationship_state: "vault_only",
+      }),
+    ])
+    render(<DocumentProofPanel />)
+    const chip = await screen.findByTestId("document-relationship-state")
+    expect(chip).toHaveAttribute("data-state", "vault_only")
+    expect(chip).toHaveTextContent("Needs project attachment — not counted in project reports")
+    // The shared explicit attach flow replaces the old vault deep-link: three
+    // explicit modes (vault-only default / existing project / create new).
+    const panel = screen.getByTestId("proof-attach-panel")
+    expect(panel).toHaveAttribute("data-state", "unattached")
+    expect(panel).toHaveAttribute("data-proof-type", "document")
+    expect(screen.getByTestId("proof-attach-mode-vault")).toBeChecked()
+    expect(screen.getByTestId("proof-attach-mode-existing")).not.toBeChecked()
+    expect(screen.getByTestId("proof-attach-mode-create")).not.toBeChecked()
   })
 })

@@ -532,16 +532,19 @@ describe("Chrome limitation — captureVisibleTab vs getDisplayMedia", () => {
 })
 
 describe("recording state persistence across service worker restart", () => {
-  it("persisted state includes sessionId, apiUrl, authToken, startedAt", () => {
-    const persistedKeys = ["sessionId", "apiUrl", "authToken", "startedAt"]
-    const required = ["sessionId", "apiUrl", "authToken", "startedAt"]
+  it("persists only the session/revision/start pointer beside the atomic config", () => {
+    const persistedKeys = ["sessionId", "configRevision", "startedAt"]
+    const required = ["sessionId", "configRevision", "startedAt"]
     expect(required.every(k => persistedKeys.includes(k))).toBe(true)
+    expect(persistedKeys).not.toContain("apiUrl")
+    expect(persistedKeys).not.toContain("authToken")
   })
 
-  it("on restart, isRecording is restored to true if persisted", () => {
+  it("on restart, recording resumes only with the exact atomic config revision", () => {
     // Simulates the background.ts startup logic
-    const persisted = { sessionId: "abc123", apiUrl: "http://localhost:8000", authToken: "", startedAt: new Date().toISOString() }
-    const isRecording = !!persisted.sessionId
+    const persisted = { sessionId: "abc123", configRevision: 3, startedAt: new Date().toISOString() }
+    const config = { session_id: "abc123", config_revision: 3, api_base_url: "http://localhost:8128" }
+    const isRecording = persisted.sessionId === config.session_id && persisted.configRevision === config.config_revision
     expect(isRecording).toBe(true)
   })
 

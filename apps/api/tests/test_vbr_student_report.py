@@ -20,6 +20,7 @@ All storage is in-memory (dict mode). No real network calls, no LLM calls.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
+from app.services.vbr_student_report import collect_project_defense_traces
 
 from tests.test_vbr_project_defense import (
     DEFENSE_TRANSCRIPT,
@@ -68,6 +70,135 @@ def client(mem_store: dict, pipeline_db: dict) -> TestClient:
 
 def _get_report(client: TestClient, project_id: str):
     return client.get(f"/api/v1/student/vbr/projects/{project_id}/report")
+
+
+# ── Document Proof inspection: skill-specific mapping ─────────────────────────
+
+
+def _inspection_cards(report: dict) -> list[dict]:
+    cards: list[dict] = []
+    for chain in report.get("projects") or []:
+        for corr in chain.get("document_correlations") or []:
+            if corr.get("inspection_card"):
+                cards.append(corr["inspection_card"])
+    for corr in (report.get("standalone_evidence") or {}).get("documents") or []:
+        if corr.get("inspection_card"):
+            cards.append(corr["inspection_card"])
+    return cards
+
+
+def test_document_inspection_maps_only_matched_skill(mem_store: dict, pipeline_db: dict) -> None:
+    """E. The inspection card is built for the selected skill only — a document that
+    matched two skills yields a card whose matched_skill is the report's skill."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3},
+            {"skill_name": "Python", "snippet": "wrote the training loop", "page_number": 5},
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    cards = _inspection_cards(report)
+    assert cards, "an ML inspection card must exist"
+    assert all(c["matched_skill"] == "Machine Learning" for c in cards)
+    # The Python-only locator (page 5) must not appear in the ML report.
+    assert all(c["page_number"] != 5 for c in cards)
+
+
+def test_document_inspection_gives_selected_skill_specific_locator(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """F. The selected skill receives ITS skill-specific locator (its page/snippet)."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3},
+            {"skill_name": "Python", "snippet": "wrote the training loop", "page_number": 5},
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _inspection_cards(report)[0]
+    assert card["page_number"] == 3
+    assert card["safe_snippet"] == "trained a model"
+
+
+def test_unrelated_skill_has_no_document_inspection_card(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """G. A skill the document never cited receives no document inspection card."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3}],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Rust")
+    assert _inspection_cards(report) == []
+
+
+def test_document_inspection_limitation_copy_appears(mem_store: dict, pipeline_db: dict) -> None:
+    """H. Every inspection card carries the corroboration/limitation copy."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 3}],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _inspection_cards(report)[0]
+    assert "does not" in card["limitation"]
+    assert "independently prove" in card["limitation"]
+    assert "GitHub Proof" in card["limitation"]
+
+
+def test_skill_specific_details_do_not_leak_across_skills(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """I. A document that matched both API Development and Machine Learning yields,
+    for the ML report, ML detail only — never the API endpoint/request lists."""
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {
+                "skill_name": "API Development",
+                "snippet": "The service exposes REST API endpoints for the workflow.",
+                "reason": "The request payload and response schema are described.",
+                "page_number": 7,
+            },
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "We trained a gradient-boosted model on the dataset.",
+                "reason": "Describes the ML model and evaluation.",
+                "page_number": 4,
+            },
+        ],
+    )
+
+    ml_card = _inspection_cards(
+        collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    )[0]
+    assert ml_card["matched_skill"] == "Machine Learning"
+    # ML card carries ML detail and NONE of the API-only lists.
+    assert ml_card["api_endpoints"] == []
+    assert ml_card["request_response_details"] == []
+    assert any("model" in d.lower() for d in ml_card["technical_details"])
+    # The API-only excerpt/locator never appears in the ML card.
+    blob = repr(ml_card)
+    assert "REST API endpoints" not in blob
+    assert ml_card["page_number"] == 4
+
+    api_card = _inspection_cards(
+        collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    )[0]
+    assert api_card["matched_skill"] == "API Development"
+    assert api_card["api_endpoints"], "API card must carry its own endpoint detail"
+    assert "gradient-boosted model" not in repr(api_card)
 
 
 # ── Ownership ────────────────────────────────────────────────────────────────
@@ -176,8 +307,19 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
     assert "analysis_snapshot" not in github_proof
 
     documents = body["documents"]
-    assert documents == [{"title": "Final Year Project Report", "source_type": "document", "status": "analyzed"}]
+    assert len(documents) == 1
+    assert documents[0]["title"] == "Final Year Project Report"
+    assert documents[0]["source_type"] == "document"
+    assert documents[0]["status"] == "analyzed"
     assert "document_evidence_id" not in documents[0]
+    # Owner-only retained-original access: honest not-retained state when no
+    # document_original artifact exists (this seeded document was never retained).
+    original = documents[0]["original_document"]
+    assert original["available"] is False
+    assert original["artifact_id"] is None
+    assert original["open_path"] is None
+    assert original["download_path"] is None
+    assert "not retained" in original["note"]
 
     website_proofs = body["website_proofs"]
     assert website_proofs == [
@@ -196,11 +338,81 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
     assert "No document proof attached." not in body["limitations"]
 
 
+def test_report_document_original_access_when_retained(client: TestClient, mem_store: dict) -> None:
+    """When the original document file IS retained, the private report carries the
+    owner-only access descriptor: opaque artifact id + the access-gated
+    view/download API routes + the original filename — never a storage path,
+    bucket, or signed URL. The document evidence traces carry the same
+    descriptor so the owner can open the original from the trace too."""
+    from app.services import proof_artifact_service as artifacts
+
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Python", "snippet": "training loop", "page_number": 2}],
+    )
+    artifact = artifacts.register_artifact_with_bytes(
+        mem_store,
+        owner_user_id=USER_ID,
+        proof_type="document",
+        artifact_type="document_original",
+        data=b"docx-bytes",
+        file_name="VeriBridge-AI.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        proof_id=document_id,
+        access_policy="owner_only",
+        page_count=7,
+    )
+    assert artifact is not None
+
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    response = _get_report(client, created["project"]["id"])
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    original = body["documents"][0]["original_document"]
+    assert original["available"] is True
+    assert original["artifact_id"] == artifact["id"]
+    assert original["file_name"] == artifact["file_name"]
+    assert original["mime_type"] == artifact["mime_type"]
+    assert original["page_count"] == 7
+    assert original["open_path"] == f"/api/v1/proofs/artifacts/{artifact['id']}/view"
+    assert original["download_path"] == f"/api/v1/proofs/artifacts/{artifact['id']}/download"
+    assert original["note"] is None
+
+    # The document evidence traces carry the same owner-only descriptor.
+    document_traces = [
+        t for t in body["evidence_traces"] if t["source_type"] == "Document Proof"
+    ]
+    assert document_traces
+    assert all(
+        (t["document_original"] or {}).get("artifact_id") == artifact["id"]
+        for t in document_traces
+    )
+
+    # No storage path, bucket, or signed URL anywhere in the private report.
+    raw = json.dumps(body).lower()
+    assert "storage_path" not in raw
+    assert "bucket" not in raw
+    assert "signed" not in raw
+    assert str(artifact.get("storage_path") or "@@none@@").lower() not in raw
+
+
 def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient, mem_store: dict) -> None:
     """Each skill row carries the canonical evidence-source labels that support
     it (GitHub / Website / Project Defense / Video) — never numeric scores."""
     github_proof_id = _seed_github_proof(mem_store)  # detects Python + React
-    website_proof_session_id = _seed_workflow_analysis(mem_store)  # supports React
+    # A Website Proof only earns a skill its OBSERVED behaviour supports (hint-only
+    # stored ``supported_skills`` never maps by itself). This capture demonstrates an
+    # interactive product UI, which is direct Frontend (React) evidence.
+    website_proof_session_id = _seed_workflow_analysis(
+        mem_store,
+        workflow_summary=(
+            "The user interacted with the app's interface, filled in the form and a "
+            "result was displayed on screen."
+        ),
+    )
 
     created = _create_project_defense(
         client,
@@ -214,10 +426,12 @@ def test_report_skill_matrix_maps_skills_to_evidence_sources(client: TestClient,
     body = _get_report(client, project_id).json()
     rows = {row["skill"]: row for row in body["skill_evidence"]}
 
-    # Python is detected by the GitHub Proof only.
+    # Python is detected by the GitHub Proof only (the website behaviour does not
+    # demonstrate a Python-specific skill, so it earns no Website Proof chip).
     assert rows["Python"]["supporting_sources"] == ["GitHub Proof"]
-    # React is detected by GitHub Proof and supported by the Website Proof,
-    # in canonical (GitHub → Website) order.
+    # React is detected by GitHub Proof and supported by the Website Proof (the
+    # observed interactive UI is direct Frontend evidence), in canonical
+    # (GitHub → Website) order.
     assert rows["React"]["supporting_sources"] == ["GitHub Proof", "Website Proof"]
 
     # Supporting-source labels carry no numeric score fragments.
@@ -238,6 +452,116 @@ def test_report_unevidenced_skill_carries_honest_limitation(client: TestClient) 
         assert any("pending more proof" in line for line in row["limitations"])
 
 
+# ── Smart GitHub Evidence bridge (canonical skill_evidence → GitHub Proof) ────
+
+
+def _seed_canonical_skill_evidence(
+    mem_store: dict,
+    *,
+    user_id: str = USER_ID,
+    skill_name: str = "Python",
+    repository_url: str = "https://github.com/octocat/Hello-World",
+    file_path: str = "app/api/routes.py",
+    line_start: int | None = 10,
+    line_end: int | None = 20,
+    evidence_type: str = "github repository",
+    proof_visibility: str = "public",
+) -> str:
+    """Seed one canonical ``skill_evidence`` GitHub code-line row (the newer Smart
+    GitHub Evidence path the Portfolio & Proof scanner persists)."""
+    evidence_id = str(uuid4())
+    now_iso = datetime.now(UTC).isoformat()
+    mem_store.setdefault("skill_evidence", {})[evidence_id] = {
+        "id": evidence_id,
+        "user_id": user_id,
+        "skill_name": skill_name,
+        "evidence_type": evidence_type,
+        "repository_url": repository_url,
+        "file_path": file_path,
+        "line_start": line_start,
+        "line_end": line_end,
+        "evidence_description": f"Code evidence for {skill_name}.",
+        "proof_visibility": proof_visibility,
+        "verification_status": "verified",
+        "metadata": {
+            "evidence_title": "Skill Evidence Tracker",
+            "selection_reason": "function implementation",
+            "branch_ref": "main",
+            "confidence_label": "high",
+        },
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    return evidence_id
+
+
+def test_report_repo_metadata_only_does_not_create_github_proof(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A. A project with a repo_url but NO attached GitHub Proof and NO analyzed
+    GitHub code evidence never manufactures a GitHub Proof supporting source."""
+    project_id = _create_project_defense(client).json()["project"]["id"]  # repo_url set
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    for row in rows.values():
+        assert "GitHub Proof" not in row["supporting_sources"]
+
+
+def test_report_smart_github_evidence_maps_to_exact_claimed_skill(
+    client: TestClient, mem_store: dict
+) -> None:
+    """C. Real canonical Smart GitHub code evidence for THIS project's repo + a
+    claimed skill adds GitHub Proof to that skill's supporting sources — even with
+    NO attached GitHub Proof (``detected_skills``)."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    project_id = _create_project_defense(client).json()["project"]["id"]  # octocat/Hello-World
+
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" in rows["Python"]["supporting_sources"]
+    # No broad spray: React (also claimed) has no code evidence, so no GitHub Proof.
+    assert "GitHub Proof" not in rows["React"]["supporting_sources"]
+
+
+def test_report_smart_github_unrelated_repo_does_not_map(
+    client: TestClient, mem_store: dict
+) -> None:
+    """D. Canonical GitHub evidence from a DIFFERENT repository never maps to this
+    project's skills."""
+    _seed_canonical_skill_evidence(
+        mem_store,
+        skill_name="Python",
+        repository_url="https://github.com/someone-else/other-repo",
+    )
+    project_id = _create_project_defense(client).json()["project"]["id"]  # octocat/Hello-World
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" not in rows["Python"]["supporting_sources"]
+
+
+def test_report_smart_github_ownerless_evidence_does_not_map(
+    client: TestClient, mem_store: dict
+) -> None:
+    """E. Canonical GitHub evidence with no resolvable repo identity (ambiguous /
+    ownerless) never maps to this project's skills."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python", repository_url="")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" not in rows["Python"]["supporting_sources"]
+
+
+def test_report_smart_github_no_spray_to_unmatched_skills(
+    client: TestClient, mem_store: dict
+) -> None:
+    """F. Smart GitHub evidence that maps only one claimed skill never sprays
+    GitHub Proof onto the project's OTHER claimed skills."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    project_id = _create_project_defense(
+        client, claimed_skills=["Python", "React", "Machine Learning"]
+    ).json()["project"]["id"]
+    rows = {row["skill"]: row for row in _get_report(client, project_id).json()["skill_evidence"]}
+    assert "GitHub Proof" in rows["Python"]["supporting_sources"]
+    assert "GitHub Proof" not in rows["React"]["supporting_sources"]
+    assert "GitHub Proof" not in rows["Machine Learning"]["supporting_sources"]
+
+
 # ── Project Defense analysis + skill evidence table ─────────────────────────
 
 def test_report_includes_project_defense_analysis_and_skill_evidence(client: TestClient) -> None:
@@ -255,6 +579,7 @@ def test_report_includes_project_defense_analysis_and_skill_evidence(client: Tes
 
     assert body["session_id"] == session_id
     assert body["evidence_package"]["project_defense_completed"] is True
+    assert body["project_status"] == "defense complete"
 
     report_analysis = body["project_defense_analysis"]
     assert report_analysis is not None
@@ -526,6 +851,58 @@ def test_student_report_includes_evidence_traces_per_skill(client: TestClient, m
     assert any(row["evidence_traces"] for row in body["skill_evidence"])
 
 
+def test_skill_evidence_groups_by_proof_source_are_skill_specific(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The skill-first Project Report renders, per skill, evidence rows grouped by
+    proof source. This guards the data contract those cards depend on: for each
+    skill, the proof *source types* of its attached traces are a subset of that
+    skill's own ``supporting_sources`` chips — never the whole project's proof
+    union applied blindly to every skill."""
+    project_id = _full_evidence_project(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    traces_by_id = {t["trace_id"]: t for t in body["evidence_traces"]}
+    skill_rows = body["skill_evidence"]
+    assert skill_rows, "expected claimed skills on the project"
+
+    for row in skill_rows:
+        chips = set(row["supporting_sources"])
+        # The source types this skill's grouped evidence rows would render under.
+        grouped_source_types = {
+            traces_by_id[tid]["source_type"]
+            for tid in row["evidence_traces"]
+            if tid in traces_by_id
+        }
+        # No skill ever surfaces an evidence group for a proof source it does not
+        # claim as a supporting chip — the breakdown is honest and skill-specific.
+        assert grouped_source_types <= chips, (
+            f"skill {row['skill']!r} groups evidence from {grouped_source_types - chips} "
+            f"with no matching supporting-source chip"
+        )
+        # Every trace attributed to this skill actually names it (or is honest
+        # project-level context with no skill claim) — never another skill's proof.
+        for tid in row["evidence_traces"]:
+            names = traces_by_id[tid]["skill_names"]
+            assert (not names) or (row["skill"] in names), (
+                f"skill {row['skill']!r} references trace {tid} scoped to {names}"
+            )
+
+    # The full-evidence project genuinely produces a multi-source breakdown for at
+    # least one skill (so the grouped-by-source cards are exercised, not vacuous).
+    assert any(
+        len(
+            {
+                traces_by_id[tid]["source_type"]
+                for tid in row["evidence_traces"]
+                if tid in traces_by_id
+            }
+        )
+        >= 2
+        for row in skill_rows
+    )
+
+
 def test_github_trace_is_publicly_openable_with_safe_url(client: TestClient, mem_store: dict) -> None:
     project_id = _full_evidence_project(client, mem_store)
     body = _get_report(client, project_id).json()
@@ -553,7 +930,9 @@ def test_evidence_anchors_unique_and_never_collide_with_section_ids(
         "documents",
         "website-proof",
         "project-defense",
-        "skill-evidence",
+        # The skill-first main section id (was "skill-evidence" before the
+        # Project Report skill-card redesign).
+        "skills-demonstrated",
         "evidence-traceability",
         "limitations",
     }
@@ -595,6 +974,27 @@ def test_project_defense_answer_creates_process_evidence_trace(client: TestClien
     assert defense_traces
     assert all(t["is_publicly_openable"] is False for t in defense_traces)
     assert any("self-explanation" in t["limitation"].lower() for t in defense_traces)
+
+
+def test_low_ownership_defense_never_claims_candidate_built_project() -> None:
+    traces: list[dict] = []
+
+    collect_project_defense_traces(
+        traces.append,
+        analysis={
+            "ownership_signal_score": 10,
+            "skills_mentioned": ["Python"],
+            "skills_explained_well": [],
+            "risk_flags": ["No clear ownership signal detected in the transcript."],
+        },
+        defense_questions=[],
+    )
+
+    assert len(traces) == 1
+    trace = traces[0]
+    assert "ownership was not established" in trace["safe_detail"]
+    assert "built the project" not in trace["safe_detail"]
+    assert "own work" not in trace["safe_summary"]
 
 
 def test_video_chip_trace_carries_timestamp(client: TestClient, mem_store: dict) -> None:
@@ -939,6 +1339,82 @@ def test_private_answer_summary_renders_for_clean_evidence() -> None:
     assert cards[0]["safe_answer_summary"] != _ANSWER_SUMMARY_WITHHELD
     # Real (sanitized) answer content is preserved for the owner.
     assert "endpoint" in cards[0]["safe_answer_summary"].lower()
+
+
+# ── Project Defense inspection cards on the private owner report ──────────────
+
+
+def test_report_emits_project_defense_inspection_for_answered_question(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The owner report carries first-class Project Defense inspection cards with
+    question text, safe answer summary, a mapped skill, basis chips, corroboration
+    flags, and an honest limitation."""
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+
+    cards = body["project_defense_inspection"]
+    assert cards, "expected Project Defense inspection cards on the owner report"
+    # A card that maps a real skill and carries the recruiter-inspection fields.
+    mapped = [c for c in cards if c["mapped_skill"]]
+    assert mapped, "expected at least one skill-mapped inspection card"
+    card = mapped[0]
+    assert card["question_text"]
+    assert card["safe_answer_summary"]
+    assert card["evidence_basis_chips"]
+    assert card["limitation"]
+    assert card["what_this_demonstrates"]
+    # The mapped skill is a genuine claimed skill of the project (exact mapping),
+    # never an unrelated skill invented from keyword overlap.
+    claimed = {s.lower() for s in body["claimed_skills"]}
+    assert card["mapped_skill"].lower() in claimed
+
+
+def test_report_inspection_frames_defense_as_explanation_not_implementation(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Inspection cards use conservative explanation/corroboration language and
+    never claim verified implementation, authorship, or numeric confidence."""
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+    cards = body["project_defense_inspection"]
+    assert cards
+
+    blob = json.dumps(cards).lower()
+    for banned in ("verified implementation", "proves authorship", "guarantee"):
+        assert banned not in blob
+    # No numeric confidence/score fields on any card.
+    assert "confidence" not in blob
+    assert "_score" not in blob
+    # Every card carries the honest 'explanation evidence' limitation framing.
+    assert all("explanation evidence" in (c["limitation"] or "").lower() or c["limitation"] for c in cards)
+
+
+def test_report_inspection_does_not_leak_raw_transcript_or_ids(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Inspection cards never carry a raw ``question_id``, the raw
+    ``transcript_segments`` array, storage paths, or signed URLs.
+
+    The owner card *may* carry a bounded ``safe_transcript_excerpt`` (a short,
+    sanitized snippet), so we assert the specific unsafe shapes are absent rather
+    than banning the word "transcript" outright.
+    """
+    project_id = _project_with_answered_defense(client, mem_store)
+    body = _get_report(client, project_id).json()
+    cards = body["project_defense_inspection"]
+    assert cards
+    for card in cards:
+        assert "question_id" not in card
+        # The raw segments array is never exposed — only the derived excerpt.
+        assert "transcript_segments" not in card
+        blob = json.dumps(card).lower()
+        for unsafe in ("transcript_segments", "storage_path", "signed_url", "vbr/sessions", "supabase"):
+            assert unsafe not in blob
+        # If a transcript excerpt is present it is bounded, not a full dump.
+        excerpt = card.get("safe_transcript_excerpt")
+        if excerpt:
+            assert len(excerpt) <= 800
 
 
 # ── Phase 1: GitHub line/function code evidence (skill_code_evidence) ─────────
@@ -1492,7 +1968,11 @@ def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) 
     Website trace card when available."""
     session_id = _seed_rich_website(mem_store)
     created = _create_project_defense(
-        client, attached_proofs={"website_proof_session_ids": [session_id]}
+        client,
+        # The project must CLAIM the skill for the image-classification behaviour to
+        # map to it — a Website Proof only ever supports a project's claimed skills.
+        claimed_skills=["Machine Learning", "React"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
     ).json()
     project_id = created["project"]["id"]
 
@@ -1513,7 +1993,10 @@ def test_website_rich_artifact_trace_cards(client: TestClient, mem_store: dict) 
     assert ocr["location_label"] == "OCR summary"
     assert "Prediction: cat" in ocr["safe_summary"]
     assert "behaviour" in ocr["limitation"].lower()
-    # Supports the website's skills, not authorship.
+    # The image-classification behaviour maps ONLY to the project's claimed skills it
+    # actually supports (the canonical Website→skill mapping) — never the raw stored
+    # ``supported_skills``. Machine Learning is claimed here and the demonstrated
+    # prediction/classification behaviour maps to it.
     assert "Machine Learning" in ocr["skill_names"]
 
     live = next(t for t in web if t["location_type"] == "website_live_check")
@@ -1591,6 +2074,281 @@ def test_website_with_empty_supported_skills_is_project_level_evidence(
     # And it does NOT pollute any skill-matrix row's evidence traces.
     for row in body["skill_evidence"]:
         assert card["trace_id"] not in (row.get("evidence_traces") or [])
+
+
+# ── Website Proof: skill mapping DERIVED from safe pipeline summaries ─────────
+#
+# Website Proof, like GitHub Proof, must surface skill-SPECIFIC evidence — GitHub
+# maps code, Website maps observed runtime behaviour. When the pipeline persisted
+# rich safe summaries but NO explicit ``supported_skills``, a mapping may still be
+# conservatively DERIVED from the observed behaviour — but only when that behaviour
+# genuinely demonstrates the skill (never a generic/landing/availability page, and
+# never an unrelated claimed skill).
+
+
+def _skill_row(body: dict, skill: str) -> dict:
+    return next(r for r in body["skill_evidence"] if r["skill"] == skill)
+
+
+def _website_skill_names(body: dict) -> set[str]:
+    return {
+        r["skill_name"]
+        for e in body.get("website_skill_evidence", [])
+        for r in e.get("skills", [])
+    }
+
+
+def test_website_derives_ml_skill_from_prediction_behavior(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A Website Proof with EMPTY ``supported_skills`` but a safe prediction-result
+    narrative maps to the claimed ML skill (derived), and the skill matrix + the
+    behavior-evidence card agree, so the passport can surface it."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # Behavior-evidence card mapped the claimed skill, honestly flagged "derived".
+    entry = next(e for e in body["website_skill_evidence"])
+    assert entry["skill_mapping_available"] is True
+    ml = next(r for r in entry["skills"] if r["skill_name"] == "Machine Learning")
+    assert ml["mapping_basis"] == "derived"
+    # A demo UI is product-behaviour context for ML — never implementation proof.
+    assert ml["is_direct_evidence"] is False
+    assert "not" in ml["limitation"].lower()
+    # The safe NLP summary backed the mapping (closed label, not raw text).
+    assert "Website NLP" in entry["evidence_source_types"]
+
+    # Skill matrix row now lists Website Proof — this is what feeds the passport
+    # ``supporting_proof_types`` and the Website Proof filter.
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+
+
+def test_generic_website_stays_project_level_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A generic Website Proof (a landing page that only proves the site exists,
+    empty ``supported_skills``) maps to NO skill — it stays project-level, and the
+    skill matrix never gains a Website Proof source chip."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A landing page describing the product and its features was shown.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    entry = next(e for e in body["website_skill_evidence"])
+    assert entry["skills"] == []
+    assert entry["skill_mapping_available"] is False
+    assert "Website Proof" not in _skill_row(body, "Machine Learning")["supporting_sources"]
+
+
+def test_website_does_not_map_to_unrelated_claimed_skills(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A prediction-result demo derives the ML skill but NOT an unrelated claimed
+    skill (Docker): a demo UI never proves Docker/CI-CD internals."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning", "Docker"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    mapped = _website_skill_names(body)
+    assert "Machine Learning" in mapped
+    assert "Docker" not in mapped
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+    assert "Website Proof" not in _skill_row(body, "Docker")["supporting_sources"]
+
+
+def test_broad_stored_supported_skills_do_not_leak_into_matrix_or_passport_refs(
+    client: TestClient, mem_store: dict
+) -> None:
+    """THE leak regression: a Website Proof whose STORED ``supported_skills`` is broad
+    (React, Docker, AWS, SQL, NLP, Security …) must NOT paint every claimed skill with
+    a Website Proof source. The stored list is a hint only — only the skills the
+    observed image-classification behaviour genuinely supports earn the Website Proof
+    chip, and the ``website_skill_evidence`` map is a strict subset of the validated
+    skills (no project-level Website Proof becomes skill evidence)."""
+    broad = ["Machine Learning", "React", "Docker", "AWS", "SQL", "Security"]
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://teachablemachine.withgoogle.com",
+        supported_skills=broad,  # deliberately broad / dirty stored list
+        weakly_supported_skills=[],
+        workflow_summary="The user uploaded an image and the model displayed a classification result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=broad,
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+
+    # The behaviour-evidence map is a STRICT SUBSET of validated skills: the
+    # image-classification behaviour maps ML (model product-behaviour context) and
+    # React (interactive UI), never the infra/data/security skills the stored list
+    # also named — a demo UI carries no relevance to Docker/AWS/SQL/Security.
+    mapped = set(_website_skill_names(body))
+    assert "Machine Learning" in mapped
+    assert not (mapped & {"Docker", "AWS", "SQL", "Security"})
+
+    # Skill matrix supporting-sources agree — the passport ``supporting_proof_types``
+    # is built from exactly this, so no unrelated skill gains a Website Proof chip.
+    assert "Website Proof" in _skill_row(body, "Machine Learning")["supporting_sources"]
+    for unrelated in ("Docker", "AWS", "SQL", "Security"):
+        assert "Website Proof" not in _skill_row(body, unrelated)["supporting_sources"], unrelated
+
+    # The website evidence TRACE cards are scoped to the same validated skills — a
+    # broad stored list never rides through as a per-skill trace attribution either.
+    web_traces = [t for t in body["evidence_traces"] if t["source_type"] == "Website Proof"]
+    for t in web_traces:
+        assert not (set(t["skill_names"]) & {"Docker", "AWS", "SQL", "Security"})
+
+
+def test_website_derives_api_skill_from_api_behavior(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A request→result API narrative derives a FastAPI skill mapping (API-backed
+    behaviour context), even with empty ``supported_skills``."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="A request was sent to the API endpoint and the JSON response was rendered on the page.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["FastAPI"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    assert "FastAPI" in _website_skill_names(body)
+    api_row = next(r for e in body["website_skill_evidence"] for r in e["skills"] if r["skill_name"] == "FastAPI")
+    assert api_row["relevance_key"] == "api_behavior_context"
+    assert "Website Proof" in _skill_row(body, "FastAPI")["supporting_sources"]
+
+
+def test_website_skill_evidence_exposes_only_safe_source_labels(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The derived skill evidence + source-type labels are closed-vocabulary only —
+    never raw DOM/OCR/visual/provider text, storage paths, or scores."""
+    from app.services.website_skill_proof_focus import (
+        ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES,
+    )
+
+    session_id = _seed_rich_website(
+        mem_store,
+        supported_skills=[],
+        observed_demonstration={
+            "dom_summary": "A prediction label was rendered.",
+            "screenshot_url": "https://bucket.example/secret.png",
+            "storage_path": "/private/bucket/raw.html",
+        },
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    entry = next(e for e in body["website_skill_evidence"])
+    # Source-type labels are all from the closed vocabulary.
+    for label in entry["evidence_source_types"]:
+        assert label in ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES
+    # No smuggled raw fields anywhere in the website_skill_evidence payload.
+    import json
+
+    blob = json.dumps(body["website_skill_evidence"])
+    for unsafe in ["screenshot_url", "storage_path", "secret.png", "/private/bucket", "signed_url"]:
+        assert unsafe not in blob
+
+
+def test_navigation_layout_entry_carries_unmapped_reason_and_action(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A navigation/layout Website Proof stays project-level (no skill row) and the
+    entry carries a safe reason + strengthening action so the gap is legible."""
+    from app.services.website_skill_proof_focus import WEBSITE_STRENGTHEN_ACTION
+
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Navigated between the app's pages using the sidebar menu.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    entry = next(e for e in _get_report(client, project_id).json()["website_skill_evidence"])
+    assert entry["skills"] == []
+    assert entry["skill_mapping_available"] is False
+    assert entry["website_purpose_key"] == "navigation_layout"
+    assert entry["unmapped_reason"] == "Navigation/layout evidence only"
+    assert entry["strengthen_action"] == WEBSITE_STRENGTHEN_ACTION
+
+
+def test_mapped_website_entry_has_no_unmapped_reason(
+    client: TestClient, mem_store: dict
+) -> None:
+    """When a Website Proof DID map a skill, the project-level-only fields stay empty
+    (they describe the unmapped gap, never a mapped proof)."""
+    session_id = _seed_workflow_analysis(
+        mem_store,
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="Entered input values and the model displayed a prediction result.",
+    )
+    created = _create_project_defense(
+        client,
+        claimed_skills=["Machine Learning"],
+        attached_proofs={"website_proof_session_ids": [session_id]},
+    ).json()
+    project_id = created["project"]["id"]
+
+    entry = next(e for e in _get_report(client, project_id).json()["website_skill_evidence"])
+    assert entry["skill_mapping_available"] is True
+    assert entry["unmapped_reason"] == ""
+    assert entry["strengthen_action"] == ""
 
 
 # ── Phase 3: Document citation (matched section heading) ─────────────────────
@@ -1828,7 +2586,9 @@ def test_website_detail_service_is_used_for_attached_website_proof(
 def test_include_cross_proof_false_skips_whole_vault_scan(monkeypatch) -> None:
     """The Work Passport builds a report per project but never reads
     ``other_student_proofs``. ``include_cross_proof=False`` must skip the
-    expensive whole-vault scan (``collect_related_skill_proofs``) entirely."""
+    expensive whole-vault scan (``collect_vault_items``) entirely — and the
+    single-report view must pay it exactly ONCE (shared by the cross-proof
+    section and the suggested-evidence classification)."""
     import app.services.student_proof_vault_service as vault
     import app.services.vbr_student_report as report_mod
 
@@ -1838,14 +2598,360 @@ def test_include_cross_proof_false_skips_whole_vault_scan(monkeypatch) -> None:
         calls["n"] += 1
         return []
 
-    monkeypatch.setattr(vault, "collect_related_skill_proofs", _spy)
+    monkeypatch.setattr(vault, "collect_vault_items", _spy)
 
     project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
 
     gated = report_mod.build_student_vbr_report({}, {}, project, USER_ID, include_cross_proof=False)
     assert gated["other_student_proofs"] == []
+    assert gated["suggested_evidence"] == []
     assert calls["n"] == 0
 
-    # Default behaviour still runs the scan (backward compatible).
+    # Default behaviour still runs the scan (backward compatible) — once.
     report_mod.build_student_vbr_report({}, {}, project, USER_ID)
     assert calls["n"] == 1
+
+
+# ── Attachment Intelligence Cleanup (Step 4): suggested evidence separation ───
+
+
+def test_report_separates_suggested_evidence_from_attached(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An unattached document whose safe title mentions the project appears ONLY
+    under ``suggested_evidence`` ("not counted until attached") — never in the
+    attached evidence package or the documents list."""
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+
+    # Unattached document that clearly names the project.
+    _seed_document_evidence(
+        mem_store, analysis_json={"title": "Skill Evidence Tracker — Design Report"}
+    )
+
+    body = _get_report(client, project_id).json()
+    assert body["evidence_package"]["documents_count"] == 0
+    assert body["documents"] == []
+
+    suggested = body["suggested_evidence"]
+    assert suggested, "expected a suggested-evidence entry for the matching document"
+    for entry in suggested:
+        assert entry["attachment_state"] == "suggested"
+        assert entry["status_label"] == "Suggested — not counted until attached"
+        assert entry["relation_strength"] in ("likely", "weak")
+        # Safe display fields only — never a raw source id or storage path.
+        assert "source_id" not in entry
+        assert "file_path" not in entry
+
+
+def test_report_suggested_evidence_never_includes_attached_documents(
+    client: TestClient, mem_store: dict
+) -> None:
+    """A document explicitly attached to the project stays ATTACHED evidence —
+    it is never duplicated as a suggestion."""
+    document_id = _seed_document_evidence(mem_store)
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    project_id = created["project"]["id"]
+
+    body = _get_report(client, project_id).json()
+    assert body["evidence_package"]["documents_count"] == 1
+    titles = [e["display_title"] for e in body["suggested_evidence"]]
+    assert "Final Year Project Report" not in titles
+
+
+def test_public_project_report_never_carries_suggested_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """The public report projection is a whitelist — suggested evidence and its
+    reason/strength labels must never appear there."""
+    created = _create_project_defense(client).json()
+    project_id = created["project"]["id"]
+    _seed_document_evidence(
+        mem_store, analysis_json={"title": "Skill Evidence Tracker — Design Report"}
+    )
+    token = client.post(
+        f"/api/v1/student/vbr/projects/{project_id}/public-report"
+    ).json()["public_token"]
+
+    public = client.get(f"/api/v1/public/vbr/reports/{token}")
+    assert public.status_code == 200
+    body = public.json()
+    assert "suggested_evidence" not in body
+    text = public.text
+    assert "Suggested — not counted until attached" not in text
+    assert "relation_reason" not in text
+    assert "relation_strength" not in text
+
+
+# ── Real-unmapped-proof context ("Attached proof not yet skill-mapped") ───────
+#
+# REAL analyzed, project-attached proof that no exact skill row consumed is
+# surfaced as private context — never as skill evidence, and never generated
+# from metadata alone (a repo URL, a website URL, a filename, an unanswered
+# question plan).
+
+_ALLOWED_UNMAPPED_KEYS = {
+    "proof_type",
+    "project_id",
+    "project_title",
+    "report_url",
+    "reason",
+    "safe_summary",
+    "evidence_label",
+    "observed_at",
+    "source_count",
+    "inspection_anchor",
+}
+
+
+def _unmapped_of(body: dict, proof_type: str) -> list[dict]:
+    return [
+        e
+        for e in body.get("real_unmapped_proof_context") or []
+        if e["proof_type"] == proof_type
+    ]
+
+
+def _assert_unmapped_entry_is_safe(entry: dict) -> None:
+    """Every context entry carries only the closed, private-safe field set."""
+    assert set(entry.keys()) <= _ALLOWED_UNMAPPED_KEYS, entry.keys()
+    dumped = json.dumps(entry).lower()
+    for unsafe in ("proof_session_id", "storage", "signed_url", "artifact_data", "bucket"):
+        assert unsafe not in dumped
+
+
+def test_repo_url_alone_creates_no_github_row_and_no_unmapped_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """1. A bare repo_url (no analyzed GitHub evidence of any kind) creates NO
+    GitHub Proof skill row and NO real-unmapped GitHub context — repo metadata
+    is never proof."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+    for row in body["skill_evidence"]:
+        assert "GitHub Proof" not in row["supporting_sources"]
+    assert body["real_unmapped_proof_context"] == []
+
+
+def test_canonical_github_evidence_for_unclaimed_skill_creates_unmapped_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """2. Real canonical Smart GitHub code evidence for THIS project's repo whose
+    skill is NOT claimed maps no skill row — it surfaces as real-unmapped GitHub
+    context instead of disappearing (and never as skill evidence)."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Docker")
+    project_id = _create_project_defense(client).json()["project"]["id"]  # claims Python/React
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "GitHub Proof" not in row["supporting_sources"]
+
+    entries = _unmapped_of(body, "GitHub Proof")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["project_id"] == project_id
+    assert entry["reason"] == "Analyzed source evidence exists, but no exact skill row consumed it yet."
+    assert entry["report_url"] == f"/student/vbr/projects/{project_id}/report"
+    assert entry["inspection_anchor"] == "github-proof"
+    assert entry["source_count"] == 1
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_canonical_github_evidence_mapped_to_claimed_skill_creates_no_duplicate_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """3. Canonical GitHub evidence that maps an exact claimed skill row is
+    consumed there — no duplicate real-unmapped GitHub context appears."""
+    _seed_canonical_skill_evidence(mem_store, skill_name="Python")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    rows = {row["skill"]: row for row in body["skill_evidence"]}
+    assert "GitHub Proof" in rows["Python"]["supporting_sources"]
+    assert _unmapped_of(body, "GitHub Proof") == []
+
+
+def test_generic_website_proof_attached_but_unmapped_creates_website_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """4. A REAL recorded/analyzed Website Proof (a completed proof session)
+    attached to the project that maps no skill creates Website real-unmapped
+    context — visible, honest, and never a skill row."""
+    session_id = _seed_workflow_analysis(mem_store, supported_skills=[])
+    project_id = _create_project_defense(
+        client, attached_proofs={"website_proof_session_ids": [session_id]}
+    ).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "Website Proof" not in row["supporting_sources"]
+
+    entries = _unmapped_of(body, "Website Proof")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["project_id"] == project_id
+    assert entry["reason"], "unmapped website context must state an honest reason"
+    assert entry["inspection_anchor"] == "website-proof"
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_website_url_alone_creates_no_row_and_no_website_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """5. A website URL alone (metadata without a real recorded proof session)
+    creates no Website skill row AND no Website real-unmapped context."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    project_row = mem_store["vbr_projects"][project_id]
+    project_row["metadata"]["attached_proofs"] = {
+        "website_proofs": [{"target_website": "https://demo.example.com"}]
+    }
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "Website Proof" not in row["supporting_sources"]
+    assert _unmapped_of(body, "Website Proof") == []
+
+
+def test_analyzed_document_with_no_skill_match_creates_document_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """6. An ANALYZED document that matched no claimed skill creates Document
+    real-unmapped context (project context stays visible, never a skill row)."""
+    document_id = _seed_document_evidence(mem_store)  # status=analyzed, no skill match
+    project_id = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()["project"]["id"]
+    body = _get_report(client, project_id).json()
+
+    for row in body["skill_evidence"]:
+        assert "Document Proof" not in row["supporting_sources"]
+
+    entries = _unmapped_of(body, "Document Proof")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert "Final Year Project Report" in entry["safe_summary"]
+    assert entry["reason"] == (
+        "Analyzed document evidence exists, but it is not mapped to a specific skill yet."
+    )
+    assert entry["inspection_anchor"] == "documents"
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_filename_metadata_alone_creates_no_document_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """7. A filename/upload-metadata-only document (no analyzed status, no
+    analyzer evidence) creates NO Document real-unmapped context."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    project_row = mem_store["vbr_projects"][project_id]
+    project_row["metadata"]["attached_proofs"] = {
+        "documents": [{"title": "resume.pdf", "source_type": "document"}]
+    }
+    body = _get_report(client, project_id).json()
+    assert _unmapped_of(body, "Document Proof") == []
+
+
+def test_analyzed_defense_with_no_skill_match_creates_defense_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """8. An answered + analyzed Project Defense whose explanation maps no
+    claimed skill creates Project Defense real-unmapped context."""
+    project_id = _create_project_defense(client, claimed_skills=["Rust"]).json()["project"]["id"]
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    submit = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert submit.status_code == 200, submit.text
+
+    body = _get_report(client, project_id).json()
+    rows = {row["skill"]: row for row in body["skill_evidence"]}
+    assert "Project Defense" not in rows["Rust"]["supporting_sources"]
+
+    entries = _unmapped_of(body, "Project Defense")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["reason"] == (
+        "Defense evidence exists, but it is not mapped to a specific skill yet."
+    )
+    assert entry["inspection_anchor"] == "project-defense"
+    _assert_unmapped_entry_is_safe(entry)
+
+
+def test_question_plan_alone_creates_no_defense_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """9. A generated (but unanswered / unanalyzed) defense question plan
+    creates NO Project Defense real-unmapped context."""
+    project_id = _create_project_defense(client).json()["project"]["id"]
+    _generate_questions(client, project_id)
+    body = _get_report(client, project_id).json()
+    assert _unmapped_of(body, "Project Defense") == []
+
+
+def test_defense_mapped_to_claimed_skill_creates_no_duplicate_defense_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """An analyzed defense whose explanation supports a claimed skill is consumed
+    by that exact row — no duplicate Project Defense context appears."""
+    project_id = _create_project_defense(client).json()["project"]["id"]  # Python/React
+    session_id = _generate_questions(client, project_id).json()["session_id"]
+    submit = _submit_defense(client, session_id, combined_text=DEFENSE_TRANSCRIPT)
+    assert submit.status_code == 200, submit.text
+
+    body = _get_report(client, project_id).json()
+    assert any(
+        "Project Defense" in row["supporting_sources"] for row in body["skill_evidence"]
+    )
+    assert _unmapped_of(body, "Project Defense") == []
+
+
+# ── Development evidence-discovery diagnostics ────────────────────────────────
+
+
+def test_report_emits_dev_evidence_discovery_diagnostics(caplog) -> None:
+    """In development the report build logs a safe evidence-discovery trace:
+    owner/project IDs, per-source counts, and exclusion reasons — never tokens,
+    storage paths, or transcript/file contents."""
+    import logging
+
+    import app.services.vbr_student_report as report_mod
+
+    project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
+    with caplog.at_level(logging.INFO, logger="app.services.vbr_student_report"):
+        report_mod.build_student_vbr_report({}, {}, project, USER_ID)
+    lines = [r.getMessage() for r in caplog.records if "evidence-discovery" in r.getMessage()]
+    assert lines, "expected an evidence-discovery diagnostic line in development"
+    line = lines[-1]
+    assert f"user={USER_ID}" in line
+    assert f"project={project['id']}" in line
+    assert "cem_citations=" in line and "excluded_reasons=" in line
+    assert "Bearer" not in line and "token" not in line.lower()
+
+
+def test_evidence_discovery_diagnostics_silent_in_production(caplog, monkeypatch) -> None:
+    import logging
+
+    import app.services.vbr_student_report as report_mod
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "environment", "production")
+    project = {"id": str(uuid4()), "title": "P", "metadata": {"claimed_skills": ["Python"]}}
+    with caplog.at_level(logging.INFO, logger="app.services.vbr_student_report"):
+        report_mod.build_student_vbr_report({}, {}, project, USER_ID)
+    assert not [r for r in caplog.records if "evidence-discovery" in r.getMessage()]
+
+
+def test_skill_report_emits_dev_evidence_discovery_diagnostics(caplog) -> None:
+    import logging
+
+    from app.services.student_proof_vault_service import collect_skill_report
+
+    with caplog.at_level(logging.INFO, logger="app.services.student_proof_vault_service"):
+        collect_skill_report({}, {}, USER_ID, "Python", synthesize=False)
+    lines = [
+        r.getMessage() for r in caplog.records if "skill-evidence-discovery" in r.getMessage()
+    ]
+    assert lines, "expected a skill-evidence-discovery diagnostic line in development"
+    assert f"user={USER_ID}" in lines[-1]
+    assert "excluded_reasons=" in lines[-1]

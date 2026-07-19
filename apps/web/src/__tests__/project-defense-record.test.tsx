@@ -13,9 +13,11 @@ import { render, screen, fireEvent, waitFor, within } from "@testing-library/rea
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import ProjectDefenseRecordPage from "../app/student/proofs/project-defense/record/[sessionId]/page"
 import {
+  getProjectDefenseContext,
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  type ProjectDefenseContextResponse,
   type VBRProjectResponse,
   type VBRSessionDetailResponse,
 } from "@/lib/vbr-api"
@@ -23,6 +25,7 @@ import {
 vi.mock("@/lib/vbr-api", () => ({
   getVBRSession: vi.fn(),
   getVBRProject: vi.fn(),
+  getProjectDefenseContext: vi.fn(),
   createVBRSessionConsent: vi.fn(),
   startVBRSession: vi.fn(),
   getVBRSessionRecordingReadiness: vi.fn(),
@@ -38,6 +41,7 @@ vi.mock("@/lib/vbr-api", () => ({
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ sessionId: "sess-1" }),
+  useRouter: () => ({ push: vi.fn() }),
 }))
 
 function makeSession(overrides: Partial<VBRSessionDetailResponse> = {}): VBRSessionDetailResponse {
@@ -87,6 +91,36 @@ function makeProject(overrides: Partial<VBRProjectResponse> = {}): VBRProjectRes
   }
 }
 
+function makeDefenseContext(
+  evidence: Partial<ProjectDefenseContextResponse["evidence"]> = {},
+  overrides: Partial<ProjectDefenseContextResponse> = {}
+): ProjectDefenseContextResponse {
+  const none = { attached: false, count: 0, label: "" }
+  return {
+    project: makeProject(),
+    metadata: {
+      description: "A tracker for skill evidence.",
+      claimed_skills: ["React"],
+      student_role: "solo developer",
+      individual_project_only: true,
+      attached_proofs: {},
+      phase: "2A",
+    },
+    evidence: {
+      github_proof: { ...none },
+      documents: { ...none },
+      website_proof: { ...none },
+      project_defense: { ...none },
+      ...evidence,
+    },
+    defense_status: "not_started",
+    report_ready: false,
+    session_id: "sess-1",
+    questions: [],
+    ...overrides,
+  }
+}
+
 const getDisplayMedia = vi.fn()
 const getUserMedia = vi.fn()
 
@@ -111,6 +145,9 @@ class MockMediaRecorder {
 beforeEach(() => {
   vi.mocked(getVBRSession).mockReset().mockResolvedValue(makeSession())
   vi.mocked(getVBRProject).mockReset().mockResolvedValue(null)
+  vi.mocked(getProjectDefenseContext)
+    .mockReset()
+    .mockRejectedValue(new Error("context unavailable"))
   vi.mocked(getVBRSessionRecordingReadiness).mockReset().mockResolvedValue({
     ready: true,
     code: null,
@@ -313,19 +350,10 @@ describe("ProjectDefenseRecordPage", () => {
   })
 
   it("shows project context with attached evidence summary and the Phase 2A recording scope", async () => {
-    vi.mocked(getVBRProject).mockResolvedValue(
-      makeProject({
-        metadata: {
-          attached_proofs: {
-            github_proof: {
-              repo_url: "https://github.com/octocat/Hello-World",
-              repo_owner: "octocat",
-              repo_name: "Hello-World",
-              status: "analyzed",
-            },
-            documents: [{ title: "Resume.pdf" }],
-          },
-        },
+    vi.mocked(getProjectDefenseContext).mockResolvedValue(
+      makeDefenseContext({
+        github_proof: { attached: true, count: 1, label: "octocat/Hello-World" },
+        documents: { attached: true, count: 1, label: "Resume.pdf" },
       })
     )
 
@@ -335,23 +363,17 @@ describe("ProjectDefenseRecordPage", () => {
 
     const context = await screen.findByTestId("project-defense-context")
     expect(within(context).getByText(/skill evidence tracker/i)).toBeInTheDocument()
-    expect(within(context).getByText(/octocat\/Hello-World \(analyzed\)/i)).toBeInTheDocument()
+    expect(within(context).getByText(/octocat\/Hello-World/i)).toBeInTheDocument()
     expect(within(context).getAllByText(/1 attached/i).length).toBeGreaterThan(0)
     expect(context.textContent).toMatch(/defense questions:\s*1/i)
     expect(within(context).getByText(/phase 2a records screen \+ microphone\. camera is not included yet\./i)).toBeInTheDocument()
   })
 
   it("shows the website proof attached count in project context", async () => {
-    vi.mocked(getVBRProject).mockResolvedValue(
-      makeProject({
-        metadata: {
-          attached_proofs: {
-            documents: [{ title: "Resume.pdf" }],
-            website_proofs: [
-              { target_website: "http://demo.example.com", workflow_confidence: "high" },
-            ],
-          },
-        },
+    vi.mocked(getProjectDefenseContext).mockResolvedValue(
+      makeDefenseContext({
+        documents: { attached: true, count: 1, label: "Resume.pdf" },
+        website_proof: { attached: true, count: 1, label: "demo.example.com" },
       })
     )
 
@@ -364,7 +386,7 @@ describe("ProjectDefenseRecordPage", () => {
   })
 
   it("falls back to the repo URL and a safe placeholder when no GitHub Proof or documents are attached", async () => {
-    vi.mocked(getVBRProject).mockResolvedValue(makeProject({ metadata: {} }))
+    vi.mocked(getProjectDefenseContext).mockResolvedValue(makeDefenseContext())
 
     render(<ProjectDefenseRecordPage />)
 

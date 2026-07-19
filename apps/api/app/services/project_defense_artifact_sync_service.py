@@ -34,6 +34,7 @@ from app.schemas.skill_evidence_pipeline import (
     SkillEvidencePipelineResponse,
 )
 from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineService
+from app.services.vbr_project_defense import effective_claimed_skills, merge_owned_project
 from app.services.vbr_session_recording import get_session
 from app.services.website_proof_artifact_sync_service import _infer_category, _truncate
 
@@ -329,30 +330,46 @@ class ProjectDefenseArtifactSyncService:
         if project is None or str(project.get("user_id")) != str(user_id):
             raise ProjectDefenseNotFoundError(session_id)
 
-        return session, project
+        # Sync reads the SAME merged canonical evidence package (claimed skills
+        # + attached proofs across the project's duplicate group) that the
+        # workspace, question generation, and analysis use — never only the
+        # session's own row, which may be a near-empty duplicate.
+        return session, merge_owned_project(self._db, user_id, project)
 
     # ── Existing pipeline lookup ─────────────────────────────────────────────
 
-    def _existing_pipeline(self, user_id: str, skill_name: str) -> SkillEvidencePipelineResponse | None:
+    def _pipelines_by_skill(self, user_id: str) -> dict[str, SkillEvidencePipelineResponse]:
+        """One bulk read of the student's pipeline rows, keyed by lowercased skill.
+
+        The per-skill loop in ``sync`` used to re-list EVERY pipeline (and each
+        pipeline's artifacts) for EVERY claimed skill — an N×M query storm that
+        made the save hang for minutes against a real database.
+        """
         try:
-            for p in self._pipeline_svc.list_pipelines_for_student(user_id):
-                if p.skill_name.strip().lower() == skill_name.strip().lower():
-                    return p
+            return {
+                p.skill_name.strip().lower(): p
+                for p in self._pipeline_svc.list_pipeline_rows_for_student(user_id)
+            }
         except Exception:
-            pass
-        return None
+            return {}
 
     # ── Idempotency check ─────────────────────────────────────────────────────
 
     def _artifact_exists_for_session(self, user_id: str, session_id: str) -> bool:
         try:
-            for p in self._pipeline_svc.list_pipelines_for_student(user_id):
-                for a in self._pipeline_svc._list_artifacts_for_pipeline_by_id(p.id):
-                    if a.artifact_data.get("kind") == "project_defense" and a.artifact_data.get("vbr_session_id") == session_id:
-                        return True
+            return self._pipeline_svc.has_artifact_for_session(
+                user_id, kind="project_defense", vbr_session_id=session_id
+            )
         except Exception:
-            pass
-        return False
+            return False
+
+    def artifact_exists_for_session(self, user_id: str, session_id: str) -> bool:
+        """True when this session's defense evidence is already on the Skill Graph.
+
+        Used by the workspace context endpoint so a reloaded workspace reports
+        the honest saved/not-saved Skill Graph state.
+        """
+        return self._artifact_exists_for_session(user_id, session_id)
 
     # ── Main sync ─────────────────────────────────────────────────────────────
 
@@ -381,9 +398,17 @@ class ProjectDefenseArtifactSyncService:
             return result
 
         metadata = project.get("metadata") or {}
-        claimed_skills = _clean_list(metadata.get("claimed_skills") or [])
+        # Explicit claimed skills, or the deterministic evidence-derived list
+        # (GitHub detected_skills / document skills / website supported_skills)
+        # when the student never typed one — the project-first flow collects no
+        # claimed-skills input, so requiring the explicit list here made every
+        # project-first defense fail with "Couldn't save to Skill Graph".
+        claimed_skills = effective_claimed_skills(metadata)
         if not claimed_skills:
-            result.errors.append("No claimed skills on this project — nothing to sync.")
+            result.errors.append(
+                "No skills to save yet — attach GitHub, website, or document proof "
+                "with detected skills (or add claimed skills) and try again."
+            )
             return result
 
         project_title = _truncate(project.get("title") or "this project", 200)
@@ -396,10 +421,12 @@ class ProjectDefenseArtifactSyncService:
         skills_explained_well = set(_clean_list(analysis.get("skills_explained_well") or []))
         confidence = _confidence_for_skill(analysis)
 
+        existing_by_skill = self._pipelines_by_skill(user_id)
+
         for skill in claimed_skills:
             try:
                 new_support = "partially_supported" if skill in skills_explained_well else "needs_review"
-                existing = self._existing_pipeline(user_id, skill)
+                existing = existing_by_skill.get(skill.strip().lower())
                 source = _build_project_defense_evidence_source(skill, project_title, confidence, new_support)
                 payload = _build_pipeline_payload(skill, project_title, existing, source, confidence, new_support)
                 pipeline = self._pipeline_svc.upsert_pipeline(user_id, payload)

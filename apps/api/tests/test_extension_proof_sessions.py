@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.api.deps import get_current_user_id, get_db
+from app.core.config import settings
 from app.schemas.extension_proof import (
     ExtensionProofSessionCreate,
     ExtensionProofUploadRequest,
@@ -98,6 +99,14 @@ class TestExtensionProofSessionCreateSchema:
         s = ExtensionProofSessionCreate(skill_evidence_id=f"  {EVIDENCE_ID}  ")
         assert s.skill_evidence_id == EVIDENCE_ID
 
+    def test_optional_project_id_is_preserved(self) -> None:
+        project_id = "00000000-0000-0000-0000-000000000077"
+        s = ExtensionProofSessionCreate(
+            skill_evidence_id=EVIDENCE_ID,
+            project_id=project_id,
+        )
+        assert s.project_id == project_id
+
 
 class TestExtensionProofUploadRequestSchema:
     def test_defaults(self) -> None:
@@ -155,6 +164,45 @@ class TestCreateExtensionProofSession:
         assert r2.status_code == 201
         assert r1.json()["id"] != r2.json()["id"]
 
+    def test_explicit_owned_project_creates_direct_relationship(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        project_id = "00000000-0000-0000-0000-000000000077"
+        mem_store.setdefault("vbr_projects", {})[project_id] = {
+            "id": project_id,
+            "user_id": DEMO_USER_ID,
+            "title": "VeriBridge",
+        }
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={**VALID_POST_BODY, "project_id": project_id},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["project_id"] == project_id
+        assert data["project_relationship_state"] == "directly_linked"
+        row = mem_store["extension_proof_sessions"][data["id"]]
+        assert row["metadata"]["project_id"] == project_id
+        [relationship] = list(mem_store["proof_project_relationships"].values())
+        assert relationship["relationship_state"] == "directly_linked"
+        assert relationship["match_method"] == "explicit_project_id"
+
+    def test_foreign_project_id_is_rejected_without_creating_session(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        project_id = "00000000-0000-0000-0000-000000000088"
+        mem_store.setdefault("vbr_projects", {})[project_id] = {
+            "id": project_id,
+            "user_id": "00000000-0000-0000-0000-000000000099",
+            "title": "Foreign project",
+        }
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={**VALID_POST_BODY, "project_id": project_id},
+        )
+        assert response.status_code == 404
+        assert mem_store.get("extension_proof_sessions", {}) == {}
+
 
 # ── GET /api/v1/student/extension-proof/sessions/{session_id} ─────────────────
 
@@ -208,6 +256,105 @@ class TestGetExtensionProofSession:
         app.dependency_overrides.clear()
 
 
+class TestListExtensionProofSessions:
+    def test_history_lists_only_owned_sessions_without_mutating_them(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        old = _create_session(client)
+        fresh = _create_session(client)
+        rows = mem_store["extension_proof_sessions"]
+        rows[old["id"]].update({
+            "status": "completed",
+            "website_url": "http://localhost:3000",
+            "created_at": "2026-07-01T10:00:00+00:00",
+        })
+        rows[fresh["id"]].update({
+            "status": "recording",
+            "website_url": "https://wikitok.io/",
+            "created_at": "2026-07-14T10:00:00+00:00",
+        })
+        rows["foreign-session"] = {
+            "id": "foreign-session",
+            "user_id": "ffffffff-0000-0000-0000-000000000002",
+            "skill_evidence_id": EVIDENCE_ID,
+            "status": "completed",
+            "website_url": "https://foreign.example/",
+            "created_at": "2026-07-15T10:00:00+00:00",
+            "updated_at": "2026-07-15T10:00:00+00:00",
+        }
+        before = dict(rows[old["id"]])
+
+        response = client.get("/api/v1/student/extension-proof/sessions")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert [item["id"] for item in payload] == [fresh["id"], old["id"]]
+        assert payload[0]["status"] == "recording"
+        assert payload[1]["website_url"] == "http://localhost:3000"
+        assert all(item["id"] != "foreign-session" for item in payload)
+        assert rows[old["id"]] == before
+
+    def test_history_exposes_durable_saved_state(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        session = _create_session(client)
+        project_id = "00000000-0000-0000-0000-000000000077"
+        mem_store["extension_proof_sessions"][session["id"]]["metadata"] = {
+            "project_id": project_id,
+            "project_relationship_state": "directly_linked",
+            "canonical_finalized_at": "2026-07-14T12:00:00+00:00",
+            "canonical_finalized_project_id": project_id,
+        }
+
+        [item] = client.get("/api/v1/student/extension-proof/sessions").json()
+        assert item["project_id"] == project_id
+        assert item["finalized_project_id"] == project_id
+        assert item["finalized_at"] == "2026-07-14T12:00:00+00:00"
+
+
+class TestExtensionProofAuthGate:
+    """The recorder extension uploads workflow evidence to these endpoints with
+    an ``Authorization: Bearer`` header carrying the signed-in user's Supabase
+    token (handed to it same-origin by the authenticated app). The endpoints
+    must therefore fail closed: a missing or invalid token is a 401, never an
+    anonymous/downgraded recording. Here we exercise the REAL
+    ``get_current_user_id`` dependency (not overridden) — only ``get_db`` is
+    stubbed so dependency resolution never reaches a live Supabase client.
+    """
+
+    def test_create_without_token_returns_401(
+        self, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "enable_demo_user_fallback", False)
+        app.dependency_overrides[get_db] = lambda: mem_store
+        try:
+            client = TestClient(app)
+            res = client.post(
+                "/api/v1/student/extension-proof/sessions", json=VALID_POST_BODY
+            )
+            assert res.status_code == 401
+            assert res.json()["detail"]["code"] == "unauthorized"
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_create_with_invalid_token_returns_401(
+        self, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(settings, "enable_demo_user_fallback", False)
+        app.dependency_overrides[get_db] = lambda: mem_store
+        try:
+            client = TestClient(app)
+            res = client.post(
+                "/api/v1/student/extension-proof/sessions",
+                json=VALID_POST_BODY,
+                headers={"Authorization": "Bearer not-a-real-jwt"},
+            )
+            assert res.status_code == 401
+            assert res.json()["detail"]["code"] in {"invalid_token", "token_expired"}
+        finally:
+            app.dependency_overrides.clear()
+
+
 # ── POST /{session_id}/start ──────────────────────────────────────────────────
 
 
@@ -244,11 +391,26 @@ class TestStartSession:
         assert response.status_code == 200
         assert response.json()["status"] == "recording"
 
-    def test_start_wrong_status_returns_409(self, client: TestClient) -> None:
+    def test_duplicate_start_is_idempotent(self, client: TestClient) -> None:
         session = _create_session(client)
-        _start_session(client, session["id"])
+        first = _start_session(client, session["id"])
 
-        # Already recording — start again should be rejected
+        # The extension retries after a lost response. The retry must not create
+        # a second start or move the original timestamp.
+        response = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session['id']}/start"
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "recording"
+        assert response.json()["started_at"] == first["started_at"]
+
+    def test_start_from_completed_returns_409(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        session = _create_session(client)
+        from app.services.extension_proof_service import _TABLE
+        mem_store[_TABLE][session["id"]]["status"] = "completed"
+
         response = client.post(
             f"/api/v1/student/extension-proof/sessions/{session['id']}/start"
         )
@@ -288,6 +450,21 @@ class TestUploadProof:
         _start_session(client, session["id"])
         data = _upload_proof(client, session["id"])
         assert len(data["proof_upload_id"]) == 36  # str(uuid4())
+
+    def test_duplicate_upload_is_idempotent(self, client: TestClient) -> None:
+        session = _create_session(client)
+        _start_session(client, session["id"])
+        first = _upload_proof(client, session["id"])
+
+        second_response = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session['id']}/upload",
+            json=VALID_UPLOAD_BODY,
+        )
+
+        assert second_response.status_code == 200
+        second = second_response.json()
+        assert second["proof_upload_id"] == first["proof_upload_id"]
+        assert second["status"] == first["status"]
 
     def test_upload_rejects_missing_session(self, client: TestClient) -> None:
         response = client.post(

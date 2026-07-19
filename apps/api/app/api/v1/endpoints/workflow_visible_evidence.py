@@ -32,6 +32,10 @@ from app.services.proof_target_resolver import resolve_target_domain
 from app.services.workflow_visible_evidence_service import (
     WorkflowVisibleEvidenceService,
 )
+from app.services.extension_proof_service import (
+    ExtensionProofSessionNotFoundError,
+    ExtensionProofSessionService,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -53,6 +57,13 @@ def submit_visible_evidence(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> dict[str, Any]:
+    try:
+        ExtensionProofSessionService(db).require_owned_session(user_id, session_id)
+    except ExtensionProofSessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "extension_proof_session_not_found", "message": "Website Proof session not found."},
+        ) from exc
     logger.info(
         "[VisibleEvidence] endpoint hit | session_id=%s | user_id=%s | events_count=%d",
         session_id, user_id, len(body.events),
@@ -97,17 +108,23 @@ def get_visible_evidence_summary(
         # from events_summary (Supabase, GitHub, localhost, etc.).
         target_domain: str | None = None
         session = svc._get_session(user_id, session_id)
-        if session:
-            target_domain = resolve_target_domain(
-                session.get("website_url") or "",
-                session.get("proof_data") or {},
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "extension_proof_session_not_found", "message": "Website Proof session not found."},
             )
+        target_domain = resolve_target_domain(
+            session.get("website_url") or "",
+            session.get("proof_data") or {},
+        )
         summary = svc.get_summary(
             user_id=user_id,
             session_id=session_id,
             target_domain=target_domain,
         )
         return summary
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception(
             "GET visible-evidence/summary: unexpected error for session %s", session_id

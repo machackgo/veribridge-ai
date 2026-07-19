@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_db, require_admin_or_university_admin_user_id
 from app.schemas.recruiter_candidate_detail import RecruiterCandidateDetailResponse
 from app.schemas.recruiter_candidate_search import CandidateSearchResponse
 from app.services.recruiter_candidate_detail_service import (
@@ -27,7 +27,7 @@ router = APIRouter()
 )
 def search_candidates(
     query: str = Query(default="", description="Skill name or keyword to search for"),
-    _user_id: str = Depends(get_current_user_id),
+    _admin_user_id: str = Depends(require_admin_or_university_admin_user_id),
     db: Any = Depends(get_db),
 ) -> CandidateSearchResponse:
     try:
@@ -50,7 +50,7 @@ def search_candidates(
 )
 def get_candidate_detail(
     candidate_user_id: str,
-    _user_id: str = Depends(get_current_user_id),
+    _admin_user_id: str = Depends(require_admin_or_university_admin_user_id),
     db: Any = Depends(get_db),
 ) -> RecruiterCandidateDetailResponse:
     try:

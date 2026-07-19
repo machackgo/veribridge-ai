@@ -38,6 +38,7 @@ from app.services.github_python_evidence_focus import (
     grade_evidence,
     grade_rank,
     is_strong_grade,
+    snippet_is_bare_name_fragment,
 )
 from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
 from app.services.skill_normalization import canonical_skill
@@ -243,6 +244,12 @@ def is_strong_code_snippet(file_path: str, code_snippet: str, function_name: str
         and not _METADATA_LINE_RE.search(ln)
     ]
     if not substantive:
+        return False
+
+    # A sliced bare-name-list window (the continuation lines of a multi-line
+    # import, cut off from its opener) names things without executing anything —
+    # a metric NAME is not a metric CALL, so it is never line-level skill proof.
+    if snippet_is_bare_name_fragment(code_snippet):
         return False
 
     full = "\n".join(lines)

@@ -48,6 +48,67 @@ class TestSettingsLoad:
         assert s.cors_origins == ["http://localhost:3000"]
 
 
+class TestCorsAllowedOrigins:
+    """Production domain integration: CORS_ALLOWED_ORIGINS + wildcard guard."""
+
+    def test_cors_allowed_origins_env_parsed(self) -> None:
+        s = make_settings(
+            CORS_ALLOWED_ORIGINS="https://veribridgeai.com,https://www.veribridgeai.com"
+        )
+        assert s.cors_origins == [
+            "https://veribridgeai.com",
+            "https://www.veribridgeai.com",
+        ]
+
+    def test_legacy_cors_origins_still_supported(self) -> None:
+        """CORS_ORIGINS remains accepted for backward compatibility."""
+        s = make_settings(CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000")
+        assert s.cors_origins == ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    def test_production_full_origin_set_accepted(self) -> None:
+        s = make_settings(
+            ENVIRONMENT="production",
+            CORS_ALLOWED_ORIGINS=(
+                "https://veribridgeai.com,https://www.veribridgeai.com,"
+                "http://localhost:3000,http://127.0.0.1:3000"
+            ),
+        )
+        assert "https://veribridgeai.com" in s.cors_origins
+        assert "https://www.veribridgeai.com" in s.cors_origins
+
+    def test_wildcard_rejected_in_production(self) -> None:
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError) as exc_info:
+            make_settings(ENVIRONMENT="production", CORS_ALLOWED_ORIGINS="*")
+        assert "wildcard" in str(exc_info.value).lower()
+
+    def test_wildcard_allowed_outside_production(self) -> None:
+        """Non-production keeps the wildcard for local tooling convenience."""
+        s = make_settings(ENVIRONMENT="development", CORS_ALLOWED_ORIGINS="*")
+        assert s.cors_origins == ["*"]
+
+
+class TestPublicUrls:
+    """FRONTEND_URL / PUBLIC_APP_URL / BACKEND_PUBLIC_URL load from env."""
+
+    def test_public_url_defaults_are_local(self) -> None:
+        s = make_settings()
+        assert s.frontend_url == "http://localhost:3000"
+        assert s.public_app_url == "http://localhost:3000"
+        assert s.backend_public_url == "http://localhost:8000"
+
+    def test_production_public_urls_load(self) -> None:
+        s = make_settings(
+            FRONTEND_URL="https://veribridgeai.com",
+            PUBLIC_APP_URL="https://veribridgeai.com",
+            BACKEND_PUBLIC_URL="https://api.veribridgeai.com",
+        )
+        assert s.frontend_url == "https://veribridgeai.com"
+        assert s.public_app_url == "https://veribridgeai.com"
+        assert s.backend_public_url == "https://api.veribridgeai.com"
+
+
 class TestSupabaseFields:
     def test_supabase_url_is_string(self) -> None:
         s = make_settings()

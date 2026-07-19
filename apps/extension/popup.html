@@ -255,12 +255,12 @@
 
   <div class="field">
     <label for="sessionId">Session ID</label>
-    <input id="sessionId" type="text" placeholder="Paste session ID from dashboard" />
+    <input id="sessionId" type="text" placeholder="Open a Website Proof from VeriBridge" readonly />
   </div>
 
   <div class="field">
     <label for="claimedSkills">Claimed Skills (comma-separated)</label>
-    <input id="claimedSkills" type="text" placeholder="e.g. Data Visualization, JavaScript" />
+    <input id="claimedSkills" type="text" placeholder="Configured by Website Proof" readonly />
   </div>
 
   <!-- Shown when content script detects veribridge_session_id in the page URL -->
@@ -275,11 +275,11 @@
     <div class="advanced-body">
       <div class="field">
         <label for="apiUrl">Backend API URL</label>
-        <input id="apiUrl" type="text" placeholder="http://localhost:8000" />
+        <input id="apiUrl" type="text" placeholder="Configured by Website Proof" readonly />
       </div>
       <div class="field">
-        <label for="authToken">Auth Token</label>
-        <input id="authToken" type="password" placeholder="Bearer token (required for auth-gated API)" />
+        <label for="authToken">Authentication</label>
+        <input id="authToken" type="text" placeholder="Not configured" readonly />
       </div>
     </div>
   </details>
@@ -327,7 +327,7 @@
   <div class="flow-box">
     <strong>How to record fullscreen video proof:</strong>
     <ol>
-      <li>Enter session ID → click <strong>Start Recording</strong></li>
+      <li>Open the target from the Website Proof page, then click <strong>Start Recording</strong></li>
       <li>A recorder tab opens automatically</li>
       <li>In the recorder tab: click <strong>Start Screen Capture</strong> → select <em>Entire Screen</em></li>
       <li>Enter fullscreen on your video/workflow page</li>

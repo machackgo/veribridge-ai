@@ -28,7 +28,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, require_admin_user_id
 from app.main import app
 from app.services.verification_review_service import (
     _apply_ai_decision,
@@ -54,6 +54,9 @@ def mem_store() -> dict:
 @pytest.fixture()
 def client(mem_store: dict) -> TestClient:
     app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
+    # The admin verification-review routes are admin-gated; these tests
+    # exercise admin behaviour, so the role check is satisfied via override.
+    app.dependency_overrides[require_admin_user_id] = lambda: DEMO_USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
     yield TestClient(app)
     app.dependency_overrides.clear()

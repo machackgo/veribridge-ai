@@ -8,6 +8,8 @@ import {
   isSafePublicUrl,
   PROOF_SOURCE_RELATIONSHIP,
   skillReportPath,
+  type ProofAttachmentEntry,
+  type ProofAttachmentOverview,
   type SkillProofSynthesisStatement,
   type SkillProofSynthesisUnlinkedItem,
   type SkillReport,
@@ -22,9 +24,28 @@ import {
   type VaultSkillGroup,
   type VaultSkillPreview,
   type VaultSkillSummary,
-  type WebsiteEvidenceCard,
 } from "@/lib/vbr-api"
 import { Badge, Mono, TOKEN, type BadgeTone } from "./shared"
+import { WebsiteRuntimeInspectionCard } from "./WebsiteRuntimeInspectionCard"
+import { DocumentProofInspectionCard } from "./DocumentProofInspectionCard"
+import { ProjectDefenseInspectionSection } from "./ProjectDefenseInspectionCard"
+import { EvidenceRelationshipBadge, EvidenceTierSection } from "./ProofRelationshipGuide"
+import {
+  ChainOriginalProofAccess,
+  DefenseTranscriptViewer,
+  OriginalProofAccess,
+  RecruiterVerificationAccessSummary,
+} from "./OriginalProofAccess"
+import {
+  EvidenceLimitations,
+  ProjectContextEvidenceList,
+  ProofInspectActions,
+  SkillEvidenceThesis,
+  SkillProofMatrix,
+  UnmappedProofNotice,
+  VaultSuggestedEvidenceList,
+  type SkillReportIntelligenceContext,
+} from "./SkillReportIntelligence"
 
 const PROOF_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
@@ -403,149 +424,15 @@ function GitHubEvidence({ item, ghLocation }: { item: SkillReportEvidenceItem; g
   )
 }
 
-/**
- * One recruiter-inspectable Website Behavior Evidence card — the Website
- * counterpart of GitHub's "View code lines" row, ordered recruiter-first:
- * CLAIM (what live behaviour was demonstrated) → SUPPORTS (relevance to this
- * report's skill) → evidence basis chips → safe derived summaries →
- * CORROBORATES (companion proofs in the same VBR project) → recruiter check
- * (open website / permission-gated frame). Renders only closed-vocabulary
- * labels, derived evidence sentences and revalidated safe URLs. The evidence
- * frame link renders ONLY when the backend supplied a safe preview URL (never
- * in the MVP); otherwise a permission-gated status line is shown when frames
- * exist. The item-level limitation is rendered by the parent row.
- */
-function WebsiteEvidenceCardView({
-  card,
-  fallbackUrl,
-}: {
-  card: WebsiteEvidenceCard
-  fallbackUrl?: string | null
-}) {
-  const openUrl = card.open_website_url ?? fallbackUrl
-  const frameUrl =
-    card.screenshot_preview_url && isSafePublicUrl(card.screenshot_preview_url)
-      ? card.screenshot_preview_url
-      : null
-  const hasRecruiterCheck =
-    Boolean(openUrl && isSafePublicUrl(openUrl)) || Boolean(frameUrl) || card.screenshot_available
-  return (
-    <div
-      data-testid="website-evidence-card"
-      style={{ display: "flex", flexDirection: "column", gap: 6 }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <Mono data-testid="website-card-route" style={{ fontSize: 12, color: TOKEN.inkSoft }}>
-          Website Behavior Evidence · {card.route_or_page}
-        </Mono>
-        {card.observed_at && (
-          <span data-testid="website-card-observed-at" style={{ fontSize: 11, color: TOKEN.muted }}>
-            observed {card.observed_at}
-          </span>
-        )}
-      </div>
-      {card.behavior_claim && (
-        <p
-          data-testid="website-behavior-claim"
-          style={{ fontSize: 13, color: TOKEN.ink, margin: 0, lineHeight: 1.5, fontWeight: 600 }}
-        >
-          Claim: {card.behavior_claim}
-        </p>
-      )}
-      <p
-        data-testid="website-skill-relevance"
-        title={card.skill_relevance_summary || undefined}
-        style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}
-      >
-        <strong>Supports: </strong>
-        {card.skill_relevance_label}
-      </p>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-        <span data-testid="website-purpose-label">
-          <Badge tone="purple">{card.website_purpose_label}</Badge>
-        </span>
-        {card.page_title && (
-          <span data-testid="website-card-page-title" style={{ fontSize: 11, color: TOKEN.muted }}>
-            {card.page_title}
-          </span>
-        )}
-      </div>
-      {card.evidence_basis_chips.length > 0 && (
-        <div
-          data-testid="website-evidence-chips"
-          style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
-        >
-          <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Evidence observed:</span>
-          {card.evidence_basis_chips.map((chip) => (
-            <span key={chip} data-testid="website-evidence-chip">
-              <Badge tone="slate">{chip}</Badge>
-            </span>
-          ))}
-        </div>
-      )}
-      {(card.visual_evidence_summary || card.ocr_evidence_summary_safe || card.dom_evidence_summary_safe) && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {card.visual_evidence_summary && (
-            <p data-testid="website-card-visual" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              {card.visual_evidence_summary}
-            </p>
-          )}
-          {card.ocr_evidence_summary_safe && (
-            <p data-testid="website-card-ocr" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              {card.ocr_evidence_summary_safe}
-            </p>
-          )}
-          {card.dom_evidence_summary_safe && (
-            <p data-testid="website-card-dom" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              {card.dom_evidence_summary_safe}
-            </p>
-          )}
-        </div>
-      )}
-      {card.observed_behavior_summary && (
-        <p
-          data-testid="website-observed-behavior"
-          style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
-        >
-          {card.observed_behavior_summary}
-        </p>
-      )}
-      {card.corroboration_note && (
-        <p
-          data-testid="website-corroboration"
-          style={{ fontSize: 11, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}
-        >
-          <strong>Corroborates: </strong>
-          {card.corroboration_note}
-          {card.connected_project_title && (
-            <span data-testid="website-connected-project" style={{ color: TOKEN.muted }}>
-              {" "}
-              (project: {card.connected_project_title})
-            </span>
-          )}
-        </p>
-      )}
-      {hasRecruiterCheck && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 11, color: TOKEN.inkSoft, fontWeight: 600 }}>Recruiter check:</span>
-          <SafeLink url={openUrl} label="Open website →" />
-          {frameUrl ? (
-            <SafeLink url={frameUrl} label="View evidence frame →" />
-          ) : (
-            card.screenshot_available && (
-              <span data-testid="website-screenshot-status" style={{ fontSize: 11, color: TOKEN.muted }}>
-                🖼 Evidence frame available with candidate permission
-              </span>
-            )
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
 
 /** One rich evidence item rendering the concrete stored fields for its source. */
-function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
+function SkillEvidenceItem({
+  item,
+  ownerSurface = false,
+}: {
+  item: SkillReportEvidenceItem
+  ownerSurface?: boolean
+}) {
   const isGitHub = item.proof_type === "GitHub Proof"
   const isWebsite = item.proof_type === "Website Proof"
   const isDocument = item.proof_type === "Document Proof"
@@ -601,7 +488,12 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
           Evidence Card (closed vocabularies + basis chips + honest screenshot
           status); legacy payloads without a card keep the prior summary rows. */}
       {isWebsite && item.website_evidence_card && (
-        <WebsiteEvidenceCardView card={item.website_evidence_card} fallbackUrl={item.public_url} />
+        <WebsiteRuntimeInspectionCard
+          card={item.website_evidence_card}
+          fallbackUrl={item.public_url}
+          sessionId={item.source_id}
+          ownerSurface={ownerSurface}
+        />
       )}
       {isWebsite && !item.website_evidence_card && (
         <>
@@ -709,6 +601,23 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
               ⏱ {item.timestamp_label}
             </Mono>
           )}
+          {/* Original proof access (owner only): the timestamps / excerpts above
+              are transcript-derived, so a transcript genuinely exists — offer
+              the candidate's own full explanation. Fails closed on public
+              surfaces and when no transcript-derived content is present. */}
+          {ownerSurface &&
+            item.source_id &&
+            Boolean(item.answer_excerpt || item.question_text || item.timestamp_label) && (
+              <OriginalProofAccess
+                state="transcript_available"
+                caption="Transcript shows the candidate's own explanation, captured by VeriBridge during the recorded defense session."
+              >
+                <DefenseTranscriptViewer
+                  sessionId={item.source_id}
+                  citedTimestampLabels={[item.timestamp_label]}
+                />
+              </OriginalProofAccess>
+            )}
         </>
       )}
 
@@ -718,7 +627,10 @@ function SkillEvidenceItem({ item }: { item: SkillReportEvidenceItem }) {
       {item.safe_location && !isGitHub && !isDocument && (
         <Mono style={{ fontSize: 11, color: TOKEN.muted }}>📍 {item.safe_location}</Mono>
       )}
-      {item.limitation && (
+      {/* The Website Runtime Inspection card renders its own Section 6
+          limitation, so the row-level limitation is suppressed for a website
+          proof that carries a card (avoids a duplicate limitation line). */}
+      {item.limitation && !(isWebsite && item.website_evidence_card) && (
         <div style={{ fontSize: 11, color: TOKEN.muted }}>
           <strong style={{ color: TOKEN.inkSoft }}>Limitation: </strong>
           {item.limitation}
@@ -732,17 +644,19 @@ function SkillReportSection({
   testId,
   title,
   items,
+  ownerSurface = false,
 }: {
   testId: string
   title: string
   items: SkillReportEvidenceItem[]
+  ownerSurface?: boolean
 }) {
   if (!items || items.length === 0) return null
   return (
     <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>{title}</h4>
       {items.map((item) => (
-        <SkillEvidenceItem key={`${item.proof_type}-${item.source_id}`} item={item} />
+        <SkillEvidenceItem key={`${item.proof_type}-${item.source_id}`} item={item} ownerSurface={ownerSurface} />
       ))}
     </div>
   )
@@ -830,6 +744,16 @@ function DefenseGroupSection({ group }: { group: SkillReportDefenseGroup }) {
  * always private; only a safe citation/snippet is shown.
  */
 function DocumentCorrelationCard({ corr }: { corr: SkillReportDocumentCorrelation }) {
+  // Prefer the skill-specific Document Proof inspection card when the backend
+  // supplied one (what the document says, where, and why it supports THIS skill).
+  // Fall back to the compact inline corroboration layout for legacy payloads.
+  if (corr.inspection_card) {
+    return (
+      <div data-testid="document-correlation">
+        <DocumentProofInspectionCard card={corr.inspection_card} />
+      </div>
+    )
+  }
   return (
     <div
       data-testid="document-correlation"
@@ -1127,7 +1051,13 @@ function ChainSourceRelationships({ sources }: { sources: string[] }) {
 }
 
 /** One project's connected proof chain: artifacts + corroborating documents. */
-function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
+function ProjectChainCard({
+  chain,
+  ownerSurface = false,
+}: {
+  chain: SkillReportProjectChain
+  ownerSurface?: boolean
+}) {
   const evidenceResolver = buildChainEvidenceResolver(chain)
   return (
     <div
@@ -1227,20 +1157,43 @@ function ProjectChainCard({ chain }: { chain: SkillReportProjectChain }) {
           {chain.website_connection_note}
         </p>
       )}
-      <SkillReportSection testId="chain-website" title="Runtime / website behavior" items={chain.website_evidence} />
+      <SkillReportSection
+        testId="chain-website"
+        title="Runtime / website behavior"
+        items={chain.website_evidence}
+        ownerSurface={ownerSurface}
+      />
       {chain.defense_group && chain.defense_group.grouped_count > 0 ? (
         <DefenseGroupSection group={chain.defense_group} />
       ) : (
         <>
-          <SkillReportSection testId="chain-defense" title="Defense / video explanation" items={chain.defense_evidence} />
-          <SkillReportSection testId="chain-video" title="Video evidence" items={chain.video_evidence} />
+          <SkillReportSection
+            testId="chain-defense"
+            title="Defense / video explanation"
+            items={chain.defense_evidence}
+            ownerSurface={ownerSurface}
+          />
+          <SkillReportSection
+            testId="chain-video"
+            title="Video evidence"
+            items={chain.video_evidence}
+            ownerSurface={ownerSurface}
+          />
         </>
       )}
+      {/* First-class Project Defense inspection: per-question explanation /
+          corroboration evidence for this chain's skill (never implementation proof). */}
+      <ProjectDefenseInspectionSection cards={chain.project_defense_inspection} testId="chain-defense-inspection" />
       <DocumentCorrelations
         testId="chain-documents"
         items={chain.document_correlations}
         moreCount={chain.document_more_count}
       />
+      {/* Original proof access — after the explanation/evidence, before the
+          limitations: can the recruiter reach the ORIGINAL source, how, and —
+          honestly — why not. Owner-only artifacts (captured frames, full
+          transcript) render only on the private surface. */}
+      <ChainOriginalProofAccess chain={chain} ownerSurface={ownerSurface} />
       {chain.limitations.length > 0 && (
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: TOKEN.muted }}>
           {chain.limitations.map((l, i) => (
@@ -1761,16 +1714,48 @@ function evidenceFallbackIdentity(p: {
   return [n(p.proof_type), n(p.title), n(p.safe_location), summary.slice(0, 160)].join("|")
 }
 
+// Closed status→claim map: the one-line recruiter-readable claim when the
+// backend sent no synthesis_summary. Labels only — never a score, never a
+// stronger word than the qualitative status itself supports.
+const CLAIM_BY_STATUS: Record<string, string> = {
+  Demonstrated: "The connected evidence below demonstrates this skill.",
+  "Partially demonstrated": "The evidence below supports parts of this skill claim — see the limitations.",
+  "Evidence observed": "Evidence supporting this skill was observed — see the limitations for what it does not prove.",
+  "Needs review": "Evidence exists but needs review before it can support this claim.",
+  "Not assessed": "This skill has not been assessed yet.",
+  "Insufficient evidence": "There is not enough direct evidence yet to support this claim.",
+}
+
 /**
- * The full Skill Report for one skill — a recruiter-trust instrument: connected
- * proof chains, evidence-cited synthesis claims and honest limitations, never a
- * raw dump. ``publicSafe`` (only true on a public surface) drops any synthesis
- * claim/chain that is not public-safe; the default private view shows everything.
+ * The full Skill Report for one skill — a recruiter-trust instrument structured
+ * as an evidence ARGUMENT: skill claim → evidence thesis → direct skill
+ * evidence (connected proof chains) → project-context / unmapped / vault-only
+ * tiers (each honestly "not counted") → proof coverage matrix → limitations →
+ * inspect actions. Never a raw dump.
+ *
+ * ``publicSafe`` (only true on a public surface) drops any synthesis
+ * claim/chain that is not public-safe and every owner-only route.
+ * ``context`` is the OWNER's passport-derived slice powering the project-context
+ * and unmapped tiers plus the matrix's context cells; when absent those pieces
+ * fail closed and the report renders from its own payload alone.
  */
-export function SkillReportView({ report, publicSafe = false }: { report: SkillReport; publicSafe?: boolean }) {
+export function SkillReportView({
+  report,
+  publicSafe = false,
+  context = null,
+}: {
+  report: SkillReport
+  publicSafe?: boolean
+  context?: SkillReportIntelligenceContext | null
+}) {
   // Prefer the Proof Synthesis Agent's project-anchored chains; fall back to the
   // attached project chains for older payloads without synthesis fields.
-  const attachedChains = report.proof_chains ?? report.projects?.filter((p) => p.attached) ?? []
+  const allChains = report.proof_chains ?? report.projects?.filter((p) => p.attached) ?? []
+  // Direct skill evidence = chains attached to a project. An unattached chain is
+  // vault-tier: its proof maps to the skill but is not project-connected, so it
+  // renders under "Vault-only / suggested" and is never framed as counted.
+  const attachedChains = allChains.filter((c) => c.attached)
+  const vaultChains = allChains.filter((c) => !c.attached)
   const unlinked = report.unlinked_supporting_evidence
   const std = report.standalone_evidence
   // The "Unlinked supporting evidence" bucket is derived from the SAME standalone
@@ -1852,10 +1837,18 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
           <Badge tone={statusTone(report.status)}>{report.status}</Badge>
           <span style={{ fontSize: 11, color: TOKEN.muted }}>{report.category}</span>
         </div>
-        {report.synthesis_summary && (
+        {report.synthesis_summary ? (
           <p data-testid="skill-report-synthesis-summary" style={{ fontSize: 12, color: TOKEN.ink, margin: 0, fontWeight: 600 }}>
             {report.synthesis_summary}
           </p>
+        ) : (
+          // No synthesis summary → the closed status-derived claim line, so the
+          // report always opens with ONE recruiter-readable sentence.
+          CLAIM_BY_STATUS[report.status] && (
+            <p data-testid="skill-report-claim" style={{ fontSize: 12, color: TOKEN.ink, margin: 0, fontWeight: 600 }}>
+              {CLAIM_BY_STATUS[report.status]}
+            </p>
+          )
         )}
         {(report.summary || report.overview?.why_supported) && (
           <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0 }}>
@@ -1882,18 +1875,36 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         )}
       </div>
 
-      {/* B — Connected proof chain(s): the skill, the project that supports it,
-          and the code / runtime / document / defense evidence that corroborates
-          the same claim. Always shown with a calm empty state so the report reads
+      {/* B — Evidence thesis: one derived sentence stating what backs the claim
+          plus the standing "only direct evidence counts" rule. */}
+      <SkillEvidenceThesis report={report} directChains={attachedChains} />
+
+      {/* B1 — Recruiter verification access: one honest line per proof source
+          stating whether (and how) the recruiter can reach the ORIGINAL
+          evidence. Derived only from actual availability — never invented. */}
+      <RecruiterVerificationAccessSummary report={report} />
+
+      {/* C — Direct skill evidence: the connected proof chains. The skill, the
+          project that supports it, and the code / runtime / document / defense
+          evidence that corroborates the same claim. The ONLY tier counted for
+          the claim. Always shown with a calm empty state so the report reads
           as an audit instrument even before any chain exists. */}
       <div data-testid="skill-report-chains" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
-          Connected proof chain
+          Direct skill evidence
         </h3>
+        <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          Proof mapped to {report.skill}, connected through the project(s) below — the only evidence
+          counted for this claim.
+        </p>
         {attachedChains.length > 0 ? (
-          attachedChains.map((chain, i) => (
-            <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} />
-          ))
+          <EvidenceTierSection kind="skill" testid="skill-report-direct">
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {attachedChains.map((chain, i) => (
+                <ProjectChainCard key={`${chain.project_id ?? "p"}-${i}`} chain={chain} ownerSurface={!publicSafe} />
+              ))}
+            </div>
+          </EvidenceTierSection>
         ) : (
           <EmptyState testId="skill-report-chains-empty">
             No linked proof chain yet — attach this skill&rsquo;s proofs to a VBR project to connect them.
@@ -1920,7 +1931,20 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         </div>
       )}
 
-      {/* C — Unlinked supporting evidence (synthesis): capped, clearly separated
+      {/* D — Project proof (context only): sources attached to the same
+          project(s) that are NOT mapped to this skill. Chips + honest label,
+          never counted, never full evidence cards. Owner-only (needs the
+          passport context) — fails closed on public/legacy surfaces. */}
+      {!publicSafe && (
+        <ProjectContextEvidenceList chains={attachedChains} context={context} skill={report.skill} />
+      )}
+
+      {/* E — Attached proof not yet skill-mapped: real analyzed proof on this
+          skill's project(s) that no skill claim consumed. Owner-only; fails
+          closed without the passport context. */}
+      {!publicSafe && <UnmappedProofNotice chains={attachedChains} context={context} />}
+
+      {/* C2 — Unlinked supporting evidence (synthesis): capped, clearly separated
           from the strong chains so unrelated proofs are never folded into them.
           Items already shown in the canonical standalone section (D) are dropped
           so the same proof never appears in both sections. */}
@@ -1940,28 +1964,68 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
         </div>
       )}
 
-      {/* D — Standalone supporting proofs (not attached to a VBR project). */}
-      {hasStandalone && (
-        <div data-testid="skill-report-standalone" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
-            Standalone supporting proofs (not attached to a VBR project)
-          </h3>
-          {stdGithubGroups.length > 0 ? (
-            <StandaloneGitHubGroups groups={stdGithubGroups} />
-          ) : (
-            <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
-          )}
-          <SkillReportSection testId="skill-report-website" title="Website evidence" items={std.website} />
-          <DocumentCorrelations
-            testId="skill-report-documents"
-            items={std.documents}
-            moreCount={std.document_more_count}
-          />
-          <SkillReportSection testId="skill-report-defense" title="Project Defense evidence" items={std.defense} />
-          <SkillReportSection testId="skill-report-video" title="Video evidence" items={std.video} />
-          <SkillReportSection testId="skill-report-skill-graph" title="Skill Graph evidence" items={std.skill_graph} />
+      {/* F — Vault-only / suggested evidence: proof saved in the vault (not
+          attached to any VBR project), unattached proof chains, and vault
+          suggestions naming this skill. Honestly labelled and never counted. */}
+      {(hasStandalone || vaultChains.length > 0 || (context?.suggestedForSkill.length ?? 0) > 0) && (
+        <div data-testid="skill-report-vault-only" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <h3 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.muted, margin: 0, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Vault-only / suggested evidence
+            </h3>
+            <EvidenceRelationshipBadge kind="vault" />
+            <span data-testid="vault-only-not-counted">
+              <Badge tone="amber">Not counted yet</Badge>
+            </span>
+          </div>
+          <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+            Saved in the Proof Vault or suggested — not attached to a VBR project, so it does not
+            count toward this skill claim until it is attached and skill-mapped.
+          </p>
+          <EvidenceTierSection kind="vault">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {vaultChains.map((chain, i) => (
+                <ProjectChainCard key={`v-${chain.project_id ?? "p"}-${i}`} chain={chain} ownerSurface={!publicSafe} />
+              ))}
+              {hasStandalone && (
+                <div data-testid="skill-report-standalone" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {stdGithubGroups.length > 0 ? (
+                    <StandaloneGitHubGroups groups={stdGithubGroups} />
+                  ) : (
+                    <SkillReportSection testId="skill-report-github" title="GitHub evidence" items={std.github} />
+                  )}
+                  <SkillReportSection
+                    testId="skill-report-website"
+                    title="Website evidence"
+                    items={std.website}
+                    ownerSurface={!publicSafe}
+                  />
+                  <DocumentCorrelations
+                    testId="skill-report-documents"
+                    items={std.documents}
+                    moreCount={std.document_more_count}
+                  />
+                  <SkillReportSection testId="skill-report-defense" title="Project Defense evidence" items={std.defense} />
+                  <SkillReportSection testId="skill-report-video" title="Video evidence" items={std.video} />
+                  <SkillReportSection testId="skill-report-skill-graph" title="Skill Graph evidence" items={std.skill_graph} />
+                </div>
+              )}
+              {!publicSafe && <VaultSuggestedEvidenceList entries={context?.suggestedForSkill} />}
+            </div>
+          </EvidenceTierSection>
         </div>
       )}
+
+      {/* G — Proof coverage matrix: one row per direct-evidence project plus a
+          vault row, one column per proof source, each cell the tier that source
+          holds for THIS skill. Context cells fail closed without the passport
+          context. */}
+      <SkillProofMatrix
+        directChains={attachedChains}
+        standalone={std}
+        context={context}
+        suggested={context?.suggestedForSkill}
+      />
 
       {/* H — Gaps / limitations */}
       {report.gaps?.length > 0 && (
@@ -1974,11 +2038,41 @@ export function SkillReportView({ report, publicSafe = false }: { report: SkillR
           </ul>
         </div>
       )}
+
+      {/* I — Standing honesty block: what this report does not claim. */}
+      <EvidenceLimitations skill={report.skill} />
+
+      {/* J — Inspect actions: each direct-evidence project's report + the Proof
+          Vault, deduplicated. Owner-only routes — never on a public surface. */}
+      {!publicSafe && <ProofInspectActions directChains={attachedChains} />}
     </div>
   )
 }
 
 // ── Layer 1: compact skill summary card (main Passport) ───────────────────────
+
+/**
+ * Collapse preview rows that would render identically so a compact skill card
+ * never repeats a duplicate-looking label. The dedupe identity is the ACTUAL
+ * rendered text — PreviewRow shows `title || safe_summary` and `safe_location`.
+ * Keying on that visible text (not title AND summary) collapses rows that render
+ * identically even when a hidden safe_summary differs, mirroring the backend.
+ * Distinct GitHub file/line locations and distinct document pages/sections carry
+ * different safe locations, so they stay separate rows. The backend already
+ * dedupes previews; this is a defensive render-layer net.
+ */
+function dedupePreviews(previews: VaultSkillPreview[]): VaultSkillPreview[] {
+  const seen = new Set<string>()
+  const out: VaultSkillPreview[] = []
+  for (const p of previews) {
+    const visible = ((p.title || "").trim() || (p.safe_summary || "")).trim().toLowerCase()
+    const key = [p.proof_type, visible, (p.safe_location || "").trim().toLowerCase()].join("|")
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(p)
+  }
+  return out
+}
 
 function PreviewRow({ preview }: { preview: VaultSkillPreview }) {
   return (
@@ -2150,8 +2244,8 @@ export function VaultSkillSummaryCard({
       {/* Top representative previews (capped) */}
       {summary.previews?.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {summary.previews.map((p, i) => (
-            <PreviewRow key={`${p.proof_type}-${i}`} preview={p} />
+          {dedupePreviews(summary.previews).map((p, i) => (
+            <PreviewRow key={`${p.proof_type}-${p.safe_location ?? ""}-${i}`} preview={p} />
           ))}
           {summary.more_count > 0 && (
             <span data-testid="vault-summary-more" style={{ fontSize: 11, color: TOKEN.muted }}>
@@ -2225,6 +2319,165 @@ export function VaultSkillDashboard({
           </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// ── Attachment Intelligence Cleanup (Step 4): attached / suggested / unattached ─
+
+const ATTACHMENT_STATE_TONE: Record<string, BadgeTone> = {
+  attached: "emerald",
+  suggested: "sky",
+  unattached: "amber",
+}
+
+/**
+ * One deduplicated attachment-overview entry: proof source, safe title, the
+ * closed state/strength labels, why (reason label), the project link(s) for
+ * attached/suggested entries, and an honest "×N duplicates collapsed" note.
+ * Entries carry ONLY safe display fields — never a source id, path, or score.
+ */
+function AttachmentEntryCard({ entry }: { entry: ProofAttachmentEntry }) {
+  return (
+    <div
+      data-testid="attachment-entry"
+      data-attachment-state={entry.attachment_state}
+      data-proof-type={entry.proof_type}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "10px 12px",
+        border: `1px solid ${TOKEN.line}`,
+        borderRadius: 8,
+        background: "#fff",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <Badge tone={PROOF_TONE[entry.proof_type] ?? "slate"}>{entry.proof_type}</Badge>
+        <span data-testid="attachment-entry-status">
+          <Badge tone={ATTACHMENT_STATE_TONE[entry.attachment_state] ?? "slate"}>{entry.status_label}</Badge>
+        </span>
+        {entry.duplicate_count > 1 && (
+          <span data-testid="attachment-entry-duplicates" style={{ fontSize: 11, color: TOKEN.muted }}>
+            {entry.duplicate_count} duplicate rows collapsed
+          </span>
+        )}
+      </div>
+
+      <div style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>{entry.display_title}</div>
+
+      {entry.reason_label && (
+        <p data-testid="attachment-entry-reason" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          {entry.reason_label}
+        </p>
+      )}
+
+      {entry.skill_names.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {entry.skill_names.map((skill) => (
+            <span key={skill} data-testid="attachment-entry-skill">
+              <Badge tone="indigo">{skill}</Badge>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {entry.project_titles.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+          <span style={{ color: TOKEN.muted }}>
+            {entry.attachment_state === "attached" ? "Project:" : "Likely project:"}
+          </span>
+          {entry.project_titles.map((title, i) => {
+            const ref = entry.project_refs_safe[i]
+            return ref ? (
+              <Link
+                key={`${title}-${i}`}
+                href={ref}
+                data-testid="attachment-entry-project-link"
+                style={{ fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+              >
+                {title} →
+              </Link>
+            ) : (
+              <span key={`${title}-${i}`} style={{ fontWeight: 600, color: TOKEN.inkSoft }}>
+                {title}
+              </span>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AttachmentSection({
+  testId,
+  title,
+  hint,
+  entries,
+}: {
+  testId: string
+  title: string
+  hint: string
+  entries: ProofAttachmentEntry[]
+}) {
+  if (!entries || entries.length === 0) return null
+  return (
+    <div data-testid={testId} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <h4 style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>{title}</h4>
+        <span style={{ fontSize: 11, color: TOKEN.muted }}>{hint}</span>
+      </div>
+      {entries.map((entry) => (
+        <AttachmentEntryCard key={entry.entry_id_safe} entry={entry} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * The owner-only attachment overview: Attached / Suggested / Unattached
+ * evidence as three clearly separated, deduplicated sections. Suggested
+ * evidence is explicitly "not counted until attached" — it is an improvement
+ * opportunity, never verified proof. Renders nothing when every bucket is
+ * empty.
+ */
+export function AttachmentOverviewSection({ overview }: { overview?: ProofAttachmentOverview | null }) {
+  if (!overview) return null
+  const total = overview.attached_count + overview.suggested_count + overview.unattached_count
+  if (total === 0) return null
+  return (
+    <div data-testid="attachment-overview" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span data-testid="attachment-overview-attached-count">
+          <Badge tone="emerald">{overview.attached_count} attached</Badge>
+        </span>
+        <span data-testid="attachment-overview-suggested-count">
+          <Badge tone="sky">{overview.suggested_count} suggested (not counted)</Badge>
+        </span>
+        <span data-testid="attachment-overview-unattached-count">
+          <Badge tone="amber">{overview.unattached_count} unattached</Badge>
+        </span>
+      </div>
+      <AttachmentSection
+        testId="attachment-attached-section"
+        title="Attached evidence"
+        hint="Explicitly attached to a project — counts as project evidence."
+        entries={overview.attached}
+      />
+      <AttachmentSection
+        testId="attachment-suggested-section"
+        title="Suggested evidence"
+        hint="Suggested — not counted until attached. Review before attaching; nothing is attached automatically."
+        entries={overview.suggested}
+      />
+      <AttachmentSection
+        testId="attachment-unattached-section"
+        title="Unattached evidence"
+        hint="In your vault, not linked to any project yet."
+        entries={overview.unattached}
+      />
     </div>
   )
 }

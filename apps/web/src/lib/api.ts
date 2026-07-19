@@ -1,14 +1,96 @@
 "use client"
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
+import { PUBLIC_API_BASE } from "@/lib/api-base"
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+const API_BASE = PUBLIC_API_BASE
+
+/**
+ * Resolve the public web app origin used for absolute, shareable links
+ * (e.g. published Passport `/p/<slug>` and public project report
+ * `/vbr/report/<token>` URLs).
+ *
+ * Order of preference:
+ *   1. NEXT_PUBLIC_APP_URL — the canonical production origin
+ *      (e.g. https://veribridgeai.com). Using this keeps copied links on the
+ *      canonical domain even from Vercel preview / custom-host deploys, where
+ *      window.location.origin would leak a preview-origin URL.
+ *   2. window.location.origin — the current browser origin (local dev, or when
+ *      NEXT_PUBLIC_APP_URL is intentionally unset).
+ *   3. http://localhost:3000 — non-browser / SSR fallback for local dev.
+ *
+ * This is for public *app* links only — it is unrelated to API base URLs.
+ * The result never has a trailing slash so callers can safely append a path.
+ */
+export function getPublicAppOrigin(): string {
+  const configured = process.env.NEXT_PUBLIC_APP_URL
+  if (configured && configured.trim()) {
+    return configured.trim().replace(/\/+$/, "")
+  }
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin.replace(/\/+$/, "")
+  }
+  return "http://localhost:3000"
+}
+
+/**
+ * Build an absolute public/shareable app link from a path (e.g. "/p/slug").
+ * Normalizes the join so links are never double-slashed.
+ */
+export function buildPublicAppUrl(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`
+  return `${getPublicAppOrigin()}${normalizedPath}`
+}
+
+/**
+ * API path prefixes whose backend routes REQUIRE an authenticated user
+ * (FastAPI `get_current_user_id`). Calling them without a session can only
+ * ever produce a 401, so `fetchAPI` short-circuits those calls locally
+ * instead of spamming the API anonymously. Dual owner/public routes
+ * (e.g. `/api/v1/proofs/...`, backed by `get_optional_user_id`) are NOT
+ * listed — anonymous recruiters legitimately call them from public pages.
+ */
+const AUTH_REQUIRED_PATH_PREFIXES = ["/api/v1/student", "/api/v1/admin"]
+
+function isAuthRequiredPath(path: string): boolean {
+  return AUTH_REQUIRED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))
+}
+
+/** Error code fetchAPI uses for its locally synthesized signed-out 401. */
+export const AUTH_SESSION_MISSING_CODE = "auth_session_missing"
+
+function authSessionMissingResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      detail: {
+        code: AUTH_SESSION_MISSING_CODE,
+        message: "You are signed out. Please sign in to view your VeriBridge data.",
+      },
+    }),
+    { status: 401, headers: { "Content-Type": "application/json" } }
+  )
+}
+
+/** True when a 401 response body carries the backend's token_expired code. */
+async function isTokenExpired401(res: Response): Promise<boolean> {
+  if (res.status !== 401) return false
+  try {
+    const body = (await res.clone().json()) as { detail?: { code?: string } }
+    return body?.detail?.code === "token_expired"
+  } catch {
+    return false
+  }
+}
 
 /**
  * Authenticated fetch wrapper for the VeriBridge backend API.
- * Reads the current Supabase session and injects the access token
- * as an Authorization: Bearer header when present.
+ *
+ * Reads the current Supabase session and injects the access token as an
+ * Authorization: Bearer header. Auth-required paths are never called
+ * anonymously — with no session they resolve to a local 401
+ * (`auth_session_missing`) without a network round-trip. If the backend
+ * reports the token expired, the session is refreshed once and the request
+ * retried before the 401 is surfaced.
  */
 export async function fetchAPI(
   path: string,
@@ -19,17 +101,54 @@ export async function fetchAPI(
     data: { session },
   } = await supabase.auth.getSession()
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+  if (!session?.access_token && isAuthRequiredPath(path)) {
+    return authSessionMissingResponse()
+  }
+
+  // For multipart/FormData uploads the browser must set Content-Type itself
+  // (it appends the multipart boundary), so we only default to JSON otherwise.
+  const isFormData =
+    typeof FormData !== "undefined" && options.body instanceof FormData
+
+  const baseHeaders: Record<string, string> = {
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...((options.headers as Record<string, string> | undefined) ?? {}),
   }
 
-  if (session?.access_token) {
-    headers["Authorization"] = `Bearer ${session.access_token}`
+  const doFetch = (accessToken: string | undefined) => {
+    const headers = { ...baseHeaders }
+    if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`
+    return fetch(`${API_BASE}${path}`, { ...options, headers })
   }
 
-  return fetch(`${API_BASE}${path}`, { ...options, headers })
+  const res = await doFetch(session?.access_token)
+
+  // A request body (stream/FormData) may not be replayable — only retry
+  // idempotent-safe bodyless requests after a token refresh.
+  if (session?.access_token && options.body == null && (await isTokenExpired401(res))) {
+    const {
+      data: { session: refreshed },
+    } = await supabase.auth.refreshSession()
+    if (refreshed?.access_token && refreshed.access_token !== session.access_token) {
+      return doFetch(refreshed.access_token)
+    }
+  }
+
+  return res
 }
+
+export {
+  initializeWebsiteProofRecorder,
+  openWebsiteProofTarget,
+  startWebsiteProofRecording,
+  recorderFailureMessage,
+  refreshWebsiteProofRecorderSessionAuth,
+} from "@/lib/website-proof-recorder"
+export type {
+  RecorderHandshakeFailure,
+  RecorderHandshakeResult,
+  RecorderSessionInput,
+} from "@/lib/website-proof-recorder"
 
 export async function getStudentProfile(): Promise<unknown | null> {
   const res = await fetchAPI("/api/v1/student/profile")
@@ -891,6 +1010,14 @@ export type ExtensionProofSessionResponse = {
   id: string
   user_id: string
   skill_evidence_id: string
+  project_id?: string | null
+  project_relationship_state?: string
+  website_url?: string | null
+  github_url?: string | null
+  claimed_skills?: string[]
+  proof_objective?: string | null
+  finalized_at?: string | null
+  finalized_project_id?: string | null
   status: ExtensionProofSessionStatus
   started_at: string | null
   proof_upload_id: string | null
@@ -901,9 +1028,16 @@ export type ExtensionProofSessionResponse = {
   privacy_scan_summary?: string | null
 }
 
+export async function listExtensionProofSessions(): Promise<ExtensionProofSessionResponse[]> {
+  const res = await fetchAPI("/api/v1/student/extension-proof/sessions")
+  if (!res.ok) throw new Error(`List sessions failed (HTTP ${res.status}).`)
+  return res.json()
+}
+
 export async function createExtensionProofSession(
   skillEvidenceId: string,
   opts?: {
+    project_id?: string
     parent_proof_session_id?: string
     followup_target_skill?: string
     followup_objective?: string
@@ -915,6 +1049,7 @@ export async function createExtensionProofSession(
   }
 ): Promise<ExtensionProofSessionResponse> {
   const body: Record<string, unknown> = { skill_evidence_id: skillEvidenceId }
+  if (opts?.project_id) body.project_id = opts.project_id
   if (opts?.parent_proof_session_id) body.parent_proof_session_id = opts.parent_proof_session_id
   if (opts?.followup_target_skill) body.followup_target_skill = opts.followup_target_skill
   if (opts?.followup_objective) body.followup_objective = opts.followup_objective
@@ -1257,7 +1392,7 @@ export async function uploadOptionalEvidenceFile(
   const form = new FormData()
   form.append("file", file)
   const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"}/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence/upload`,
+    `${API_BASE}/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/optional-evidence/upload`,
     { method: "POST", body: form, headers },
   )
   if (!res.ok) {

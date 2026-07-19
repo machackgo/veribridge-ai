@@ -217,13 +217,20 @@
       <span class="frame-badge" id="frameBadge">—</span>
     </div>
 
+    <!-- Capture scope (detected from displaySurface after screen selection) -->
+    <div class="stream-row" id="scopeRow" style="display:none">
+      <span class="stream-indicator" id="scopeIcon">🖥️</span>
+      <span class="stream-label" id="scopeLabel">Capture scope: —</span>
+    </div>
+    <div class="msg-box warn" id="scopeWarn" style="display:none"></div>
+
     <!-- Main capture card -->
     <div class="capture-card">
       <div class="capture-header">
         <span class="capture-icon">📺</span>
         <div>
           <div class="capture-title">Fullscreen Screen Recording</div>
-          <div class="capture-sub">Click below → select Entire Screen → record → Stop &amp; Upload</div>
+          <div class="capture-sub">Click below → select <strong>Entire Screen</strong> for multi-window workflows → record → Stop &amp; Upload</div>
         </div>
       </div>
       <div class="capture-body">
@@ -241,6 +248,17 @@
         <!-- Stop button -->
         <button class="btn-danger" id="btnStop" disabled>
           ■ Stop &amp; Upload Video
+        </button>
+
+        <!-- Scope confirmation (tab/window selections cannot capture other windows) -->
+        <div id="confirmRow" style="display:none; grid-template-columns: 1fr; gap: 8px;">
+          <button class="btn-primary" id="btnConfirmScope">✓ Continue — I will stay inside the captured surface</button>
+          <button class="btn-danger" id="btnReselect">↺ Re-select — share Entire Screen instead</button>
+        </div>
+
+        <!-- Retry upload (recording is preserved locally after a failed upload) -->
+        <button class="btn-primary" id="btnRetry" style="display:none" disabled>
+          ↻ Retry Upload (same recording)
         </button>
 
         <!-- Instructions (shown when capture is active) -->

@@ -1,8 +1,9 @@
 "use client"
 
+import { Suspense } from "react"
 import Link from "next/link"
-import { ProjectDefensePanel } from "../../../../../components/passport/ProjectDefensePanel"
-import { PageHeader, TOKEN } from "../../../../../components/passport/shared"
+import { ProjectDefenseHome } from "../../../../../components/passport/ProjectDefenseHome"
+import { LoadingState, PageHeader, TOKEN } from "../../../../../components/passport/shared"
 
 export default function ProjectDefensePage() {
   return (
@@ -23,10 +24,12 @@ export default function ProjectDefensePage() {
       <PageHeader
         eyebrow="Project Defense"
         title="Project Defense"
-        description="Explain your individual contribution to a project, in your own words. VeriBridge generates deterministic defense questions from your attached proof and turns your answers into supporting evidence for your Skill Graph."
+        description="Defend an existing project. VeriBridge already knows the project's GitHub, document, and website evidence — Project Defense adds grounded questions and your explanation as supporting evidence for your Skill Graph."
       />
 
-      <ProjectDefensePanel />
+      <Suspense fallback={<LoadingState label="Loading your projects…" />}>
+        <ProjectDefenseHome />
+      </Suspense>
     </div>
   )
 }

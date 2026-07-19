@@ -60,6 +60,17 @@ class ExtensionProofSessionService:
             "skill_evidence_id": payload.skill_evidence_id,
             "status": "created",
         }
+        if payload.project_id:
+            # ``metadata`` exists on every deployed extension_proof_sessions
+            # schema. Persist the canonical edge there for backward compatibility
+            # with databases that have not applied migration 058 yet. The
+            # normalized proof_project_relationships row below is the durable
+            # relationship/audit spine once that migration exists.
+            data["metadata"] = {
+                "project_id": payload.project_id,
+                "project_relationship_state": "directly_linked",
+                "project_link_source": "proof_creation",
+            }
         if payload.parent_proof_session_id:
             data["parent_proof_session_id"] = payload.parent_proof_session_id
         if payload.followup_target_skill:
@@ -80,13 +91,51 @@ class ExtensionProofSessionService:
         if isinstance(self._client, dict):
             row = {"id": str(uuid4()), "created_at": now, "updated_at": now, **data}
             self._client.setdefault(_TABLE, {})[row["id"]] = row
+            self._record_project_relationship(row, payload.project_id)
             return _to_response(row)
 
         result = self._client.table(_TABLE).insert(data).execute()
         rows = getattr(result, "data", []) or []
         if not rows:
             raise RuntimeError("Extension proof session insert returned no data.")
+        self._record_project_relationship(rows[0], payload.project_id)
         return _to_response(rows[0])
+
+    def _record_project_relationship(
+        self, row: dict[str, Any], project_id: str | None
+    ) -> None:
+        """Best-effort normalized relationship write (migration 058).
+
+        Creation must remain compatible with databases where migration 058 has
+        not landed, so failure here does not lose the explicit edge: the same
+        relationship is already stored in the session metadata above.
+        """
+        if not project_id:
+            return
+        relationship = {
+            "owner_user_id": str(row.get("user_id") or ""),
+            "proof_type": "website",
+            "proof_id": str(row.get("id") or ""),
+            "project_id": str(project_id),
+            "relationship_state": "directly_linked",
+            "match_method": "explicit_project_id",
+            "confirmed_by_user": True,
+            "provenance": {"source": "extension_proof_session_create"},
+        }
+        try:
+            if isinstance(self._client, dict):
+                key = f"website:{row.get('id')}:{project_id}"
+                self._client.setdefault("proof_project_relationships", {})[key] = {
+                    "id": key,
+                    **relationship,
+                }
+                return
+            self._client.table("proof_project_relationships").insert(relationship).execute()
+        except Exception as exc:  # pragma: no cover - migration may not be deployed yet
+            logger.info(
+                "Canonical proof-project relationship table unavailable; session metadata remains authoritative: %s",
+                type(exc).__name__,
+            )
 
     # ── Read ──────────────────────────────────────────────────────────────────
 
@@ -95,12 +144,57 @@ class ExtensionProofSessionService:
     ) -> ExtensionProofSessionResponse:
         return _to_response(self._get_row(user_id, session_id))
 
+    def require_owned_session(
+        self, user_id: str, session_id: str
+    ) -> dict[str, Any]:
+        """Return the authoritative owned row without constructing a UI DTO.
+
+        Side-evidence endpoints only need an ownership gate (and occasionally
+        ``project_id``).  Building the full session response there coupled those
+        writes to unrelated presentation fields such as ``skill_evidence_id``.
+        This method keeps the security boundary small while preserving the same
+        fail-closed ``user_id + session_id`` lookup used by every core route.
+        """
+        return self._get_row(user_id, session_id)
+
+    def list_sessions(self, user_id: str) -> list[ExtensionProofSessionResponse]:
+        """List only ``user_id``'s Website Proof sessions, newest first.
+
+        This is a read-only history surface.  It intentionally returns the
+        same safe session projection as ``get_session`` and never includes
+        proof_data, screenshots, tokens, storage paths, or artifact bytes.
+        """
+        if isinstance(self._client, dict):
+            rows = [
+                row
+                for row in self._client.setdefault(_TABLE, {}).values()
+                if str(row.get("user_id") or "") == str(user_id)
+            ]
+            rows.sort(
+                key=lambda row: str(row.get("created_at") or row.get("updated_at") or ""),
+                reverse=True,
+            )
+            return [_to_response(row) for row in rows]
+
+        result = (
+            self._client.table(_TABLE)
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return [_to_response(row) for row in (getattr(result, "data", []) or [])]
+
     # ── Start ─────────────────────────────────────────────────────────────────
 
     def start_session(
         self, user_id: str, session_id: str
     ) -> ExtensionProofStartResponse:
         row = self._get_row(user_id, session_id)
+        if row["status"] == "recording":
+            # Duplicate delivery after a lost response is the same transition,
+            # not a second start. Preserve the original started_at timestamp.
+            return ExtensionProofStartResponse(**_to_response(row).model_dump())
         if row["status"] not in _VALID_START_FROM:
             raise InvalidSessionTransitionError(
                 f"Cannot start a session with status '{row['status']}'. "
@@ -119,6 +213,11 @@ class ExtensionProofSessionService:
         self, user_id: str, session_id: str, payload: ExtensionProofUploadRequest
     ) -> ExtensionProofUploadResponse:
         row = self._get_row(user_id, session_id)
+        if row["status"] in {"uploaded_pending_analysis", "analyzing", "completed"} and row.get("proof_upload_id"):
+            # The first accepted upload owns the immutable proof_upload_id.
+            # Retried extension delivery cannot duplicate evidence or reset
+            # analysis/finalization state.
+            return _to_upload_response(row)
         if row["status"] not in _VALID_UPLOAD_FROM:
             raise InvalidSessionTransitionError(
                 f"Cannot upload to a session with status '{row['status']}'. "
@@ -200,7 +299,7 @@ class ExtensionProofSessionService:
             .maybe_single()
             .execute()
         )
-        if result is None:
+        if result is None or not getattr(result, "data", None):
             raise ExtensionProofSessionNotFoundError(session_id)
         return result.data
 
@@ -249,10 +348,24 @@ def mask_sensitive(obj: Any) -> Any:
 # ── Response builders ─────────────────────────────────────────────────────────
 
 def _to_response(row: dict[str, Any]) -> ExtensionProofSessionResponse:
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    project_id = row.get("project_id") or metadata.get("project_id")
     return ExtensionProofSessionResponse(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
         skill_evidence_id=str(row["skill_evidence_id"]),
+        project_id=str(project_id) if project_id else None,
+        project_relationship_state=(
+            str(metadata.get("project_relationship_state") or "directly_linked")
+            if project_id
+            else "vault_only"
+        ),
+        website_url=row.get("website_url"),
+        github_url=row.get("github_url"),
+        claimed_skills=[str(s) for s in (row.get("claimed_skills") or [])],
+        proof_objective=row.get("proof_objective"),
+        finalized_at=metadata.get("canonical_finalized_at"),
+        finalized_project_id=metadata.get("canonical_finalized_project_id"),
         status=row.get("status") or "created",
         started_at=row.get("started_at"),
         proof_upload_id=row.get("proof_upload_id"),
@@ -268,10 +381,22 @@ def _to_upload_response(
     from app.services.workflow_privacy_scan_service import PrivacyScanResult
     privacy_status = scan_result.status if isinstance(scan_result, PrivacyScanResult) else None
     privacy_summary = scan_result.scan_summary if isinstance(scan_result, PrivacyScanResult) else None
+    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+    project_id = row.get("project_id") or metadata.get("project_id")
     return ExtensionProofUploadResponse(
         id=str(row["id"]),
         user_id=str(row["user_id"]),
         skill_evidence_id=str(row["skill_evidence_id"]),
+        project_id=str(project_id) if project_id else None,
+        project_relationship_state=(
+            str(metadata.get("project_relationship_state") or "directly_linked")
+            if project_id
+            else "vault_only"
+        ),
+        website_url=row.get("website_url"),
+        github_url=row.get("github_url"),
+        claimed_skills=[str(s) for s in (row.get("claimed_skills") or [])],
+        proof_objective=row.get("proof_objective"),
         status=row.get("status") or "uploaded_pending_analysis",
         started_at=row.get("started_at"),
         proof_upload_id=str(row["proof_upload_id"]),

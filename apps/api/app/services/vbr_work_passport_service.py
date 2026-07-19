@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 from datetime import UTC, datetime
 from typing import Any
@@ -48,10 +49,13 @@ from app.services.passport_attachment_intelligence import (
     proof_chain_gaps,
     suggested_attachments_for_project,
 )
+from app.services.proof_attachment_intelligence import classify_vault_attachments
+from app.services.proof_synthesis_agent_service import synthesize_skill_report
 from app.services.public_report_safety_service import (
     PublicReportUnsafeError,
     enforce_public_safe,
     public_safe_skill_name,
+    public_safe_skill_report,
 )
 from app.services.skill_normalization import skill_slug
 from app.services.safe_public_url import is_safe_public_url
@@ -60,6 +64,7 @@ from app.services.vbr_public_project_report import (
     _scrub_public_report,
 )
 from app.services.student_proof_vault_service import (
+    collect_skill_report,
     collect_skill_summaries,
     collect_vault_items,
 )
@@ -71,12 +76,31 @@ logger = logging.getLogger(__name__)
 
 _PASSPORTS_TABLE = "vbr_work_passports"
 _PROJECTS_TABLE = "vbr_projects"
+_RELATIONSHIPS_TABLE = "proof_project_relationships"
 _ONBOARDING_TABLE = "student_onboarding_profiles"
+_STUDENT_PROFILES_TABLE = "student_profiles"
 
 # Whitelisted, recruiter-safe onboarding profile fields for the identity header.
 # Deliberately excludes every private/sensitive field (visa_status, sponsorship,
 # work-authorization, timeline, raw institution name) — only education context.
 _SAFE_PROFILE_FIELDS = ("degree_level", "major", "graduation_year", "university_country")
+# Additional non-education profile fields read for the identity header. Kept out
+# of ``_SAFE_PROFILE_FIELDS`` (which is strictly education context); ``avatar_url``
+# is a recruiter-safe public photo URL that is re-sanitized before it is emitted.
+_PROFILE_SELECT_FIELDS = (*_SAFE_PROFILE_FIELDS, "avatar_url")
+
+# Whitelisted, recruiter-safe identity fields read from the student-maintained
+# profile (``student_profiles`` — the same table behind /api/v1/student/profile).
+# Deliberately excludes every private field: work_authorization/visa status,
+# target_locations, links (github/linkedin), email, and any internal id.
+_STUDENT_PROFILE_IDENTITY_FIELDS = (
+    "full_name",
+    "degree",
+    "major",
+    "school_name",
+    "graduation_year",
+    "target_roles",
+)
 
 _VERIFICATION_LABEL = "Verified Work Passport"
 
@@ -98,6 +122,14 @@ _SRC_DEFENSE = "Project Defense"
 _SRC_VIDEO = "Video Evidence"
 _SRC_REPORT = "VBR Report"
 
+# Honest fallback for a skill→project row that DOES carry Website Proof but whose
+# safe pipeline summaries were too thin to derive a specific behaviour sentence.
+# Never fabricated detail — states the runtime-behaviour scope and the gap.
+_WEBSITE_LIMITED_NOTE = (
+    "Website Proof supports runtime/product behavior for this skill, but detailed "
+    "website evidence is limited."
+)
+
 _EVIDENCE_SOURCE_LABELS = [
     _SRC_GITHUB,
     _SRC_DOCUMENT,
@@ -106,6 +138,31 @@ _EVIDENCE_SOURCE_LABELS = [
     _SRC_VIDEO,
     _SRC_REPORT,
 ]
+
+# The closed proof-type vocabulary a single skill row may cite as *supporting*
+# evidence, in canonical render order. This is deliberately a SUBSET of the
+# source-badge set above (``VBR Report`` is a passport-level aggregate, never a
+# per-skill proof) so a skill→project row can only ever surface a real, attached
+# proof type — never an invented or project-wide one.
+_SKILL_PROOF_TYPE_ORDER = [
+    _SRC_GITHUB,
+    _SRC_WEBSITE,
+    _SRC_DOCUMENT,
+    _SRC_DEFENSE,
+    _SRC_VIDEO,
+]
+_KNOWN_SKILL_PROOF_TYPES = frozenset(_SKILL_PROOF_TYPE_ORDER)
+
+
+def _order_skill_proof_types(values: Any) -> list[str]:
+    """Dedupe + canonically order proof-type labels for a skill→project row.
+
+    Fails closed: any label outside the known proof-type vocabulary is dropped,
+    so a skill row can never advertise a proof type the evidence mapping did not
+    actually record for that skill in that project.
+    """
+    present = {str(v).strip() for v in (values or [])}
+    return [p for p in _SKILL_PROOF_TYPE_ORDER if p in present]
 
 # Qualitative skill labels ranked best→worst for cross-project aggregation.
 # Numeric trust/confidence scores are never used here.
@@ -485,26 +542,38 @@ def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     stable slug + owner-only Skill Report route so the project lens can link
     straight into the skill lens (private passport only)."""
     best: dict[str, dict[str, Any]] = {}
+    # skill key → the union of proof types that support THIS skill in THIS
+    # project, taken directly from each report row's already-skill-specific,
+    # fail-closed ``supporting_sources`` (never the project-wide source union).
+    proof_types_by_skill: dict[str, set[str]] = {}
     for report in reports:
         for row in report.get("skill_evidence") or []:
             skill = str(row.get("skill") or "").strip()
             if not skill:
                 continue
+            key = skill.lower()
             status_label = str(row.get("status") or "Not assessed")
-            entry = best.get(skill.lower())
+            entry = best.get(key)
             if entry is None or _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
                 entry["status"], 99
             ):
-                best[skill.lower()] = {
+                best[key] = {
                     "skill": skill,
                     "status": status_label,
                     "skill_slug": skill_slug(skill),
                     "skill_report_path": _private_skill_report_path(skill),
                 }
+            proof_types_by_skill.setdefault(key, set()).update(
+                str(s).strip() for s in (row.get("supporting_sources") or [])
+            )
     ranked = sorted(
         best.values(),
         key=lambda s: (_STATUS_ORDER.get(s["status"], 99), s["skill"].lower()),
     )
+    for entry in ranked:
+        entry["supporting_proof_types"] = _order_skill_proof_types(
+            proof_types_by_skill.get(entry["skill"].lower(), set())
+        )
     return ranked[:_MAX_PROJECT_TOP_SKILLS]
 
 
@@ -595,6 +664,32 @@ def _aggregate_skills_with_detail(
 
         project_title = summary.get("project_title") or report.get("project_title") or ""
 
+        # Safe per-skill Website Proof behaviour sentence for THIS project, taken
+        # from the canonical Website→skill mapping the report already computed
+        # (``website_skill_evidence`` → each mapped skill's ``relevance_summary``).
+        # Only closed-vocabulary, recruiter-safe summaries — never raw
+        # DOM/OCR/visual/provider text. Prefer a DIRECT-evidence relevance when a
+        # skill mapped more than once. Keyed by lowercased skill for the row below.
+        website_note_by_skill: dict[str, str] = {}
+        website_note_direct: set[str] = set()
+        for wentry in report.get("website_skill_evidence") or []:
+            if not wentry.get("skill_mapping_available"):
+                continue  # project-level only — surfaced elsewhere, never as a row note
+            for srow in wentry.get("skills") or []:
+                sk = str(srow.get("skill_name") or "").strip().lower()
+                if not sk:
+                    continue
+                note = str(srow.get("relevance_summary") or "").strip()
+                if not note:
+                    continue
+                is_direct = bool(srow.get("is_direct_evidence"))
+                # First writer wins, but a later DIRECT-evidence relevance upgrades
+                # a previously-recorded supporting one.
+                if sk not in website_note_by_skill or (is_direct and sk not in website_note_direct):
+                    website_note_by_skill[sk] = note[:400]
+                    if is_direct:
+                        website_note_direct.add(sk)
+
         for row in report.get("skill_evidence") or []:
             skill = str(row.get("skill") or "").strip()
             if not skill:
@@ -603,6 +698,11 @@ def _aggregate_skills_with_detail(
             status_label = str(row.get("status") or "Not assessed")
             chip_count = int(row.get("evidence_chip_count") or 0)
             notes = str(row.get("notes") or "").strip()
+            # The proof types that support THIS skill in THIS project — the
+            # report row's already-skill-specific, fail-closed ``supporting_sources``
+            # (e.g. Website Proof appears only when the website evidence actually
+            # supported this skill). Never the project-wide source union below.
+            row_proof_types = list(row.get("supporting_sources") or [])
 
             entry = by_skill.get(key)
             if entry is None:
@@ -648,12 +748,25 @@ def _aggregate_skills_with_detail(
                     # skill's best status across projects).
                     "skill_status": status_label,
                     "evidence_sources": list(proj_sources),
+                    # Proof types supporting THIS skill in THIS project only —
+                    # the closed, skill-specific breakdown (not ``evidence_sources``,
+                    # which is the whole project's source union).
+                    "supporting_proof_types": _order_skill_proof_types(row_proof_types),
                     "report_is_public": is_public,
                     "public_report_path": public_report_path,
                     # The proof-native trace cards this project contributes for
                     # this skill (grouped under the project in the drilldown).
                     "evidence_traces": list(project_skill_traces),
                 }
+                # Attach a safe Website Proof behaviour sentence ONLY where Website
+                # Proof actually supports THIS skill in THIS project (fail-closed on
+                # the skill-specific ``row_proof_types``, never the project union).
+                # Falls back to the honest "detail limited" note so a mapped-but-thin
+                # capture is never described with fabricated specifics.
+                if _SRC_WEBSITE in row_proof_types:
+                    ref["website_evidence_summary"] = (
+                        website_note_by_skill.get(key) or _WEBSITE_LIMITED_NOTE
+                    )
                 if not public:
                     ref["project_id"] = summary.get("project_id")
                 entry["_ref_by_ident"][ref_ident] = ref
@@ -665,6 +778,16 @@ def _aggregate_skills_with_detail(
                 # qualitative label any attempt earned for this skill, so a
                 # later stronger attempt is never masked by the representative.
                 existing["evidence_traces"].extend(project_skill_traces)
+                existing["supporting_proof_types"] = _order_skill_proof_types(
+                    list(existing.get("supporting_proof_types") or []) + row_proof_types
+                )
+                # A later attempt may be the one that maps Website Proof to this
+                # skill — attach/keep the safe behaviour note (never downgrade a
+                # specific note back to the limited fallback).
+                if _SRC_WEBSITE in row_proof_types and not existing.get("website_evidence_summary"):
+                    existing["website_evidence_summary"] = (
+                        website_note_by_skill.get(key) or _WEBSITE_LIMITED_NOTE
+                    )
                 if _STATUS_ORDER.get(status_label, 99) < _STATUS_ORDER.get(
                     str(existing.get("skill_status")), 99
                 ):
@@ -743,9 +866,12 @@ def _aggregate_skills_with_detail(
                 "project_title": strongest.get("project_title") or "",
                 "skill_status": strongest.get("skill_status") or "Not assessed",
                 "evidence_sources": list(strongest.get("evidence_sources") or []),
+                "supporting_proof_types": list(strongest.get("supporting_proof_types") or []),
                 "report_is_public": bool(strongest.get("report_is_public")),
                 "public_report_path": strongest.get("public_report_path"),
             }
+            if strongest.get("website_evidence_summary"):
+                link["website_evidence_summary"] = strongest["website_evidence_summary"]
             if not public:
                 link["project_id"] = strongest.get("project_id")
                 link["project_report_path"] = _private_project_report_path(
@@ -807,6 +933,7 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
             "project_title": strongest.get("project_title") or "",
             "skill_status": strongest.get("skill_status") or "Not assessed",
             "evidence_sources": list(strongest.get("evidence_sources") or []),
+            "supporting_proof_types": list(strongest.get("supporting_proof_types") or []),
             "public_report_path": strongest.get("public_report_path"),
         }
     return {
@@ -820,6 +947,8 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
                 # Per-project qualitative status for this skill (label only).
                 "skill_status": ref.get("skill_status") or "Not assessed",
                 "evidence_sources": list(ref.get("evidence_sources") or []),
+                # Proof types supporting this skill in this published project only.
+                "supporting_proof_types": list(ref.get("supporting_proof_types") or []),
                 "public_report_path": ref.get("public_report_path") or "",
                 # Per-project trace cards, re-sanitized — published projects only.
                 "evidence_traces": [_public_safe_trace(t) for t in ref.get("evidence_traces") or []],
@@ -853,7 +982,7 @@ def _lookup_candidate_profile(db: Any, user_id: str) -> dict[str, Any]:
         else:
             result = (
                 db.table(_ONBOARDING_TABLE)
-                .select(",".join(_SAFE_PROFILE_FIELDS))
+                .select(",".join(_PROFILE_SELECT_FIELDS))
                 .eq("user_id", user_id)
                 .limit(1)
                 .execute()
@@ -864,18 +993,106 @@ def _lookup_candidate_profile(db: Any, user_id: str) -> dict[str, Any]:
         return {}
     if not isinstance(row, dict):
         return {}
-    return {k: row.get(k) for k in _SAFE_PROFILE_FIELDS}
+    return {k: row.get(k) for k in _PROFILE_SELECT_FIELDS}
+
+
+def _lookup_student_profile_identity(db: Any, user_id: str) -> dict[str, Any]:
+    """Best-effort, safe identity fields from the student-maintained profile.
+
+    Reads ONLY the whitelisted ``_STUDENT_PROFILE_IDENTITY_FIELDS`` from
+    ``student_profiles`` (name, degree, major, university, graduation year,
+    target roles) — never work-authorization/visa status, locations, links,
+    email, or internal ids. Any lookup problem returns ``{}`` so the identity
+    header degrades gracefully to the users-row / placeholder fallbacks.
+    """
+    try:
+        if isinstance(db, dict):
+            row = next(
+                (
+                    r
+                    for r in db.setdefault(_STUDENT_PROFILES_TABLE, {}).values()
+                    if str(r.get("user_id")) == str(user_id)
+                ),
+                None,
+            )
+        else:
+            result = (
+                db.table(_STUDENT_PROFILES_TABLE)
+                .select(",".join(_STUDENT_PROFILE_IDENTITY_FIELDS))
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - profile identity is optional
+        return {}
+    if not isinstance(row, dict):
+        return {}
+    return {k: row.get(k) for k in _STUDENT_PROFILE_IDENTITY_FIELDS}
+
+
+def _student_profile_display_name(profile: dict[str, Any]) -> str | None:
+    """The student's own saved full name, or ``None`` when not set."""
+    name = profile.get("full_name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None
+
+
+def _first_target_role(profile: dict[str, Any]) -> str | None:
+    """First non-empty target role from the student profile, or ``None``."""
+    roles = profile.get("target_roles")
+    if not isinstance(roles, list):
+        return None
+    for role in roles:
+        text = str(role or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _merge_identity_profile(
+    onboarding: dict[str, Any], student: dict[str, Any]
+) -> dict[str, Any]:
+    """Overlay safe ``student_profiles`` education fields onto the onboarding
+    education context. The student-maintained profile is the richer, more
+    current source, so its fields win when present; onboarding remains the
+    fallback. Only whitelisted education fields are merged — never any private
+    profile field.
+    """
+    merged = dict(onboarding)
+    for student_key, merged_key in (
+        ("major", "major"),
+        ("degree", "degree"),
+        ("school_name", "university"),
+    ):
+        value = str(student.get(student_key) or "").strip()
+        if value:
+            merged[merged_key] = value
+    grad = student.get("graduation_year")
+    if isinstance(grad, int) and grad > 0:
+        merged["graduation_year"] = grad
+    return merged
 
 
 def _education_summary(profile: dict[str, Any]) -> str:
-    """A single safe education line from whitelisted onboarding fields."""
+    """A single safe education line from whitelisted profile fields."""
     parts: list[str] = []
     major = str(profile.get("major") or "").strip()
     if major:
         parts.append(major)
-    degree = str(profile.get("degree_level") or "").strip()
+    # The student profile's free-text degree ("B.S.", "MS") wins over the
+    # onboarding degree-level enum; exactly one of the two is emitted.
+    degree = str(profile.get("degree") or "").strip()
+    degree_level = str(profile.get("degree_level") or "").strip()
     if degree:
-        parts.append(degree.replace("_", " ").title())
+        parts.append(degree)
+    elif degree_level:
+        parts.append(degree_level.replace("_", " ").title())
+    university = str(profile.get("university") or "").strip()
+    if university:
+        parts.append(university)
     grad = profile.get("graduation_year")
     if isinstance(grad, int) and grad > 0:
         parts.append(f"Class of {grad}")
@@ -904,6 +1121,34 @@ def _safe_identity_text(value: Any) -> str | None:
     identity header — public OR private.
     """
     return public_safe_skill_name(value)
+
+
+# Signed-URL / private-storage markers that must NEVER surface as a public photo.
+_UNSAFE_AVATAR_MARKER_RE = re.compile(
+    r"(x-amz-|[?&](signature|token|expires|sig|sv|se)=|/object/sign/|/private/)",
+    re.IGNORECASE,
+)
+
+
+def _public_safe_avatar_url(url: Any) -> str | None:
+    """Return a profile-photo URL only when it is public-safe, else ``None``.
+
+    Mirrors the client-side ``publicSafeAvatarUrl`` guard so the identity header
+    can never emit a signed/tokenized storage URL, a private storage path, or a
+    raw storage key: only an absolute ``http(s)`` URL (or a root-relative path)
+    with no signed/private markers is allowed. Anything else → ``None`` so the
+    card falls back to safe initials.
+    """
+    raw = str(url).strip() if url is not None else ""
+    if not raw:
+        return None
+    if _UNSAFE_AVATAR_MARKER_RE.search(raw):
+        return None
+    if re.match(r"^https?://", raw, re.IGNORECASE):
+        return raw
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return None
 
 
 def _build_identity(
@@ -946,6 +1191,7 @@ def _build_identity(
         "last_updated": last_updated,
         "evidence_source_summary": _evidence_source_summary(evidence_source_counts),
         "verification_label": _VERIFICATION_LABEL,
+        "avatar_url": _public_safe_avatar_url(profile.get("avatar_url")),
     }
 
 
@@ -1006,31 +1252,61 @@ def _dedupe_preserve(values: list[str]) -> list[str]:
     return out
 
 
-def _merge_evidence_packages(packages: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merge per-attempt evidence packages: booleans OR-ed, counts max-ed.
+def _latest_direct_evidence_by_project(db: Any, user_id: str) -> dict[str, str]:
+    """Raw project id → most recent ``directly_linked`` proof attachment stamp.
 
-    Counts use max (not sum) because duplicate attempts re-attach the same
-    evidence — summing would inflate the badge numbers.
+    ``proof_project_relationships`` rows are written only by the canonical
+    finalization boundary, so their timestamps are the truthful "this project's
+    attached evidence changed" signal. ``vbr_projects.updated_at`` alone misses
+    canonical finalizations (they never touch the project row), which let a
+    grouped card's representative — and therefore every report link on the card —
+    stay pinned to an older attempt while a newer attempt actually carried the
+    freshly attached proof. Missing table / lookup errors return ``{}`` (grouping
+    then falls back to project-row recency alone).
     """
-    merged: dict[str, Any] = {}
-    for pkg in packages:
-        for key, value in (pkg or {}).items():
-            if isinstance(value, bool):
-                merged[key] = bool(merged.get(key)) or value
-            elif isinstance(value, (int, float)):
-                merged[key] = max(int(merged.get(key) or 0), int(value))
-            else:
-                merged.setdefault(key, value)
-    return merged
+    try:
+        if isinstance(db, dict):
+            rows = [
+                row
+                for row in db.get(_RELATIONSHIPS_TABLE, {}).values()
+                if isinstance(row, dict)
+                and str(row.get("owner_user_id") or "") == str(user_id)
+            ]
+        else:
+            response = (
+                db.table(_RELATIONSHIPS_TABLE)
+                .select("project_id,relationship_state,updated_at,created_at")
+                .eq("owner_user_id", user_id)
+                .eq("relationship_state", "directly_linked")
+                .execute()
+            )
+            rows = [row for row in (getattr(response, "data", []) or []) if isinstance(row, dict)]
+    except Exception:  # pragma: no cover - relationship table availability is additive
+        return {}
+    latest: dict[str, str] = {}
+    for row in rows:
+        if row.get("relationship_state") != "directly_linked":
+            continue
+        pid = str(row.get("project_id") or "")
+        stamp = str(row.get("updated_at") or row.get("created_at") or "")
+        if pid and stamp and stamp > latest.get(pid, ""):
+            latest[pid] = stamp
+    return latest
 
 
 def _group_project_pairs(
     pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    evidence_recency: dict[str, str] | None = None,
 ) -> list[list[tuple[dict[str, Any], dict[str, Any]]]]:
     """Group (project, report) pairs by identity, preserving first-seen order.
 
     Within each group, members are ordered so the representative (first) is the
-    one with an active public report token, else the most recently updated.
+    one with an active public report token, else the one with the most recent
+    activity — where activity is the LATER of the project row's own update and
+    its newest canonical proof attachment (``evidence_recency``). Attaching a
+    proof therefore deterministically promotes that attempt to representative,
+    so the card's report links land on the report that actually contains the
+    newly attached proof.
     """
     groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     order: list[str] = []
@@ -1043,7 +1319,9 @@ def _group_project_pairs(
 
     def _recency(pair: tuple[dict[str, Any], dict[str, Any]]) -> str:
         project, _ = pair
-        return project.get("updated_at") or project.get("created_at") or ""
+        row_stamp = str(project.get("updated_at") or project.get("created_at") or "")
+        evidence_stamp = (evidence_recency or {}).get(str(project.get("id") or ""), "")
+        return max(row_stamp, evidence_stamp)
 
     result: list[list[tuple[dict[str, Any], dict[str, Any]]]] = []
     for key in order:
@@ -1133,6 +1411,34 @@ def get_passport_status(db: Any, user_id: str) -> dict[str, Any]:
 # ── Private passport (owner-only) ────────────────────────────────────────────
 
 
+def _build_report_pairs(
+    db: Any, pipeline_db: Any, projects: list[dict[str, Any]], user_id: str
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """(project, report) for each project — reports built CONCURRENTLY.
+
+    Each ``build_student_vbr_report`` is independent and read-only, and its cost
+    is dominated by database round-trip latency, so a passport with many
+    projects used to pay (projects × report latency) sequentially — tens of
+    seconds on a real account. A small thread pool collapses that to roughly the
+    slowest single report. Order is preserved.
+    """
+    if len(projects) <= 1:
+        return [
+            (p, build_student_vbr_report(db, pipeline_db, p, user_id, include_cross_proof=False))
+            for p in projects
+        ]
+    with ThreadPoolExecutor(max_workers=min(8, len(projects))) as pool:
+        reports = list(
+            pool.map(
+                lambda project: build_student_vbr_report(
+                    db, pipeline_db, project, user_id, include_cross_proof=False
+                ),
+                projects,
+            )
+        )
+    return list(zip(projects, reports))
+
+
 def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str, Any]:
     """Build the owner-only private Work Passport (full evidence wallet)."""
     passport_row = _get_passport_by_user(db, user_id)
@@ -1145,33 +1451,69 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     # vault scan. Skip it so the passport doesn't pay a whole-vault scan PER
     # project (the dominant cost when a student has many projects). The Student
     # Proof Vault dashboard below already surfaces every owned proof once.
-    pairs = [
-        (project, build_student_vbr_report(db, pipeline_db, project, user_id, include_cross_proof=False))
-        for project in projects
-    ]
-    groups = _group_project_pairs(pairs)
+    pairs = _build_report_pairs(db, pipeline_db, projects, user_id)
+    groups = _group_project_pairs(
+        pairs, evidence_recency=_latest_direct_evidence_by_project(db, user_id)
+    )
+
+    # RAW ``vbr_projects`` row id → the grouped project's REPRESENTATIVE id (the
+    # single card it collapses into on this passport). Vault proofs are attached to
+    # raw rows (one per Project Defense attempt), so this map lets us resolve a
+    # vault skill's raw ``project_ids`` to the deduplicated projects that actually
+    # appear on the passport — a truthful connected-project set, never inflated by
+    # duplicate attempts.
+    raw_to_grouped: dict[str, str] = {}
+    for group in groups:
+        representative_id = str(group[0][0]["id"])
+        for member_project, _ in group:
+            raw_to_grouped[str(member_project["id"])] = representative_id
 
     project_summaries: list[dict[str, Any]] = []
+    # Project-level-only Website Proof context (Diagnosis-C helper): attached
+    # Website Proofs that did NOT map to any skill. Deduped per (project, focus)
+    # so multiple generic captures of the same kind collapse to one honest card.
+    website_proof_project_context: list[dict[str, Any]] = []
+    # Real-unmapped-proof context mirrored from each project's private report
+    # (the report is the single source of truth — the passport never re-detects
+    # proof itself). Aggregated across EVERY report attempt in each grouped
+    # project (deduped), so real analyzed proof attached to a non-representative
+    # attempt never disappears. Context only: never skill evidence, never
+    # counted anywhere, and never on the public passport projection.
+    real_unmapped_proof_context: list[dict[str, Any]] = []
     for group in groups:
         representative_project, representative_report = group[0]
+        group_reports = [report for _, report in group]
         token = representative_project.get("public_report_token")
         has_public_report = bool(token)
 
+        # Claimed skills are project *claims* (not proof), so unioning them across
+        # collapsed attempts is safe context.
         claimed_skills = _dedupe_preserve(
             [s for _, report in group for s in (report.get("claimed_skills") or [])]
         )
+        # GROUPED-ATTEMPT AGGREGATION: the representative report still provides
+        # the card's stable display metadata (title / description / repo identity /
+        # the single report link + publish state), but PROOF-BEARING fields are
+        # aggregated across EVERY report attempt in the group. Each attempt's
+        # evidence badges are derived by the same fail-closed report logic
+        # (``_evidence_sources`` reads only the report's attached, analyzed
+        # ``evidence_package``), so unioning them never invents proof — it only
+        # stops real attached proof on a non-representative attempt from
+        # disappearing off the card. Vault-only / suggested / unattached proof is
+        # never part of any report's evidence package, so it can never ride in.
+        # Each attempt's own report remains the drill-down source of truth for
+        # exactly which attempt carries which proof.
         evidence_sources = _dedupe_preserve(
             [
                 src
-                for project, report in group
-                for src in _evidence_sources(report, bool(project.get("public_report_token")))
+                for report in group_reports
+                for src in _evidence_sources(report, has_public_report=False)
             ]
+            + ([_SRC_REPORT] if has_public_report else [])
         )
-        evidence_package = _merge_evidence_packages(
-            [report.get("evidence_package") or {} for _, report in group]
-        )
+        evidence_package = representative_report.get("evidence_package") or {}
 
-        top_skills = _project_top_skills([report for _, report in group])
+        top_skills = _project_top_skills(group_reports)
         project_summaries.append(
             {
                 "project_id": str(representative_project["id"]),
@@ -1203,12 +1545,72 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
             }
         )
 
+        # Collect this project's Website Proofs that stayed PROJECT-LEVEL only
+        # (mapped no skill) so the Skills Evidence Map can explain the honest gap.
+        project_title = representative_report.get("project_title") or ""
+        seen_focus: set[str] = set()
+        # Every attempt in the group — a project-level Website Proof attached to a
+        # non-representative attempt is still real, attached context for this
+        # grouped project. Each entry links to the report of the attempt that
+        # actually carries it (owner-only route), deduped per focus so repeated
+        # generic captures across attempts collapse to one honest card.
+        for member_project, report in group:
+            member_id = str(member_project["id"])
+            for entry in report.get("website_skill_evidence") or []:
+                if entry.get("skill_mapping_available"):
+                    continue  # mapped a skill — surfaced as skill evidence, not here
+                focus_key = str(entry.get("website_purpose_key") or "")
+                if focus_key in seen_focus:
+                    continue
+                seen_focus.add(focus_key)
+                website_proof_project_context.append(
+                    {
+                        "project_id": member_id,
+                        "project_title": project_title,
+                        "focus_key": focus_key,
+                        "focus_label": str(entry.get("website_purpose_label") or ""),
+                        "explanation": str(entry.get("website_purpose_summary") or ""),
+                        "reason": str(entry.get("unmapped_reason") or ""),
+                        "action_guidance": str(entry.get("strengthen_action") or ""),
+                        "mapped_to_skills": False,
+                        "report_path": f"{_PRIVATE_PROJECT_REPORT_PREFIX}{member_id}/report",
+                    }
+                )
+
+        # Mirror EVERY attempt's real-unmapped-proof context — no re-detection,
+        # the report builder already fail-closed-qualified each entry. Entries
+        # keep their own attempt's report_url (that report is where the proof
+        # actually lives), and identical proof recurring across attempts of this
+        # grouped project is deduped by its safe display identity so it never
+        # renders twice.
+        seen_unmapped: set[tuple[str, str, str, str]] = set()
+        for report in group_reports:
+            for ctx in report.get("real_unmapped_proof_context") or []:
+                if not isinstance(ctx, dict):
+                    continue
+                unmapped_key = (
+                    str(ctx.get("proof_type") or "").strip().lower(),
+                    str(ctx.get("evidence_label") or "").strip().lower(),
+                    str(ctx.get("reason") or "").strip().lower(),
+                    str(ctx.get("safe_summary") or "").strip().lower(),
+                )
+                if unmapped_key in seen_unmapped:
+                    continue
+                seen_unmapped.add(unmapped_key)
+                real_unmapped_proof_context.append(dict(ctx))
+
     published_report_count = sum(1 for p in project_summaries if p["report"]["is_public"])
 
-    # Skills aggregate over all reports in each grouped project (so skills from
-    # all attempts are included), while ``project_count`` reflects distinct
-    # projects, not duplicate attempts. Each summary is paired with every report
-    # from its group; deduplication happens within the aggregation function.
+    # Skills aggregate from EVERY report attempt of each grouped project: one
+    # shared project summary paired with each attempt report, so exact skill
+    # evidence recorded on a non-representative attempt (its fail-closed,
+    # skill-specific ``supporting_sources`` / trace references) merges into the
+    # grouped skill→project row instead of disappearing. The aggregation dedupes
+    # the grouped project to a single reference (``_project_ref_identity``),
+    # unions each skill's proof types, keeps the strongest qualitative label any
+    # attempt earned, and never fabricates proof — only report-qualified skill
+    # rows contribute. ``project_count`` still reflects distinct projects, not
+    # duplicate attempts.
     skill_cards = [
         (project_summaries[i], report)
         for i, group in enumerate(groups)
@@ -1229,12 +1631,53 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     vault_skill_summaries = collect_skill_summaries(db, pipeline_db, str(user_id), items=vault_items)
     vault_unattached_count = sum(1 for item in vault_items if not item.get("is_attached_to_project"))
 
+    # Resolve each vault skill's RAW attached project ids to the deduplicated,
+    # on-passport representative projects. This gives the Skills Evidence Map a
+    # truthful connected-project set for a skill whose proof lives in the vault
+    # (never the inflated raw-attempt ``project_count``), and lets it distinguish
+    # "attached to a real project (not yet skill-mapped)" from purely-vault proof.
+    grouped_title_by_id = {p["project_id"]: p["project_title"] for p in project_summaries}
+    for summary in vault_skill_summaries:
+        seen: list[str] = []
+        for raw_pid in summary.get("project_ids") or []:
+            grouped = raw_to_grouped.get(str(raw_pid))
+            if grouped and grouped in grouped_title_by_id and grouped not in seen:
+                seen.append(grouped)
+        summary["connected_project_ids"] = seen
+        summary["connected_project_titles"] = [grouped_title_by_id[g] for g in seen]
+
+    # Vault-only (standalone) proof-type sources per skill: the proof types that
+    # exist for a skill in the vault but are NOT attached to any project. Kept
+    # strictly separate from each skill's project-attached breakdown so vault
+    # evidence is never counted as project proof. Only the closed skill-proof
+    # vocabulary is considered (a "Skill Graph" pipeline is never a proof type),
+    # so a vault-only chip can never advertise something that is not real,
+    # attachable proof.
+    vault_only_by_skill: dict[str, set[str]] = {}
+    for item in vault_items:
+        if item.get("is_attached_to_project"):
+            continue
+        skill_name = str(item.get("skill_name") or "").strip()
+        proof_type = str(item.get("proof_type") or "").strip()
+        if not skill_name or proof_type not in _KNOWN_SKILL_PROOF_TYPES:
+            continue
+        vault_only_by_skill.setdefault(skill_name.lower(), set()).add(proof_type)
+    for skill in skills:
+        skill["vault_only_sources"] = _order_skill_proof_types(
+            vault_only_by_skill.get(str(skill.get("skill") or "").strip().lower(), set())
+        )
+
     # ── Proof Attachment Intelligence (owner-only, deterministic) ────────────
     # Match unattached vault proofs to the project they likely belong to using
     # safe metadata only (repo identity, website domain, titles, shared skills).
     # Purely derived: nothing is attached automatically, no data is mutated, and
     # none of this reaches the public projection.
     attachment_suggestions = build_attachment_suggestions(vault_items, project_summaries)
+    # Centralized attachment intelligence (Step 4): every vault proof classified
+    # into attached / suggested / unattached — deduplicated display entries with
+    # closed reason codes and relation-strength labels. Suggested evidence is
+    # NEVER counted as attached, and duplicate rows never inflate any count.
+    attachment_overview = classify_vault_attachments(vault_items, project_summaries)
     for summary in project_summaries:
         summary["chain_label"] = chain_label(summary["proof_chain"])
         summary["proof_chain_gaps"] = proof_chain_gaps(summary["proof_chain"])
@@ -1286,9 +1729,17 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "skills_with_evidence": len(vault_skill_summaries),
-        "proof_count": len(vault_items),
-        "attached_proof_count": len(vault_items) - vault_unattached_count,
-        "unattached_proof_count": vault_unattached_count,
+        # Deduplicated proof counts (Step 4): duplicate rows of the same proof
+        # collapse, and suggested evidence is counted separately — it is never
+        # part of the attached count.
+        "proof_count": (
+            attachment_overview["attached_count"]
+            + attachment_overview["suggested_count"]
+            + attachment_overview["unattached_count"]
+        ),
+        "attached_proof_count": attachment_overview["attached_count"],
+        "suggested_proof_count": attachment_overview["suggested_count"],
+        "unattached_proof_count": attachment_overview["unattached_count"],
         "next_actions": next_actions[:3],
     }
 
@@ -1310,12 +1761,27 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     )
 
     status_part = _status_response(passport_row)
-    display_name = _lookup_display_name(db, str(user_id))
+    # Identity source order (private passport): the student-maintained profile
+    # (student_profiles.full_name) first, then the users row, then the neutral
+    # safe placeholder applied inside ``_build_identity``. Only whitelisted safe
+    # profile fields are ever read — real identity, never invented.
+    student_profile = _lookup_student_profile_identity(db, str(user_id))
+    display_name = _student_profile_display_name(student_profile) or _lookup_display_name(
+        db, str(user_id)
+    )
+    # An explicitly saved passport headline wins; without one, the first safe
+    # target role from the student profile is an honest role line; the generic
+    # default headline remains only when neither exists.
+    identity_headline = status_part["headline"]
+    if identity_headline == _DEFAULT_HEADLINE:
+        identity_headline = _first_target_role(student_profile) or _DEFAULT_HEADLINE
     evidence_source_counts = _evidence_source_counts(project_summaries)
     identity = _build_identity(
         display_name=display_name,
-        headline=status_part["headline"],
-        profile=_lookup_candidate_profile(db, str(user_id)),
+        headline=identity_headline,
+        profile=_merge_identity_profile(
+            _lookup_candidate_profile(db, str(user_id)), student_profile
+        ),
         evidence_source_counts=evidence_source_counts,
         public_status="Public passport live" if status_part["is_published"] else "Private only",
         public_path=status_part["public_path"],
@@ -1334,10 +1800,14 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         "skills": skills,
         "projects": project_summaries,
         "evidence_source_counts": evidence_source_counts,
+        "website_proof_project_context": website_proof_project_context,
+        "real_unmapped_proof_context": real_unmapped_proof_context,
         "vault_skill_summaries": vault_skill_summaries,
         "vault_proof_count": len(vault_items),
         "vault_unattached_count": vault_unattached_count,
         "unattached_proof_summary": unattached_proof_summary,
+        # Attached / Suggested / Unattached display sections (owner-only).
+        "attachment_overview": attachment_overview,
         "project_count": len(project_summaries),
         "published_report_count": published_report_count,
         "limitations": limitations,
@@ -1379,11 +1849,12 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     # Only projects with an active public report token are shown publicly, and
     # duplicate rows of the same project are collapsed into a single card so a
     # recruiter never sees the same report featured twice.
-    published_pairs = [
-        (project, build_student_vbr_report(db, pipeline_db, project, owner_id, include_cross_proof=False))
-        for project in projects
-        if project.get("public_report_token")
-    ]
+    published_pairs = _build_report_pairs(
+        db,
+        pipeline_db,
+        [project for project in projects if project.get("public_report_token")],
+        owner_id,
+    )
 
     featured_summaries: list[dict[str, Any]] = []
     featured_groups = _group_project_pairs(published_pairs)
@@ -1393,16 +1864,28 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         claimed_skills = _dedupe_preserve(
             [s for _, report in group for s in (report.get("claimed_skills") or [])]
         )
+        # NAVIGATION-CONSISTENCY (fail-closed): the featured card links to the
+        # representative's published report token, so its evidence badges/proof
+        # chain/top skills come from the REPRESENTATIVE report ONLY — never unioned
+        # across other collapsed published attempts (which would advertise a proof
+        # the linked report does not show).
         evidence_sources = _dedupe_preserve(
-            [src for _, report in group for src in _evidence_sources(report, has_public_report=True)]
+            _evidence_sources(representative_report, has_public_report=True)
         )
         # Public Project → Skill chips: skill name, qualitative status, and the
         # skill's stable slug ONLY (used for in-page anchors to the public
         # skills section). The owner-only skill_report_path is stripped — the
         # public surface never links to private routes.
         public_top_skills = [
-            {"skill": s["skill"], "status": s["status"], "skill_slug": s["skill_slug"]}
-            for s in _project_top_skills([report for _, report in group])
+            {
+                "skill": s["skill"],
+                "status": s["status"],
+                "skill_slug": s["skill_slug"],
+                # Proof types supporting this skill in this published project only
+                # (closed, safe labels — never scores, ids, or the project-wide union).
+                "supporting_proof_types": list(s.get("supporting_proof_types") or []),
+            }
+            for s in _project_top_skills([representative_report])
         ]
         summary = {
             "project_title": representative_report.get("project_title") or "",
@@ -1423,13 +1906,13 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         }
         featured_summaries.append(summary)
 
-    # Top skills are aggregated from all reports in each featured project group,
-    # so the public passport reflects all published evidence across attempts.
-    # Qualitative only, with a safe drilldown sourced exclusively from published reports.
+    # Top skills are aggregated from each featured group's REPRESENTATIVE report —
+    # the published report the featured card links to — so a public skill row never
+    # advertises a proof attached only to a different collapsed attempt. Qualitative
+    # only, with a safe drilldown sourced exclusively from that published report.
     skill_cards = [
-        (featured_summaries[i], report)
-        for i, group in enumerate(featured_groups)
-        for _, report in group
+        (featured_summaries[i], featured_groups[i][0][1])
+        for i in range(len(featured_groups))
     ]
     top_skills = [
         _to_public_skill(s)
@@ -1502,4 +1985,61 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         logger.warning("[VBR] Public Work Passport failed the unsafe-field scan; refusing to serve.")
         raise _not_found()
 
+    return public
+
+
+def build_public_skill_report(
+    db: Any, pipeline_db: Any, slug: str, skill: str
+) -> dict[str, Any]:
+    """Resolve a published passport by ``slug`` and return ONE skill's public report.
+
+    The recruiter-facing drilldown behind a public passport skill row. Fail-closed
+    at every step:
+
+    * 404 unless an *active* (published) passport with this slug exists — a skill
+      report can never be read for an unpublished/unknown passport.
+    * 404 when the requested skill has no proof at all for this candidate, so the
+      route cannot be used to probe arbitrary skill pages.
+    * The internal skill report is built with ``synthesize=False`` plus the
+      deterministic-only synthesis pass — an anonymous request never resolves or
+      calls an LLM provider (this module never calls an LLM).
+    * The response is the centralized :func:`public_safe_skill_report` whitelist
+      projection (which itself runs ``enforce_public_safe``), so private source
+      ids, storage paths, snippets, owner routes, and raw payloads are
+      structurally absent — a questionable payload 404s rather than serves.
+    """
+    if not slug or not skill:
+        raise _not_found()
+
+    passport_row = _get_passport_by_slug(db, slug)
+    if passport_row is None or not passport_row.get("is_published"):
+        raise _not_found()
+
+    owner_id = str(passport_row.get("user_id") or "")
+
+    report = collect_skill_report(db, pipeline_db, owner_id, skill, synthesize=False)
+    report.update(synthesize_skill_report(report, use_llm=False))
+
+    # A skill with zero proof does not exist for this candidate — same generic
+    # 404 as a bad slug, so nothing can be inferred from the difference.
+    overview = report.get("overview") or {}
+    if not int(overview.get("proof_count") or 0):
+        raise _not_found()
+
+    try:
+        public = public_safe_skill_report(report)
+    except PublicReportUnsafeError:
+        logger.warning(
+            "[VBR] Public skill report failed the unsafe-field scan; refusing to serve."
+        )
+        raise _not_found()
+
+    # Safe header context on top of the centralized projection: the canonical
+    # slug (derived, never echoed), the closed qualitative status label, and the
+    # scrubbed category — all label-only, never counts/scores/ids.
+    public["skill_slug"] = skill_slug(public.get("skill") or skill)
+    raw_status = report.get("status")
+    public["status"] = raw_status if raw_status in _STATUS_ORDER else "Supporting evidence"
+    public["category"] = public_safe_skill_name(report.get("category")) or "Other"
+    public["generated_at"] = _now()
     return public

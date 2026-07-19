@@ -102,6 +102,11 @@ __all__ = [
     "PURPOSE_TEST_VALIDATION",
     "PURPOSE_REPOSITORY_CONTEXT",
     "PURPOSE_UNKNOWN_NEEDS_REVIEW",
+    "PURPOSE_INSUFFICIENT_CONTEXT",
+    "UNRESOLVED_PURPOSE_KEYS",
+    "is_countable_code_purpose",
+    "focus_python_symbol",
+    "snippet_is_bare_name_fragment",
     "PURPOSE_HYPERPARAMETER_TUNING",
     "PURPOSE_TEXT_NLP_PROCESSING",
     "PURPOSE_EMBEDDING_GENERATION",
@@ -200,7 +205,7 @@ __all__ = [
 # metadata cannot forge this marker, so it can never assert a strong grade on its
 # own. Bump ``ANALYZER_VERSION`` whenever the grading logic changes materially.
 ANALYZER_NAME = "veribridge_github_ast_focus"
-ANALYZER_VERSION = "2"
+ANALYZER_VERSION = "3"
 
 # Historical analyzer names that still count as our own controlled provenance.
 _TRUSTED_ANALYZERS = frozenset({ANALYZER_NAME.lower()})
@@ -217,7 +222,7 @@ _TRUSTED_ANALYZER_VERSIONS = frozenset({ANALYZER_VERSION})
 # (:func:`trusted_provenance` strips them). Without this split, bumping
 # ``ANALYZER_VERSION`` would discard every previously captured excerpt and
 # collapse all existing rows to repository-level fallback until a full re-scan.
-_HISTORICAL_ANALYZER_VERSIONS = _TRUSTED_ANALYZER_VERSIONS | frozenset({"1"})
+_HISTORICAL_ANALYZER_VERSIONS = _TRUSTED_ANALYZER_VERSIONS | frozenset({"1", "2"})
 
 
 def is_trusted_analyzer(name: str | None) -> bool:
@@ -305,6 +310,10 @@ def build_server_provenance(
     focused_start_line: int | None = None,
     focused_end_line: int | None = None,
     focused_reason: str | None = None,
+    symbol_name: str | None = None,
+    symbol_type: str | None = None,
+    context_start_line: int | None = None,
+    context_end_line: int | None = None,
 ) -> dict[str, Any]:
     """Build the server-only provenance record persisted into
     :data:`TRUSTED_ANALYSIS_TABLE` by the scanner (service role only).
@@ -332,6 +341,18 @@ def build_server_provenance(
         prov["focused_end_line"] = focused_end_line
     if focused_reason:
         prov["evidence_quality_reason"] = focused_reason
+    # Symbol identity + the ANALYZED context window (which may be wider than
+    # the cited target lines). The displayed citation is never rewritten to
+    # pretend the analyzed window was the original target — consumers surface
+    # these as "Analyzed context" beside the honest target lines.
+    if symbol_name:
+        prov["symbol_name"] = str(symbol_name)[:120]
+    if symbol_type:
+        prov["symbol_type"] = str(symbol_type)[:40]
+    if context_start_line is not None:
+        prov["context_start_line"] = context_start_line
+    if context_end_line is not None:
+        prov["context_end_line"] = context_end_line
     return prov
 
 
@@ -1107,6 +1128,11 @@ PURPOSE_CONTAINERIZATION = "containerization"
 PURPOSE_DATA_VISUALIZATION = "data_visualization"
 PURPOSE_REPOSITORY_CONTEXT = "repository_context"
 PURPOSE_UNKNOWN_NEEDS_REVIEW = "unknown_needs_review"
+# The stored window is a sliced FRAGMENT of a larger statement (bare identifier
+# lists such as the continuation lines of a multi-line ``from x import (…)``)
+# — there is not enough context to say what the code does. Always context-only,
+# never countable, until reanalysis captures the containing statement/symbol.
+PURPOSE_INSUFFICIENT_CONTEXT = "insufficient_context"
 
 # Documentation TOPIC purposes (docstring/comment blocks only — never executable).
 PURPOSE_ARCHITECTURE_DOCUMENTATION = "architecture_documentation"
@@ -1232,6 +1258,7 @@ CODE_BLOCK_PURPOSE_LABELS: dict[str, str] = {
     PURPOSE_API_REQUEST_HANDLER: "API request handler",
     PURPOSE_REPOSITORY_CONTEXT: "Repository-level context",
     PURPOSE_UNKNOWN_NEEDS_REVIEW: "Unknown / needs review",
+    PURPOSE_INSUFFICIENT_CONTEXT: "Insufficient context to classify",
 }
 CODE_BLOCK_PURPOSE_KEYS = tuple(CODE_BLOCK_PURPOSE_LABELS.keys())
 
@@ -1459,7 +1486,36 @@ _CODE_BLOCK_PURPOSE_SUMMARIES: dict[str, str] = {
     PURPOSE_UNKNOWN_NEEDS_REVIEW: (
         "The purpose of this block could not be determined; it needs review."
     ),
+    PURPOSE_INSUFFICIENT_CONTEXT: (
+        "Insufficient context to classify this code block; the stored snippet "
+        "needs reanalysis with its containing symbol or a larger window."
+    ),
 }
+
+# Purpose keys that mean the block's purpose is NOT resolved (unknown, sliced
+# fragment, or repository-level only). The platform-wide countability contract:
+# a code row whose purpose is unresolved can NEVER be counted as direct or
+# supporting implementation evidence, whatever its structural grade says —
+# "purpose unknown + counted" must be impossible on every report surface.
+UNRESOLVED_PURPOSE_KEYS = frozenset(
+    {
+        PURPOSE_UNKNOWN_NEEDS_REVIEW,
+        PURPOSE_INSUFFICIENT_CONTEXT,
+        PURPOSE_REPOSITORY_CONTEXT,
+    }
+)
+
+
+def is_countable_code_purpose(key: str | None) -> bool:
+    """True only for a CONCRETE, resolved code purpose.
+
+    Fails closed: an unrecognized key, an empty key, and every unresolved
+    purpose (unknown / insufficient context / repository-level) return False.
+    Countability additionally requires a strong validated grade and an
+    implementation-relevance verdict — this is the purpose half of the contract.
+    """
+    k = str(key or "").strip().lower()
+    return k in CODE_BLOCK_PURPOSE_LABELS and k not in UNRESOLVED_PURPOSE_KEYS
 
 # Each KNOWN weak structural band may only ever carry a purpose from its own
 # honest family — so a stale/inconsistent purpose (e.g. "Model training" riding
@@ -1477,7 +1533,9 @@ _GRADE_PURPOSE_FAMILY: dict[str, frozenset[str]] = {
             PURPOSE_DEPLOYMENT_DOCUMENTATION,
         }
     ),
-    GRADE_IMPORT_ONLY: frozenset({PURPOSE_IMPORTS_DEPENDENCIES}),
+    GRADE_IMPORT_ONLY: frozenset(
+        {PURPOSE_IMPORTS_DEPENDENCIES, PURPOSE_INSUFFICIENT_CONTEXT}
+    ),
     GRADE_CONFIG_OR_CONSTANT: frozenset(
         {
             PURPOSE_CONFIG_PATHS_ARTIFACTS,
@@ -2181,6 +2239,12 @@ def classify_code_block_purpose(
     if kind == BLOCK_KIND_DOCUMENTATION_ONLY:
         return _documentation_purpose(code_snippet)
     if kind == BLOCK_KIND_IMPORT_ONLY:
+        # A window that graded import-only WITHOUT any real import-keyword line
+        # is a sliced bare-name fragment (the continuation lines of a multi-line
+        # import, cut off from its opener). Its honest purpose is "insufficient
+        # context", never "Imports / dependency setup" it cannot prove.
+        if code_snippet and snippet_is_bare_name_fragment(code_snippet):
+            return PURPOSE_INSUFFICIENT_CONTEXT
         return PURPOSE_IMPORTS_DEPENDENCIES
     if kind == BLOCK_KIND_CONFIG_CONSTANTS_ONLY:
         if g == GRADE_ROUTE_DECORATOR_ONLY:
@@ -2614,14 +2678,14 @@ def classify_skill_relevance(
       family — fails closed to cross-skill / context-only. Cross-family evidence
       never counts toward the selected skill.
 
-    ``ml_signal`` is the authoritative GRADE-TIME ML verdict for canonical rows
-    whose trusted body was inspected server-side and then discarded (see
-    :func:`ml_implementation_is_valid`). It is honoured in exactly ONE narrow
-    case: an ``implementation_body`` whose purpose could not be resolved at read
-    time (no re-exposed snippet → unknown/needs-review) but whose trusted body
-    PROVED executable ML at grade time is direct evidence for an ML-family
-    skill (supporting for the NLP/CV/GenAI subfamilies). It never upgrades any
-    other purpose, grade, or skill family.
+    An UNRESOLVED purpose (unknown / insufficient context / repository-level)
+    is ALWAYS context-only — whatever the grade, and whatever the grade-time
+    ``ml_signal`` verdict says. The platform countability contract forbids
+    "purpose unknown + counted": a block may only claim implementation
+    relevance when its purpose is concretely resolved. ``ml_signal`` is kept in
+    the signature for callers (it still drives the READ-TIME GRADE validation
+    in :func:`effective_evidence_grade`) but it can never upgrade an unresolved
+    purpose into implementation relevance anymore.
     """
     p = str(purpose_key or "").strip().lower()
     if p not in CODE_BLOCK_PURPOSE_LABELS:
@@ -2630,17 +2694,7 @@ def classify_skill_relevance(
         return RELEVANCE_DOCUMENTATION_CONTEXT
     if p in _SETUP_PURPOSES:
         return RELEVANCE_SETUP_CONTEXT
-    if p in (PURPOSE_REPOSITORY_CONTEXT, PURPOSE_UNKNOWN_NEEDS_REVIEW):
-        if (
-            p == PURPOSE_UNKNOWN_NEEDS_REVIEW
-            and ml_signal is True
-            and grade == GRADE_IMPLEMENTATION_BODY
-        ):
-            family = skill_family(skill)
-            if family == SKILL_FAMILY_ML:
-                return RELEVANCE_DIRECT_IMPLEMENTATION
-            if family in _ML_SUBFAMILIES:
-                return RELEVANCE_SUPPORTING_IMPLEMENTATION
+    if p in UNRESOLVED_PURPOSE_KEYS:
         return RELEVANCE_CONTEXT_ONLY
 
     family = skill_family(skill)
@@ -2845,6 +2899,55 @@ _SETUP_RE = re.compile(
 )
 _PASS_ELLIPSIS_RE = re.compile(r"^\s*(?:pass|\.\.\.|raise\s+NotImplementedError)\s*$")
 
+# A BARE NAME-LIST line: only comma-separated identifiers (optionally dotted),
+# at most a single trailing closer — the shape of a multi-line import's
+# continuation lines (``    accuracy_score, f1_score,``) or a sliced argument
+# list. Such a line names things without executing anything, so it can never
+# carry an implementation signal on its own.
+_BARE_NAME_LIST_RE = re.compile(
+    r"^[A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*\s*,?\s*[)\]]?$"
+)
+# Python keywords/constants that would make a bare line a real statement, not a
+# name-list fragment (``return``, ``yield``, ``pass``, ``True`` …).
+_NON_FRAGMENT_NAMES = frozenset(
+    {
+        "pass", "break", "continue", "return", "yield", "raise", "else",
+        "try", "finally", "global", "nonlocal", "del", "import", "from",
+        "as", "in", "is", "not", "and", "or", "lambda", "await", "async",
+        "true", "false", "none",
+    }
+)
+
+
+def _is_bare_name_list_line(line: str) -> bool:
+    """True when ``line`` is only a comma-separated bare identifier list."""
+    s = line.strip()
+    if not s or not _BARE_NAME_LIST_RE.match(s):
+        return False
+    names = [n.strip().strip(")]") for n in s.split(",")]
+    names = [n for n in names if n]
+    return bool(names) and all(n.lower() not in _NON_FRAGMENT_NAMES for n in names)
+
+
+def snippet_is_bare_name_fragment(snippet: str | None) -> bool:
+    """True when EVERY substantive line of ``snippet`` is a bare name-list.
+
+    This is the shape of a stored window sliced out of the MIDDLE of a larger
+    statement — most commonly the continuation lines of a parenthesized
+    ``from x import (…)`` persisted without their opening line. Comments and
+    docstrings are ignored; a window with any real import-keyword line, any
+    statement, or any call is NOT a fragment.
+    """
+    if not snippet or not snippet.strip():
+        return False
+    non_blank = [ln for ln in snippet.splitlines() if ln.strip()]
+    body, _ = _strip_docstrings(non_blank)
+    real = [ln for ln in body if ln.strip() and _line_kind(ln) != "comment"]
+    if not real:
+        return False
+    non_import = [ln for ln, f in zip(real, _import_line_flags(real)) if not f]
+    return bool(non_import) and all(_is_bare_name_list_line(ln) for ln in non_import)
+
 # Real implementation signals — ML pipeline, API handler logic, control flow,
 # data access, model artifacts, security checks. Mirrors the service-layer
 # profile signals so the offline scanner and read-time grading agree.
@@ -2991,15 +3094,31 @@ def grade_python_snippet(snippet: str | None) -> str:
     if len(exec_lines) <= 2 and header_lines >= max(3 * len(exec_lines), 3):
         return GRADE_IMPORT_ONLY if import_count > prose_lines else GRADE_COMMENT_OR_DOCSTRING
 
+    # BARE NAME-LIST fragment window: every non-import line is only a
+    # comma-separated identifier list — the continuation lines of a multi-line
+    # ``from x import (…)`` sliced without their opening line (or a stray
+    # argument-list slice). A metric NAME is not a metric CALL: such a window
+    # carries no executable logic of its own and grades as import-only, so it
+    # can never present as an implementation body however many ``*_score``
+    # names it carries.
+    if exec_lines and all(_is_bare_name_list_line(ln) for ln in exec_lines):
+        return GRADE_IMPORT_ONLY
+
     # Bare route decorator(s) + at most a signature/decorator/filler — no body.
     has_route = any(k == "route_decorator" for k in real_kinds)
     body_logic = [k for k in real_kinds if k in ("code",)]
     # Implementation signals are read from EXECUTABLE statements only: import
-    # lines and inline ``#`` comments are excluded, so ``from sklearn.metrics
-    # import accuracy_score`` or a trailing comment can never grade a block as
-    # an implementation body.
+    # lines, inline ``#`` comments, AND bare name-list fragment lines are
+    # excluded, so ``from sklearn.metrics import accuracy_score``, a trailing
+    # comment, or a sliced ``accuracy_score, f1_score,`` continuation can never
+    # grade a block as an implementation body.
     has_impl_signal = bool(
-        _IMPL_SIGNAL_RE.search(_LINE_COMMENT_RE.sub("", "\n".join(exec_lines)))
+        _IMPL_SIGNAL_RE.search(
+            _LINE_COMMENT_RE.sub(
+                "",
+                "\n".join(ln for ln in exec_lines if not _is_bare_name_list_line(ln)),
+            )
+        )
     )
     if has_route and not has_impl_signal and not body_logic:
         return GRADE_ROUTE_DECORATOR_ONLY
@@ -3147,6 +3266,64 @@ def _enclosing_def(tree: ast.AST, anchor: int) -> ast.AST | None:
     return best
 
 
+def _enclosing_statement(tree: ast.AST, anchor: int) -> ast.AST | None:
+    """The INNERMOST simple statement (never a def/class) enclosing 1-indexed
+    ``anchor`` — e.g. the complete multi-line ``from x import (…)`` an anchor
+    landed inside, or a spanning module-level assignment."""
+    best: ast.AST | None = None
+    best_span = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt) or isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            continue
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", None)
+        if start is None or end is None or not (start <= anchor <= end):
+            continue
+        span = end - start
+        if best_span is None or span < best_span:
+            best = node
+            best_span = span
+    return best
+
+
+def focus_python_symbol(source: str, anchor_line: int) -> tuple[str | None, str | None]:
+    """``(symbol_name, symbol_type)`` of the innermost function/class enclosing
+    the 1-indexed ``anchor_line``.
+
+    ``symbol_type`` is ``"function"`` / ``"method"`` (a def nested inside a
+    class, reported as ``Class.name``) / ``"class"``. Returns ``(None, None)``
+    for a module-level anchor or unparseable source. Never raises.
+    """
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return None, None
+    node = _enclosing_def(tree, anchor_line)
+    if node is None:
+        return None, None
+    name = getattr(node, "name", None)
+    if not name:
+        return None, None
+    if isinstance(node, ast.ClassDef):
+        return str(name), "class"
+    node_start = getattr(node, "lineno", None)
+    for parent in ast.walk(tree):
+        if not isinstance(parent, ast.ClassDef):
+            continue
+        p_start = getattr(parent, "lineno", None)
+        p_end = getattr(parent, "end_lineno", None)
+        if (
+            p_start is not None
+            and p_end is not None
+            and node_start is not None
+            and p_start <= node_start <= p_end
+        ):
+            return f"{parent.name}.{name}", "method"
+    return str(name), "function"
+
+
 def _body_start_line(node: ast.AST) -> int:
     """First body line AFTER the signature + docstring (1-indexed)."""
     body = list(getattr(node, "body", []) or [])
@@ -3219,7 +3396,19 @@ def focus_python_range(
     src_lines = source.splitlines()
 
     if node is None:
-        # Module-level anchor — grade the anchor window itself; do not promote.
+        # Module-level anchor — expand to the COMPLETE enclosing statement (a
+        # parenthesized multi-line ``from x import (…)``, a spanning
+        # assignment) so the persisted window is never a mid-statement fragment
+        # whose bare names could read as executable signals. The expanded
+        # window is then graded AS WHAT IT IS (a whole import statement grades
+        # import-only) — expansion never promotes module plumbing.
+        stmt = _enclosing_statement(tree, anchor_start)
+        if stmt is not None:
+            s = max(1, min(getattr(stmt, "lineno", anchor_start), total))
+            e = getattr(stmt, "end_lineno", None) or a_end
+            e = min(max(e, a_end), total, s + max_lines - 1)
+            window = "\n".join(src_lines[s - 1 : e])
+            return s, e, grade_python_snippet(window)
         window = "\n".join(src_lines[anchor_start - 1 : a_end])
         return anchor_start, a_end, grade_python_snippet(window)
 

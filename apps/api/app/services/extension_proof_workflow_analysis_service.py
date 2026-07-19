@@ -260,6 +260,14 @@ _UPLOAD_TRIGGER_TEXTS: tuple[str, ...] = (
     "drag", "drop", "import",
 )
 
+# ML-specific action triggers: the subset of _ACTION_TRIGGER_TEXTS explicit
+# enough to support an inference claim on their own. Generic triggers like
+# "start"/"search"/"send" are NOT included — they occur on any website.
+_ML_ACTION_TRIGGER_TEXTS: tuple[str, ...] = (
+    "predict", "analyze", "analyse", "detect", "classify", "infer",
+    "generate", "compute", "calculate", "translate", "summarize", "evaluate",
+)
+
 # Output signals: page titles or URLs containing these imply results are shown
 _OUTPUT_PAGE_SIGNALS: tuple[str, ...] = (
     "result", "output", "prediction", "detection", "classification",
@@ -704,9 +712,14 @@ def _build_frame_ocr_evidence_summary(
             continue
         if len(s) < 3:
             continue
-        clean_snippets.append(s[:120])   # cap snippet length
+        clean_snippets.append(s)
 
-    top_snippets = clean_snippets[:8]
+    # Display list is length-capped per snippet; classification below must run on
+    # the FULL cleaned text — a single OCR frame often packs multiple marketing
+    # phrases ("no expertise or coding required. Get Started. Watch video.") into
+    # one long snippet, and truncating to 120 chars for display would drop the
+    # signals the page-context/skill matchers depend on.
+    top_snippets = [s[:120] for s in clean_snippets[:8]]
 
     # Detect page context from the combined OCR text
     filtered_visual_summary = " | ".join(clean_snippets)
@@ -2192,12 +2205,27 @@ def _extract_iao_patterns(
     # ── Assemble patterns ─────────────────────────────────────────────────────
 
     if app_type == "ml_app":
-        if upload_events or action_events:
+        # An inference claim requires either an observed file/image input or an
+        # explicitly ML-flavored action click in THIS recording — a generic
+        # "Start"/"Search" click on a site that merely mentions "model"/"image"
+        # in its copy must not become "the app ran inference".
+        ml_action_events = [
+            e for e in action_events
+            if any(s in (e.get("element_text") or "").lower() for s in _ML_ACTION_TRIGGER_TEXTS)
+        ]
+        if upload_events or ml_action_events:
             patterns.append({
                 "input_event":   (upload_events or [None])[0],
-                "action_event":  (action_events or [None])[0],
+                "action_event":  (ml_action_events or action_events or [None])[0],
                 "output_event":  (output_page_events or [None])[0],
                 "pattern_type":  "image_to_prediction",
+            })
+        elif action_events:
+            patterns.append({
+                "input_event":   (input_text_events or [None])[0],
+                "action_event":  action_events[0],
+                "output_event":  (output_page_events or [None])[0],
+                "pattern_type":  "generic_interaction",
             })
     elif app_type == "chatbot":
         if input_text_events or action_events:
@@ -2224,12 +2252,25 @@ def _extract_iao_patterns(
                 "pattern_type": "filter_to_visualization",
             })
     elif app_type == "document":
-        if upload_events or action_events:
+        # A document-processing claim requires an ACTUALLY OBSERVED file-upload
+        # interaction in THIS recording. The app-type classifier is keyword-based
+        # (a site whose copy merely mentions "upload"/"form" can classify as
+        # "document"), so without a real upload event the summary "a file was
+        # uploaded and extracted" would fabricate an action that never happened.
+        # Fall back to reporting the generic interaction that was observed.
+        if upload_events:
             patterns.append({
-                "input_event":   (upload_events or [None])[0],
+                "input_event":   upload_events[0],
                 "action_event":  (action_events or [None])[0],
                 "output_event":  (output_page_events or [None])[0],
                 "pattern_type":  "document_to_extraction",
+            })
+        elif action_events:
+            patterns.append({
+                "input_event":   (input_text_events or [None])[0],
+                "action_event":  action_events[0],
+                "output_event":  (output_page_events or [None])[0],
+                "pattern_type":  "generic_interaction",
             })
     else:
         # Generic: just report what happened
@@ -3916,8 +3957,12 @@ def _build_recruiter_summary(
         if frame_ocr_evidence_summary and frame_ocr_evidence_summary.get("has_ocr_evidence")
         else " visual video evidence not yet available"
     )
+    # Recruiter-facing narratives carry qualitative evidence tiers only. The
+    # numeric score stays in evidence_strength_score for internal routing/debug
+    # but must never read as a candidate-ability score.
+    strength_label = "strong" if score >= 70 else "moderate" if score >= 40 else "limited"
     lines.append(
-        f"Evidence strength: {score}/100 · Confidence: {confidence_label} "
+        f"Evidence strength: {strength_label} · Confidence: {confidence_label} "
         f"(Workflow Timeline Analysis —{ocr_note})."
     )
 
@@ -3983,15 +4028,9 @@ def _build_suggestions(
             "(e.g., triggering an API call, running a model inference, submitting a database query)"
         )
 
-    if github_url:
-        suggestions.append(
-            "Run GitHub Evidence Analysis to verify back-end and code skills from your repository"
-        )
-    else:
-        suggestions.append(
-            "Once GitHub evidence is added, run GitHub analysis to strengthen the overall verification score"
-        )
-
+    # Website Proof suggestions stay within THIS proof type. Cross-proof
+    # recommendations (GitHub analysis, live checks, defenses) belong to the
+    # Proof Studio / Passport synthesis layer, not the workflow analysis.
     return suggestions
 
 

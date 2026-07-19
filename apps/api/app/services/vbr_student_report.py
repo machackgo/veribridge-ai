@@ -26,12 +26,24 @@ process/explanation evidence, not independent proof of authorship.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
 
 from app.services.defense_answer_evidence_service import (
     MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION,
+)
+from app.services.project_defense_inspection_service import (
+    build_project_defense_inspection_cards,
+)
+from app.services.defense_evidence_access_service import (
+    build_recording_playback,
+    build_safe_answer_excerpts,
+)
+from app.services.github_canonical_skill_evidence_adapter import (
+    collect_canonical_github_skill_evidence,
+    repo_identity,
 )
 from app.services.github_skill_evidence_service import (
     is_strong_code_snippet as _is_strong_code_snippet,
@@ -46,6 +58,7 @@ from app.services.github_skill_evidence_service import (
     safe_commit_sha as _safe_commit_sha,
 )
 from app.services.safe_public_url import is_safe_public_url, safe_repo_relative_path
+from app.services.skill_normalization import canonical_skill
 from app.services.skill_evidence_pipeline_service import (
     PipelineNotFoundError,
     SkillEvidencePipelineService,
@@ -53,6 +66,36 @@ from app.services.skill_evidence_pipeline_service import (
 from app.services.vbr_question_generation import get_latest_session, list_session_questions
 from app.services.vbr_session_recording import count_chunks
 from app.services.website_proof_detail_service import get_website_proof_detail
+from app.services.website_skill_proof_focus import (
+    WEBSITE_STRENGTHEN_ACTION,
+    classify_website_purpose,
+    classify_website_skill_relevance,
+    describe_website_purpose,
+    describe_website_skill_relevance,
+    is_direct_website_relevance,
+    map_website_supported_skills,
+    website_app_context,
+    website_behavior_claim,
+    website_evidence_source_types,
+    website_limitation_for,
+    website_output_observed,
+    website_page_context_label,
+    website_purpose_summary,
+    website_recruiter_checklist,
+    website_runtime_claim,
+    website_skill_relevance_summary,
+    website_target_domain,
+    website_unmapped_skill_reason,
+    website_user_action_observed,
+    website_verification_mode_label,
+)
+from app.services.website_skill_proof_focus import (
+    VERIFICATION_MODE_LIVE,
+    VERIFICATION_MODE_RECORDED,
+)
+
+logger = logging.getLogger(__name__)
+
 
 # Qualitative skill evidence labels. Numeric trust/confidence scores are
 # intentionally never surfaced in the skill evidence table.
@@ -96,6 +139,31 @@ _SRC_VIDEO = "Video Evidence"
 _SKILL_UNEVIDENCED_LIMITATION = (
     "Not yet strongly evidenced — treat as a claim pending more proof."
 )
+
+# ── Real-unmapped-proof context (private surfaces only) ──────────────────────
+#
+# Honest per-proof-type reasons for the "Attached proof not yet skill-mapped"
+# layer: REAL analyzed proof is attached to the project, but no exact claimed
+# skill row consumed it. Never generated from metadata alone (a repo URL, a
+# website URL, a filename, an unanswered question plan), never counted as skill
+# evidence, and never included in any public payload.
+_REAL_UNMAPPED_GITHUB_REASON = (
+    "Analyzed source evidence exists, but no exact skill row consumed it yet."
+)
+_REAL_UNMAPPED_WEBSITE_REASON = (
+    "Runtime proof exists, but it is not mapped to a specific skill yet."
+)
+_REAL_UNMAPPED_DOCUMENT_REASON = (
+    "Analyzed document evidence exists, but it is not mapped to a specific skill yet."
+)
+_REAL_UNMAPPED_DEFENSE_REASON = (
+    "Defense evidence exists, but it is not mapped to a specific skill yet."
+)
+
+# Owner-only route prefix for a project's private report preview (mirrors
+# ``vbr_work_passport_service._PRIVATE_PROJECT_REPORT_PREFIX``). Private
+# surfaces only — the public projections never include this context at all.
+_PRIVATE_PROJECT_REPORT_PREFIX = "/student/vbr/projects/"
 
 
 def _defense_area_label(score: int) -> str:
@@ -285,6 +353,116 @@ def _build_pipeline_lookup(pipeline_db: Any, user_id: str, skill_pipeline_ids: l
     return lookup
 
 
+def _project_repo_identities(
+    project: dict[str, Any], github_proof: dict[str, Any] | None
+) -> set[str]:
+    """Resolved ``owner/name`` repo identities this project points at.
+
+    Collapses every repo reference available on the project (its own
+    ``repo_full_name`` / ``repo_url``) and its attached GitHub Proof
+    (``repo_url`` or ``repo_owner``/``repo_name``) into normalized identities via
+    :func:`repo_identity`. These are used ONLY to CORRELATE canonical GitHub code
+    evidence to this project — never as evidence themselves. An empty set means
+    the repo is ambiguous, so Smart GitHub evidence conservatively maps nothing.
+    """
+    gp = github_proof or {}
+    owner = str(gp.get("repo_owner") or "").strip()
+    name = str(gp.get("repo_name") or "").strip()
+    candidates = [
+        project.get("repo_full_name"),
+        project.get("repo_url"),
+        gp.get("repo_url"),
+        f"{owner}/{name}" if owner and name else None,
+    ]
+    return {rid for rid in (repo_identity(c) for c in candidates) if rid}
+
+
+def _collect_github_smart_supported_skills(
+    db: Any,
+    user_id: str,
+    *,
+    project_repo_ids: set[str],
+    claimed_skills: list[str],
+) -> set[str]:
+    """Normalized CLAIMED-skill names backed by real Smart GitHub code evidence.
+
+    Bridges the canonical GitHub skill-evidence engine
+    (:func:`collect_canonical_github_skill_evidence` → the ``skill_evidence`` rows
+    the older GitHub Portfolio & Proof scanner persisted with exact file/line
+    locators) into the Project Report's per-skill supporting-source decision, so a
+    skill can earn "GitHub Proof" from analyzed code even when it is absent from
+    the attached GitHub Proof's ``detected_skills``.
+
+    Strict, conservative matching — a claimed skill is returned ONLY when a
+    canonical GitHub *source-code* row exists that satisfies ALL of:
+
+    * it is genuine analyzed code evidence — every row from the canonical
+      collector carries a repo-relative ``file_path`` (repo metadata / a bare
+      repo URL / ``repo_full_name`` / a source count can never produce one);
+    * its repository identity (``owner/name``) matches one of THIS project's
+      ``project_repo_ids`` — evidence from an unrelated repo never maps, and an
+      ownerless / ambiguous row (empty ``repo_id``) is dropped;
+    * its skill matches a skill THIS project actually CLAIMS (by raw or canonical
+      name) — evidence for a skill the project never claimed can never spray
+      GitHub Proof onto other claimed skills.
+
+    Returns ``set()`` when the repo is ambiguous (no ``project_repo_ids``), when
+    there are no claimed skills, or when nothing matches — so the caller never
+    manufactures GitHub Proof from project metadata alone.
+    """
+    if not project_repo_ids or not claimed_skills:
+        return set()
+
+    # Each claimed skill, indexed by the keys a canonical row could match it by.
+    claimed_by_norm: dict[str, str] = {}
+    claimed_by_canon: dict[str, str] = {}
+    for skill in claimed_skills:
+        norm = _norm(skill)
+        if not norm:
+            continue
+        claimed_by_norm.setdefault(norm, skill)
+        claimed_by_canon.setdefault(_norm(canonical_skill(skill)), skill)
+
+    supported: set[str] = set()
+    try:
+        evidence = collect_canonical_github_skill_evidence(db, user_id)
+    except Exception:  # pragma: no cover - Smart GitHub bridge is best-effort
+        return set()
+    for ev in evidence:
+        # Ownerless / unrelated-repo evidence never maps to this project.
+        if not ev.repo_id or ev.repo_id not in project_repo_ids:
+            continue
+        # Map the row's skill onto a skill THIS project claims (raw or canonical).
+        match = claimed_by_norm.get(ev.skill_key) or claimed_by_canon.get(
+            _norm(ev.canonical_skill_name)
+        )
+        if match is not None:
+            supported.add(_norm(match))
+    return supported
+
+
+def _collect_github_smart_project_evidence_count(
+    db: Any, user_id: str, *, project_repo_ids: set[str]
+) -> int:
+    """Count canonical Smart GitHub code-evidence rows belonging to THIS project.
+
+    Counts every canonical ``skill_evidence`` row whose repository identity
+    matches one of ``project_repo_ids`` — regardless of whether its skill is
+    claimed on the project. Each canonical row carries a real repo-relative
+    ``file_path`` by construction, so this can only ever count genuine analyzed
+    source-code evidence (never repo metadata / a bare repo URL). Used solely to
+    decide whether REAL unmapped GitHub proof exists for the private
+    ``real_unmapped_proof_context`` layer; it never creates a skill row.
+    """
+    if not project_repo_ids:
+        return 0
+    try:
+        evidence = collect_canonical_github_skill_evidence(db, user_id)
+    except Exception:  # pragma: no cover - Smart GitHub bridge is best-effort
+        return 0
+    return sum(1 for ev in evidence if ev.repo_id and ev.repo_id in project_repo_ids)
+
+
 def _evidence_chip_count_for_skill(skill: str, video_chips: list[dict[str, Any]]) -> int:
     target = _norm(skill)
     count = 0
@@ -303,6 +481,7 @@ def _skill_evidence_row(
     document_supported_skills: set[str],
     pipeline_lookup: dict[str, dict[str, Any]],
     video_chips: list[dict[str, Any]],
+    github_smart_skills: set[str] | None = None,
 ) -> dict[str, Any]:
     candidates: list[tuple[str, str]] = []
     # Canonical source labels that contributed evidence for this skill, in a
@@ -337,8 +516,20 @@ def _skill_evidence_row(
             )
             supporting_sources.append(_SRC_DEFENSE)
 
-    if normalized in github_detected_skills:
-        candidates.append((_SUPPORTING_EVIDENCE, "Detected in the attached GitHub Proof."))
+    # GitHub Proof is earned two conservative ways, either of which is real
+    # analyzed code evidence (never repo metadata / a bare repo URL / a source
+    # count): the attached GitHub Proof's own ``detected_skills`` (legacy path),
+    # OR a canonical Smart GitHub code-evidence row (exact file/line locators the
+    # Portfolio & Proof scanner persisted) that matches THIS project's repo AND
+    # this claimed skill. The note stays honest about which path supported it.
+    smart_skills = github_smart_skills or set()
+    if normalized in github_detected_skills or normalized in smart_skills:
+        github_note = (
+            "Backed by analyzed GitHub code evidence located in this project's repository."
+            if normalized in smart_skills
+            else "Detected in the attached GitHub Proof."
+        )
+        candidates.append((_SUPPORTING_EVIDENCE, github_note))
         supporting_sources.append(_SRC_GITHUB)
 
     if normalized in website_supported_skills:
@@ -659,26 +850,119 @@ def _document_skill_locators(db: Any, user_id: str, doc_id: str) -> dict[str, di
         return {}
     if not isinstance(row, dict):
         return {}
-    out: dict[str, dict[str, Any]] = {}
+    from app.services.canonical_evidence_service import document_evidence_object_has_locator
+
+    def _rank(item: dict[str, Any]) -> int:
+        # Prefer an exact page, then a typed block (table/chart/diagram/code/…),
+        # then any real section heading, over a bare keyword match.
+        if item.get("page_number") is not None:
+            return 0
+        if str(item.get("block_type") or "").strip().lower() not in ("", "paragraph", "heading"):
+            return 1
+        if document_evidence_object_has_locator(item):
+            return 2
+        return 3
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for item in row.get("evidence_objects") or []:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("skill_name") or "").strip()
-        key = _norm(name)
-        if not key or key in out:
-            continue
+        key = _norm(str(item.get("skill_name") or "").strip())
+        if key:
+            grouped.setdefault(key, []).append(item)
+    out: dict[str, dict[str, Any]] = {}
+    for key, items in grouped.items():
+        item = min(items, key=_rank)
         page = item.get("page_number")
         snippet = _trace_text(_scrub_score_fragments(str(item.get("snippet") or "")), 200) or None
         # A safe document citation: the section heading the analyzer matched the
         # skill under (e.g. "Methods", "System Design"). This is a structural
         # reference, never raw body text, so it is safe on the public surface.
-        section = _trace_text(str(item.get("section_label") or ""), 80) or None
+        # Default paragraph styles ("Normal") are layout names, not locators.
+        raw_section = str(item.get("section_label") or "").strip()
+        if raw_section.lower() in ("normal", "body text", "default", "default paragraph font"):
+            raw_section = ""
+        section = _trace_text(raw_section, 80) or None
         out[key] = {
             "page_number": int(page) if isinstance(page, int) or (isinstance(page, str) and page.isdigit()) else None,
             "snippet": snippet,
             "citation": section,
+            # Source-native block locator (block-aware extraction; None on
+            # pre-block documents).
+            "block_type": str(item.get("block_type") or "").strip().lower() or None,
+            "block_index": item.get("block_index"),
+            "table_cells": [
+                [str(cell)[:80] for cell in row_cells][:6]
+                for row_cells in (item.get("table_cells") or [])[:8]
+                if isinstance(row_cells, list)
+            ],
+            "visual_description": _trace_text(str(item.get("visual_description") or ""), 200) or None,
+            "nearby_caption": _trace_text(str(item.get("nearby_caption") or ""), 200) or None,
+            "figure_reference": _trace_text(str(item.get("figure_reference") or ""), 60) or None,
+            "has_exact_locator": document_evidence_object_has_locator(item),
         }
     return out
+
+
+# Honest not-retained explanation for the owner-only original-document access
+# descriptor (mirrors the vault's retention copy).
+_DOC_ORIGINAL_NOT_RETAINED_NOTE = (
+    "The original document file was not retained — only verified excerpts and "
+    "locators are stored, so there is no file to open or download."
+)
+
+
+def _document_original_access(db: Any, user_id: str, doc_id: str) -> dict[str, Any]:
+    """Owner-only access descriptor for a document's RETAINED original file.
+
+    Built for the PRIVATE student report only — ``user_id`` is the already
+    ownership-checked project owner, and the artifact is re-gated here through
+    ``can_access_artifact`` (defence in depth). The descriptor carries the
+    opaque artifact id plus the access-gated view/download API routes, which
+    re-check ownership on every request — never a storage path, bucket, or
+    signed URL. Fails closed to an honest ``available=False`` state when no
+    retained original exists (older uploads / retention storage unavailable).
+    The public report builder strips this descriptor entirely.
+    """
+    unavailable: dict[str, Any] = {
+        "available": False,
+        "artifact_id": None,
+        "file_name": None,
+        "mime_type": None,
+        "size_bytes": None,
+        "page_count": None,
+        "open_path": None,
+        "download_path": None,
+        "note": _DOC_ORIGINAL_NOT_RETAINED_NOTE,
+    }
+    if not doc_id:
+        return unavailable
+    try:
+        from app.services import proof_artifact_service
+
+        rows = proof_artifact_service.list_artifacts_for_proof(
+            db, proof_type="document", proof_id=doc_id, artifact_type="document_original"
+        )
+        accessible = [r for r in rows if proof_artifact_service.can_access_artifact(r, user_id)]
+    except Exception:  # pragma: no cover - retention lookup is best-effort
+        return unavailable
+    if not accessible:
+        return unavailable
+    artifact = accessible[-1]
+    artifact_id = str(artifact.get("id") or "")
+    if not artifact_id:
+        return unavailable
+    return {
+        "available": True,
+        "artifact_id": artifact_id,
+        "file_name": artifact.get("file_name"),
+        "mime_type": artifact.get("mime_type"),
+        "size_bytes": artifact.get("size_bytes"),
+        "page_count": artifact.get("page_count"),
+        "open_path": f"/api/v1/proofs/artifacts/{artifact_id}/view",
+        "download_path": f"/api/v1/proofs/artifacts/{artifact_id}/download",
+        "note": None,
+    }
 
 
 _TRANSCRIPTS_TABLE = "vbr_transcripts"
@@ -794,6 +1078,7 @@ def _build_evidence_traces(
     documents: list[dict[str, Any]],
     website_proofs: list[dict[str, Any]],
     website_details: dict[str, dict[str, Any]],
+    website_mapped_skills_by_session: dict[str, list[str]] | None = None,
     analysis: dict[str, Any] | None,
     defense_questions: list[dict[str, Any]],
     video_chips: list[dict[str, Any]],
@@ -831,7 +1116,10 @@ def _build_evidence_traces(
 
     # ── Website Proof ────────────────────────────────────────────────────────
     collect_website_proof_traces(
-        _attach, website_proofs=website_proofs, website_details=website_details
+        _attach,
+        website_proofs=website_proofs,
+        website_details=website_details,
+        mapped_skills_by_session=website_mapped_skills_by_session,
     )
 
     collect_project_defense_traces(
@@ -1144,6 +1432,8 @@ def collect_document_proof_traces(attach: _AttachFn, *, documents: list[dict[str
                     "limitation": _DOC_PROJECT_LIMITATION,
                     "is_publicly_openable": False,
                     "private_evidence_note": _PRIVATE_DOC_NOTE,
+                    # Owner-only retained-original access (public builder blanks it).
+                    "document_original": doc.get("original_document"),
                 }
             )
             continue
@@ -1157,13 +1447,28 @@ def collect_document_proof_traces(attach: _AttachFn, *, documents: list[dict[str
             page = loc.get("page_number")
             snippet = loc.get("snippet")
             citation = loc.get("citation")
+            block_type = str(loc.get("block_type") or "").strip().lower() or None
+            block_label = (
+                block_type.replace("_", " ").title()
+                if block_type and block_type not in ("paragraph", "heading")
+                else None
+            )
             # Bare location labels — the UI renders these as "Doc: Page 2" /
             # "Doc: Citation" / "Doc: Snippet" / "Document" via ``matrixTraceLabel``.
-            # Priority: page locator > section citation > snippet > matched-skill.
+            # Priority: page locator > typed block > section citation > snippet >
+            # matched-skill.
             if page is not None:
                 location_type = "document_page"
                 location_label = f"Page {page}"
-                location_detail = (f"Page {page} · {citation}" if citation else f"Page {page}")
+                location_detail = (
+                    f"Page {page} · {block_label or citation}"
+                    if (block_label or citation)
+                    else f"Page {page}"
+                )
+            elif block_label:
+                location_type = "document_block"
+                location_label = block_label
+                location_detail = f"{citation} · {block_label}" if citation else block_label
             elif citation:
                 location_type = "document_citation"
                 location_label = "Citation"
@@ -1199,12 +1504,22 @@ def collect_document_proof_traces(attach: _AttachFn, *, documents: list[dict[str
                     "page_number": page,
                     "snippet": snippet,
                     "citation": citation,
+                    # Source-native block locator fields (block-aware extraction).
+                    "block_type": block_type,
+                    "block_index": loc.get("block_index"),
+                    "table_cells": loc.get("table_cells") or [],
+                    "visual_description": loc.get("visual_description"),
+                    "nearby_caption": loc.get("nearby_caption"),
+                    "figure_reference": loc.get("figure_reference"),
+                    "has_exact_locator": bool(loc.get("has_exact_locator")),
                     "public_url": None,
                     "public_url_label": None,
                     "timestamp": None,
                     "limitation": _DOC_LIMITATION,
                     "is_publicly_openable": False,
                     "private_evidence_note": _PRIVATE_DOC_NOTE,
+                    # Owner-only retained-original access (public builder blanks it).
+                    "document_original": doc.get("original_document"),
                 }
             )
 
@@ -1214,22 +1529,58 @@ def collect_website_proof_traces(
     *,
     website_proofs: list[dict[str, Any]],
     website_details: dict[str, dict[str, Any]],
+    mapped_skills_by_session: dict[str, list[str]] | None = None,
 ) -> None:
     """Normalize stored Website Proof summaries/artifacts into evidence traces.
 
     Reuses the attach-time summary (target / evidence strength / workflow
-    confidence / supported skills) plus the deeper, already-sanitized artifact
-    summaries hydrated by ``website_proof_detail_service`` (live check, workflow
-    steps, DOM/OCR/visual/NLP summaries). Raw DOM/OCR/provider payloads,
-    screenshots, frame/storage paths and signed URLs are never read here — only
-    the safe summaries the Website Proof pipeline already produced.
+    confidence) plus the deeper, already-sanitized artifact summaries hydrated by
+    ``website_proof_detail_service`` (live check, workflow steps, DOM/OCR/visual/
+    NLP summaries). Raw DOM/OCR/provider payloads, screenshots, frame/storage
+    paths and signed URLs are never read here — only the safe summaries the
+    Website Proof pipeline already produced.
+
+    A trace card's ``skill_names`` come from ``mapped_skills_by_session`` — the
+    CANONICAL Website→skill mapping (``map_website_supported_skills``) the report
+    already computed for this proof, NOT the raw stored ``supported_skills``. The
+    stored list is a hint only, so a trace card can never attribute Website Proof
+    to a skill the observed behaviour did not actually support (keeping the
+    trace cards in lockstep with the skill matrix's supporting-source chips).
     """
+    mapped_by_session = mapped_skills_by_session or {}
     for idx, wp in enumerate(website_proofs, start=1):
         target = str(wp.get("target_website") or "")
         safe = is_safe_public_url(target)
-        supported = [str(s) for s in (wp.get("supported_skills") or [])]
+        session_id = str(wp.get("proof_session_id") or "")
+        # Canonical mapped skills for THIS proof (hint-only stored ``supported_skills``
+        # never rides through as a per-skill trace attribution).
+        supported = [str(s) for s in (mapped_by_session.get(session_id) or [])]
         confidence = str(wp.get("workflow_confidence") or "insufficient")
-        detail = website_details.get(str(wp.get("proof_session_id") or "")) or {}
+        detail = website_details.get(session_id) or {}
+        retained = (
+            detail.get("retained_artifacts")
+            if isinstance(detail.get("retained_artifacts"), dict)
+            else {}
+        )
+        timeline = [
+            event
+            for event in (detail.get("workflow_timeline") or [])
+            if isinstance(event, dict) and event.get("description")
+        ]
+        first_timestamp = next(
+            (event.get("timestamp_label") for event in timeline if event.get("timestamp_label")),
+            None,
+        )
+        website_trace_fields = {
+            "website_replay_available": bool(retained.get("recording_available")),
+            "website_replay_path": retained.get("replay_path"),
+            "website_artifact_id": retained.get("artifact_id"),
+            "website_replay_duration_seconds": retained.get("duration_seconds"),
+            "website_replay_mime_type": retained.get("mime_type"),
+            "website_analysis_path": retained.get("analysis_path"),
+            "website_timeline": timeline,
+            "timestamp_label": first_timestamp,
+        }
 
         # Whether the saved proof carried any deeper safe summary to surface as a
         # dedicated artifact card below (live check / workflow / DOM / OCR / vision
@@ -1286,12 +1637,13 @@ def collect_website_proof_traces(
                 "location_detail": _safe_domain(target) if safe else None,
                 "public_url": target if safe else None,
                 "public_url_label": "Open live website" if safe else None,
-                "timestamp": None,
+                "timestamp": first_timestamp,
                 "limitation": " ".join(website_limitations),
                 "is_publicly_openable": safe,
                 "private_evidence_note": (
                     None if safe else "Deployment URL is private or internal and is not publicly linked."
                 ),
+                **website_trace_fields,
             }
         )
 
@@ -1316,10 +1668,11 @@ def collect_website_proof_traces(
                     "location_detail": _safe_domain(target) if safe else None,
                     "public_url": None,
                     "public_url_label": None,
-                    "timestamp": None,
+                    "timestamp": first_timestamp,
                     "limitation": _WEBSITE_BEHAVIOUR_LIMITATION,
                     "is_publicly_openable": False,
                     "private_evidence_note": _WEBSITE_ARTIFACT_NOTE,
+                    **website_trace_fields,
                 }
             )
 
@@ -1386,6 +1739,180 @@ def collect_website_proof_traces(
             )
 
 
+def collect_website_skill_evidence(
+    *,
+    website_entries: list[dict[str, Any]],
+    website_details: dict[str, dict[str, Any]],
+    claimed_skills: list[str],
+) -> list[dict[str, Any]]:
+    """Skill-specific Website Behavior Evidence for the PRIVATE project report.
+
+    For each attached Website Proof, classify WHAT the recorded page demonstrably
+    showed (closed vocabulary, derived only from the already-safe Website Proof
+    summaries the pipeline persisted — never raw DOM/OCR/visual/provider payloads),
+    then map that observed behaviour to THIS project's claimed skills two ways:
+
+      1. EXTRACTED match — a claimed skill the saved proof's ``supported_skills``
+         explicitly names (the pipeline's own evidence-source match, trusted);
+      2. DERIVED match — a claimed skill the observed behaviour genuinely
+         demonstrates on its own, via ``derive_website_supported_skills`` (an
+         interactive UI, chart/dashboard, request→result API exchange, or model
+         prediction/generation). This mirrors how GitHub Proof maps CODE to a
+         skill; Website Proof maps observed RUNTIME behaviour.
+
+    For every mapped skill we recompute how the observed behaviour relates to it
+    (direct UI evidence vs. product/availability context) plus the honest
+    per-family limitation.
+
+    Honesty invariants (all inherited from ``website_skill_proof_focus``):
+      * a skill is projected iff it is claimed on this project AND either the
+        proof's extracted supported skills name it OR the observed behaviour's
+        relevance is strong enough to derive it — broad ``claimed_skills`` alone
+        never map website evidence;
+      * a GENERIC page (bare deployment availability / documentation / unknown /
+        structural-only UI) derives NOTHING, so it stays project-level only;
+      * implementation-heavy skills (ML / GenAI / DevOps) can only ever read as
+        product-behaviour / availability context (``is_direct_evidence`` False),
+        never implementation proof from a demo UI;
+      * fail-closed — a proof that maps no claimed skill yields ``skills == []``
+        and ``skill_mapping_available == False`` (project-level; gap stated).
+
+    Only closed-vocabulary labels + already-safe summaries leave this function.
+    """
+    claimed_by_norm: dict[str, str] = {}
+    for s in claimed_skills:
+        n = _norm(str(s))
+        if n and n not in claimed_by_norm:
+            claimed_by_norm[n] = str(s)
+
+    out: list[dict[str, Any]] = []
+    for wp in website_entries:
+        target = str(wp.get("target_website") or "")
+        # Never echo a raw private/internal deployment URL into the report.
+        safe_target = target if is_safe_public_url(target) else ""
+        sid = str(wp.get("proof_session_id") or "")
+        detail = website_details.get(sid) or {}
+        live = detail.get("live_check") if isinstance(detail.get("live_check"), dict) else None
+
+        purpose_key = classify_website_purpose(
+            workflow_summary=detail.get("workflow_summary"),
+            workflow_steps=detail.get("workflow_steps") or [],
+            dom_summary=detail.get("dom_summary"),
+            ocr_summary=detail.get("ocr_summary"),
+            visual_summary=detail.get("visual_summary"),
+            live_check=live,
+            page_context=detail.get("page_context"),
+            extra_signals=detail.get("extra_signals") or [],
+        )
+
+        # Which safe pipeline summaries backed this proof (closed labels only —
+        # never their raw text). Surfaces the DOM / OCR / visual / NLP / runtime
+        # provenance behind the mapping honestly.
+        evidence_source_types = website_evidence_source_types(
+            has_dom=bool(detail.get("dom_summary")),
+            has_ocr=bool(detail.get("ocr_summary")),
+            has_visual=bool(detail.get("visual_summary")),
+            has_nlp=bool(detail.get("workflow_summary")),
+            live_reachable=bool(live and live.get("is_reachable")),
+        )
+
+        # THE canonical Website→skill mapping (single source of truth): extracted
+        # matches (the proof's stored ``supported_skills``) first, then derived
+        # matches (the observed behaviour genuinely demonstrates a claimed skill).
+        # The Work Passport, Project Report, and Skill Report all consume this same
+        # mapping, so they can never disagree about which skill this Website Proof
+        # supports in this project.
+        skill_rows: list[dict[str, Any]] = []
+        for display, basis in map_website_supported_skills(
+            purpose_key,
+            extracted_supported_skills=[str(s) for s in (wp.get("supported_skills") or [])],
+            claimed_skills=list(claimed_by_norm.values()),
+        ):
+            relevance_key = classify_website_skill_relevance(purpose_key, skill=display)
+            skill_rows.append(
+                {
+                    "skill_name": display,
+                    "relevance_key": relevance_key,
+                    "relevance_label": describe_website_skill_relevance(relevance_key, display),
+                    "relevance_summary": website_skill_relevance_summary(relevance_key, display),
+                    "limitation": website_limitation_for(relevance_key, display),
+                    "is_direct_evidence": is_direct_website_relevance(relevance_key),
+                    "mapping_basis": basis,
+                }
+            )
+
+        # When nothing mapped, this Website Proof stays PROJECT-LEVEL only — carry a
+        # safe reason + strengthening action so the gap is legible (never faked into
+        # a skill). When a skill DID map, these stay empty.
+        mapped = bool(skill_rows)
+
+        # ── Website Runtime Inspection fields (Sections 1/2/4) ────────────────
+        # A recruiter can DIRECTLY verify only when a public safe URL survived —
+        # the attach-time public URL or the live-check's already-safe final URL.
+        # A local/private capture yields neither, so it stays recorded-replay-only
+        # and never links a private host.
+        live_final = str((live or {}).get("final_url") or "").strip()
+        safe_live_final = live_final if (live_final and is_safe_public_url(live_final)) else ""
+        has_public_live = bool(safe_target or safe_live_final)
+        verification_mode = VERIFICATION_MODE_LIVE if has_public_live else VERIFICATION_MODE_RECORDED
+        target_domain = website_target_domain(
+            safe_target or None, safe_live_final or None, safe_target or None
+        )
+        page_title = str((live or {}).get("page_title") or "").strip()[:160] or None
+        # Section 1 runtime claim keyed by the PRIMARY mapped skill's relevance
+        # (empty when nothing mapped — the unmapped reason speaks instead).
+        runtime_claim = (
+            website_runtime_claim(skill_rows[0]["relevance_key"], skill_rows[0]["skill_name"])
+            if mapped
+            else ""
+        )
+        out.append(
+            {
+                "target_website": safe_target,
+                "website_replay_available": bool(
+                    (detail.get("retained_artifacts") or {}).get("recording_available")
+                    if isinstance(detail.get("retained_artifacts"), dict)
+                    else False
+                ),
+                "website_replay_path": (
+                    (detail.get("retained_artifacts") or {}).get("replay_path")
+                    if isinstance(detail.get("retained_artifacts"), dict)
+                    else None
+                ),
+                "website_artifact_id": (
+                    (detail.get("retained_artifacts") or {}).get("artifact_id")
+                    if isinstance(detail.get("retained_artifacts"), dict)
+                    else None
+                ),
+                "website_analysis_path": (
+                    (detail.get("retained_artifacts") or {}).get("analysis_path")
+                    if isinstance(detail.get("retained_artifacts"), dict)
+                    else None
+                ),
+                "website_timeline": list(detail.get("workflow_timeline") or []),
+                "behavior_claim": website_behavior_claim(purpose_key),
+                "website_purpose_key": purpose_key,
+                "website_purpose_label": describe_website_purpose(purpose_key),
+                "website_purpose_summary": website_purpose_summary(purpose_key),
+                "runtime_claim_observed": runtime_claim,
+                "target_domain": target_domain or "",
+                "app_context": website_app_context(target_domain, page_title) or "",
+                "page_context_label": website_page_context_label(detail.get("page_context")) or "",
+                "user_action_observed": website_user_action_observed(purpose_key) or "",
+                "output_observed": website_output_observed(purpose_key) or "",
+                "verification_mode": verification_mode,
+                "verification_mode_label": website_verification_mode_label(verification_mode),
+                "recruiter_checklist": website_recruiter_checklist(verification_mode, purpose_key),
+                "evidence_source_types": evidence_source_types,
+                "skills": skill_rows,
+                "skill_mapping_available": mapped,
+                "unmapped_reason": "" if mapped else website_unmapped_skill_reason(purpose_key),
+                "strengthen_action": "" if mapped else WEBSITE_STRENGTHEN_ACTION,
+            }
+        )
+    return out
+
+
 def collect_project_defense_traces(
     attach: _AttachFn,
     *,
@@ -1407,6 +1934,16 @@ def collect_project_defense_traces(
         summary = _scrub_score_fragments(
             str(analysis.get("recruiter_summary") or analysis.get("transcript_summary") or "")
         )
+        ownership_score = int(analysis.get("ownership_signal_score") or 0)
+        ownership_established = ownership_score >= 60
+        defense_detail = (
+            "Process/contribution evidence: the candidate described their contribution and project decisions."
+            if ownership_established
+            else (
+                "Project-understanding evidence: the candidate discussed the project, but personal "
+                "ownership was not established by this defense."
+            )
+        )
         attach(
             {
                 "trace_id": "project-defense",
@@ -1415,11 +1952,14 @@ def collect_project_defense_traces(
                 "skill_names": defense_skills,
                 "qualitative_status": _PARTIALLY_DEMONSTRATED if explained else _SUPPORTING_EVIDENCE,
                 "safe_summary": _trace_text(
-                    summary or "The candidate explained their own work and approach during the Project Defense."
+                    summary
+                    or (
+                        "The candidate described their contribution and approach during the Project Defense."
+                        if ownership_established
+                        else "The candidate discussed the project during the Project Defense; personal ownership was not established."
+                    )
                 ),
-                "safe_detail": (
-                    "Process/ownership evidence: the candidate explained how and why they built the project."
-                ),
+                "safe_detail": defense_detail,
                 "evidence_anchor": "project-defense",
                 "location_type": "defense_overview",
                 "location_label": "overall explanation",
@@ -1432,6 +1972,7 @@ def collect_project_defense_traces(
                 "private_evidence_note": "Full defense answers are summarized; the raw transcript is not exposed.",
             }
         )
+
 
     for idx, question in enumerate(defense_questions, start=1):
         if not question.get("answered"):
@@ -1557,6 +2098,386 @@ def _enrich_skill_row(
     return row
 
 
+def _real_unmapped_entry(
+    *,
+    proof_type: str,
+    project_id: str,
+    project_title: str,
+    reason: str,
+    safe_summary: str,
+    evidence_label: str | None = None,
+    observed_at: str | None = None,
+    source_count: int | None = None,
+    inspection_anchor: str | None = None,
+) -> dict[str, Any]:
+    """One private-safe real-unmapped-proof context entry (closed field set).
+
+    Only safe display fields: never a proof/session/evidence id, storage path,
+    signed URL, raw text, or numeric score. Optional fields are omitted when
+    unknown rather than emitted as nulls."""
+    entry: dict[str, Any] = {
+        "proof_type": proof_type,
+        "project_id": project_id,
+        "project_title": project_title,
+        "report_url": f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report",
+        "reason": reason,
+        "safe_summary": _trace_text(safe_summary),
+    }
+    if evidence_label:
+        entry["evidence_label"] = evidence_label
+    if observed_at:
+        entry["observed_at"] = observed_at
+    if isinstance(source_count, int) and source_count > 0:
+        entry["source_count"] = source_count
+    if inspection_anchor:
+        entry["inspection_anchor"] = inspection_anchor
+    return entry
+
+
+def _build_real_unmapped_proof_context(
+    *,
+    project_id: str,
+    project_title: str,
+    skill_evidence: list[dict[str, Any]],
+    github_proof: dict[str, Any] | None,
+    github_code_evidence: list[dict[str, Any]],
+    github_smart_evidence_count: int,
+    website_entries: list[dict[str, Any]],
+    website_skill_evidence: list[dict[str, Any]],
+    document_entries: list[dict[str, Any]],
+    analysis: dict[str, Any] | None,
+    defense_questions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """REAL analyzed, project-attached proof that no exact skill row consumed.
+
+    The honesty layer between "exact skill-mapped evidence" and "hidden": when a
+    project carries genuinely analyzed proof (analyzed GitHub source code,
+    recorded/analyzed website runtime behaviour, an analyzed document, an
+    answered+analyzed Project Defense) but the skill matrix mapped none of it to
+    an exact claimed skill row, that proof is surfaced HERE — clearly separated
+    from skill evidence — instead of disappearing.
+
+    Fail-closed qualification per proof type (metadata is NEVER proof):
+
+    * GitHub — requires analyzed source evidence with real provenance: canonical
+      Smart GitHub code rows for THIS project's repo, line-level
+      ``skill_code_evidence`` from the attached analyzed proof, or the analyzed
+      proof's own ``detected_skills`` / ``evidence_files``. A bare repo URL /
+      ``repo_full_name`` / an attached-but-unanalyzed link qualifies nothing.
+    * Website — requires an attached Website Proof from a REAL recorded/analyzed
+      proof session (``proof_session_id`` present — attach-time validation only
+      accepts sessions with a completed analysis) whose canonical mapping
+      consumed no skill. A bare live/deployment URL qualifies nothing.
+    * Document — requires an analyzed document (explicit ``analyzed`` status or
+      recovered analyzer evidence locators) that matched no claimed skill.
+      A filename / upload metadata alone qualifies nothing.
+    * Project Defense — requires an answered, ANALYZED defense session
+      (``analysis`` present) whose explanation evidence mapped to no claimed
+      skill row. A question plan / unanswered defense qualifies nothing.
+
+    Entries are context only. They are never skill evidence, never counted in
+    proof filter counts / capability aggregates / graph nodes, and never present
+    on any public payload.
+    """
+    out: list[dict[str, Any]] = []
+
+    # Proof types an exact skill row already consumed — those never duplicate
+    # into this layer (the exact row IS the evidence surface for them).
+    consumed_proof_types = {
+        str(src)
+        for row in skill_evidence
+        for src in (row.get("supporting_sources") or [])
+    }
+
+    # ── GitHub Proof ──────────────────────────────────────────────────────────
+    if _SRC_GITHUB not in consumed_proof_types:
+        gp = github_proof or {}
+        analyzed_detected = [str(s) for s in (gp.get("detected_skills") or []) if str(s).strip()]
+        analyzed_files = [str(f) for f in (gp.get("evidence_files") or []) if str(f).strip()]
+        analyzed_item_count = github_smart_evidence_count + len(github_code_evidence)
+        has_real_github_evidence = bool(
+            analyzed_item_count or analyzed_detected or analyzed_files
+        )
+        if has_real_github_evidence:
+            summary = _scrub_score_fragments(str(gp.get("public_safe_summary") or "")) or (
+                "Analyzed GitHub source-code evidence is attached to this project, but it is "
+                "not mapped to a specific claimed skill yet."
+            )
+            out.append(
+                _real_unmapped_entry(
+                    proof_type=_SRC_GITHUB,
+                    project_id=project_id,
+                    project_title=project_title,
+                    reason=_REAL_UNMAPPED_GITHUB_REASON,
+                    safe_summary=summary,
+                    evidence_label="Analyzed source evidence",
+                    source_count=analyzed_item_count or None,
+                    inspection_anchor="github-proof",
+                )
+            )
+
+    # ── Website Proof ─────────────────────────────────────────────────────────
+    # One honest entry per distinct unmapped observed-behaviour classification.
+    # ``website_skill_evidence`` is parallel to ``website_entries`` (one per
+    # attached proof, in order), so zip re-associates each mapping with its
+    # session-backed entry.
+    seen_website_focus: set[str] = set()
+    for entry, wse in zip(website_entries, website_skill_evidence):
+        if wse.get("skill_mapping_available"):
+            continue  # consumed as exact skill evidence — never duplicated here
+        # A REAL recorded/analyzed proof session is required: attach-time
+        # validation only accepts sessions with a completed analysis, so a
+        # session id is the honest provenance marker. A URL-only metadata row
+        # (no session) is not proof and must never appear in this layer.
+        if not str(entry.get("proof_session_id") or "").strip():
+            continue
+        focus_key = str(wse.get("website_purpose_key") or "")
+        if focus_key in seen_website_focus:
+            continue
+        seen_website_focus.add(focus_key)
+        summary = (
+            str(wse.get("website_purpose_summary") or "").strip()
+            or str(wse.get("behavior_claim") or "").strip()
+            or "A recorded website runtime proof is attached to this project, but it is not "
+            "mapped to a specific claimed skill yet."
+        )
+        source_types = [str(t) for t in (wse.get("evidence_source_types") or []) if str(t).strip()]
+        out.append(
+            _real_unmapped_entry(
+                proof_type=_SRC_WEBSITE,
+                project_id=project_id,
+                project_title=project_title,
+                reason=str(wse.get("unmapped_reason") or "").strip() or _REAL_UNMAPPED_WEBSITE_REASON,
+                safe_summary=summary,
+                evidence_label=str(wse.get("website_purpose_label") or "").strip() or "Runtime proof",
+                source_count=len(source_types) or None,
+                inspection_anchor="website-proof",
+            )
+        )
+
+    # ── Document Proof ────────────────────────────────────────────────────────
+    for doc in document_entries:
+        if doc.get("skills"):
+            continue  # matched a claimed skill — consumed as exact skill evidence
+        # Real analyzed evidence only: an explicit analyzed status or recovered
+        # analyzer locators. A filename / upload metadata row qualifies nothing.
+        if not doc.get("has_analyzed_evidence"):
+            continue
+        title = str(doc.get("title") or "Document")
+        out.append(
+            _real_unmapped_entry(
+                proof_type=_SRC_DOCUMENT,
+                project_id=project_id,
+                project_title=project_title,
+                reason=_REAL_UNMAPPED_DOCUMENT_REASON,
+                safe_summary=(
+                    f"{title} was analyzed and is attached as project context, but it is not "
+                    "mapped to a specific claimed skill yet."
+                ),
+                evidence_label="Analyzed document evidence",
+                inspection_anchor="documents",
+            )
+        )
+
+    # ── Project Defense ───────────────────────────────────────────────────────
+    if _SRC_DEFENSE not in consumed_proof_types and analysis is not None:
+        answered_count = sum(1 for q in defense_questions if q.get("answered"))
+        out.append(
+            _real_unmapped_entry(
+                proof_type=_SRC_DEFENSE,
+                project_id=project_id,
+                project_title=project_title,
+                reason=_REAL_UNMAPPED_DEFENSE_REASON,
+                safe_summary=(
+                    "An answered and analyzed Project Defense session is attached to this "
+                    "project, but its explanation evidence is not mapped to a specific "
+                    "claimed skill yet."
+                ),
+                evidence_label="Analyzed defense evidence",
+                source_count=answered_count or None,
+                inspection_anchor="project-defense",
+            )
+        )
+
+    return out
+
+
+def _owned_rows(db: Any, table: str, user_id: str, *, user_key: str = "user_id") -> list[dict[str, Any]]:
+    """Best-effort owner-scoped bulk read for canonical relationship hydration."""
+    from app.services.canonical_project_evidence import owned_rows
+
+    return owned_rows(db, table, user_id, user_key=user_key)
+
+
+def _canonical_website_proofs_for_project(
+    db: Any, *, user_id: str, project_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Analyzed Website Proofs with a deterministic direct project edge.
+
+    ``project_ids`` is the duplicate group of ONE logical project, so a proof
+    the owner attached to any duplicate row still surfaces on this report.
+    """
+    from app.services.canonical_project_evidence import canonical_website_session_ids
+
+    session_ids = set(
+        canonical_website_session_ids(db, user_id=user_id, project_ids=project_ids)
+    )
+    if not session_ids:
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    # Deterministic attachment order: oldest analysis first, session id as the
+    # tiebreak. The bulk read has no ordering guarantee, and an unordered result
+    # would let a project with several attached Website Proofs render them (and
+    # pick "first" anywhere downstream) in a different order per request.
+    analysis_rows = sorted(
+        _owned_rows(db, "workflow_analysis_results", user_id),
+        key=lambda row: (
+            str(row.get("created_at") or ""),
+            str(row.get("proof_session_id") or ""),
+        ),
+    )
+    for row in analysis_rows:
+        sid = str(row.get("proof_session_id") or "")
+        if not sid or sid not in session_ids or sid in seen:
+            continue
+        seen.add(sid)
+        out.append(
+            {
+                "proof_session_id": sid,
+                "target_website": str(row.get("target_website") or ""),
+                "evidence_strength_score": int(row.get("evidence_strength_score") or 0),
+                "workflow_confidence": str(row.get("workflow_confidence") or "insufficient"),
+                "supported_skills": [
+                    str(skill) for skill in (row.get("supported_skills") or []) if str(skill).strip()
+                ],
+                "relationship_source": "canonical_direct",
+            }
+        )
+    return out
+
+
+def _canonical_proof_ids_for_project(
+    db: Any, *, user_id: str, project_ids: list[str], proof_type: str
+) -> list[str]:
+    """Proof ids of ``proof_type`` with a deterministic direct edge to this project.
+
+    Delegates to the shared canonical resolver (see
+    ``canonical_project_evidence``): explicit finalization writes only, scoped
+    by owner + the exact project ids, deterministically ordered.
+    """
+    from app.services.canonical_project_evidence import canonical_proof_ids_for_projects
+
+    return canonical_proof_ids_for_projects(
+        db, user_id=user_id, project_ids=project_ids, proof_type=proof_type
+    )
+
+
+def _canonical_github_proof_for_project(
+    db: Any, *, user_id: str, project_ids: list[str], project_identity: str
+) -> dict[str, Any] | None:
+    """Attached GitHub Proof summary recovered from canonical relationship rows.
+
+    Read-time parity with :func:`_canonical_website_proofs_for_project`: a
+    GitHub Proof the owner explicitly finalized against this project must not
+    disappear just because the legacy ``vbr_projects.metadata.attached_proofs``
+    write was missed. Selection is the shared deterministic rule (identity gate
+    → analysis-complete first → newest edge); the summary is rebuilt by the
+    SAME safe builder the attach flow uses (never raw ``repo_metadata``).
+    """
+    from app.services.canonical_project_evidence import resolve_canonical_github_summary
+
+    # Lazy import mirrors the existing attach-flow pattern and avoids a
+    # service import cycle.
+    from app.services.vbr_project_defense import _github_proof_summary
+
+    return resolve_canonical_github_summary(
+        db,
+        user_id=user_id,
+        project_ids=project_ids,
+        project_identity=project_identity,
+        build_summary=_github_proof_summary,
+    )
+
+
+def _canonical_documents_for_project(
+    db: Any, *, user_id: str, project_ids: list[str], known_document_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Attached Document Proof summaries recovered from canonical rows.
+
+    Same read-time parity for Document Proof: an owner-finalized document whose
+    canonical relationship row exists but whose legacy metadata write was
+    missed still surfaces on the report. Documents already present in the
+    project metadata (``known_document_ids``) are skipped so nothing is ever
+    duplicated; summaries come from the SAME safe builder the attach flow uses.
+    """
+    out: list[dict[str, Any]] = []
+    for proof_id in _canonical_proof_ids_for_project(
+        db, user_id=user_id, project_ids=project_ids, proof_type="document"
+    ):
+        if proof_id in known_document_ids:
+            continue
+        try:
+            from app.services.vbr_project_defense import _document_summaries
+
+            summaries = _document_summaries(db, user_id, [proof_id])
+        except Exception:  # pragma: no cover - canonical hydration is best-effort
+            continue
+        for summary in summaries:
+            summary["relationship_source"] = "canonical_direct"
+            out.append(summary)
+    return out
+
+
+def _log_evidence_discovery_diagnostics(report: dict[str, Any], *, user_id: str) -> None:
+    """Development-only evidence-discovery trace: which owned rows the report
+    found, what counted, and why the rest was excluded. IDs and closed-vocabulary
+    states only — never tokens, URLs, transcripts, or file contents."""
+    from app.core.config import get_settings
+
+    try:
+        if get_settings().environment.strip().lower() == "production":
+            return
+    except Exception:  # pragma: no cover - settings failure must never break reports
+        return
+    cem = report.get("claim_evidence_map") if isinstance(report.get("claim_evidence_map"), dict) else {}
+    citations = [c for c in (cem.get("citations") or []) if isinstance(c, dict)]
+    excluded_reasons: dict[str, int] = {}
+    for citation in citations:
+        if citation.get("counted_as_direct_evidence"):
+            continue
+        reason = str(
+            citation.get("identity_state")
+            or ("analysis_pending" if citation.get("analysis_pending") else "")
+            or citation.get("evidence_status")
+            or "context_only"
+        )
+        excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
+    logger.info(
+        "evidence-discovery user=%s project=%s github_proof=%s traces=%d website_counted=%d "
+        "website_excluded=%d documents=%d defense_inspection=%d cem_citations=%d cem_counted=%d "
+        "relationships=%s excluded_reasons=%s",
+        user_id,
+        report.get("project_id"),
+        bool(report.get("github_proof")),
+        len(report.get("evidence_traces") or []),
+        (report.get("evidence_package") or {}).get("website_proofs_count"),
+        (report.get("evidence_package") or {}).get("website_proofs_excluded_count"),
+        (report.get("evidence_package") or {}).get("documents_count"),
+        len(report.get("project_defense_inspection") or []),
+        len(citations),
+        sum(1 for c in citations if c.get("counted_as_direct_evidence")),
+        sorted(
+            {
+                str((c.get("project_relationship") or {}).get("state") or "unknown")
+                for c in citations
+                if isinstance(c.get("project_relationship"), dict)
+            }
+        ),
+        excluded_reasons,
+    )
+
+
 def build_student_vbr_report(
     db: Any,
     pipeline_db: Any,
@@ -1585,9 +2506,79 @@ def build_student_vbr_report(
 
     claimed_skills: list[str] = [str(s) for s in (metadata.get("claimed_skills") or [])]
 
+    # One logical project can span several duplicate ``vbr_projects`` rows (one
+    # per proof form the student started from). Canonical evidence resolution
+    # covers the whole duplicate group so a proof the owner attached to any
+    # duplicate row still surfaces on this report — the SAME grouping the
+    # Project Defense workspace uses.
+    project_group_ids = [str(project.get("id") or "")]
+    try:
+        from app.services.vbr_project_defense import _find_project_group
+
+        group = _find_project_group(db, user_id, str(project.get("id") or ""))
+        if group:
+            project_group_ids = [str(p.get("id") or "") for p in group if p.get("id")]
+    except Exception:  # pragma: no cover - grouping is a read-time widening only
+        pass
+
+    from app.services.canonical_project_evidence import (
+        github_identity_conflict,
+        project_repo_identity,
+    )
+
+    identity = project_repo_identity(project)
+
     github_proof = attached.get("github_proof") if isinstance(attached.get("github_proof"), dict) else None
-    documents_raw = attached.get("documents") if isinstance(attached.get("documents"), list) else []
-    website_proofs_raw = attached.get("website_proofs") if isinstance(attached.get("website_proofs"), list) else []
+    # Repository-identity read gate: a legacy metadata summary whose repository
+    # contradicts the project's own declared repository must not leak an
+    # unrelated repository into this report (see canonical resolver rule 4).
+    if github_proof is not None and github_identity_conflict(identity, github_proof.get("repo_url")):
+        github_proof = None
+    documents_raw = list(attached.get("documents")) if isinstance(attached.get("documents"), list) else []
+    website_proofs_raw = list(attached.get("website_proofs")) if isinstance(attached.get("website_proofs"), list) else []
+    # Canonical direct links are equally authoritative for GitHub and Document
+    # Proof (read-time parity with the Website fallback below): a proof the
+    # owner explicitly finalized against this project surfaces even when the
+    # legacy ``attached_proofs`` metadata write was missed. Deduped by proof id;
+    # vault-only / suggested / mismatched proof is never admitted because the
+    # helpers read only ``directly_linked`` finalization rows.
+    if github_proof is None:
+        github_proof = _canonical_github_proof_for_project(
+            db, user_id=user_id, project_ids=project_group_ids, project_identity=identity
+        )
+    known_document_ids = {
+        str((doc or {}).get("document_evidence_id") or "")
+        for doc in documents_raw
+        if isinstance(doc, dict)
+    }
+    documents_raw.extend(
+        _canonical_documents_for_project(
+            db,
+            user_id=user_id,
+            project_ids=project_group_ids,
+            known_document_ids=known_document_ids,
+        )
+    )
+    # Canonical direct links are equally authoritative and prevent a Website
+    # Proof whose session/artifact carries this project_id from disappearing just
+    # because legacy project metadata was not updated. Dedupe by session; no
+    # suggested/vault/mismatched proof is admitted by the helper.
+    known_website_sessions = {
+        str(row.get("proof_session_id") or "")
+        for row in website_proofs_raw
+        if isinstance(row, dict)
+    }
+    for canonical_wp in _canonical_website_proofs_for_project(
+        db, user_id=user_id, project_ids=project_group_ids
+    ):
+        canonical_sid = str(canonical_wp.get("proof_session_id") or "")
+        if canonical_sid in known_website_sessions:
+            for existing in website_proofs_raw:
+                if isinstance(existing, dict) and str(existing.get("proof_session_id") or "") == canonical_sid:
+                    existing["relationship_source"] = "canonical_direct"
+                    break
+        else:
+            website_proofs_raw.append(canonical_wp)
     skill_pipeline_ids = [str(p) for p in (attached.get("skill_pipeline_ids") or []) if p]
 
     # Normalized claimed-skill lookup (normalized → canonical display name). A
@@ -1617,27 +2608,52 @@ def build_student_vbr_report(
         # A document is therefore mapped ONLY to claimed skills the analyzer
         # explicitly referenced in it — never to every claimed skill. Order
         # follows ``claimed_skills`` so the output is deterministic.
-        matched_norms = {
-            _norm(s) for s in (doc.get("skills") or []) if _norm(s) in claimed_by_norm
-        }
-        matched_norms.update(key for key in locators if key in claimed_by_norm)
-        matched = [claimed_by_norm[key] for key in claimed_by_norm if key in matched_norms]
+        #
+        # A project whose owner never filled in ``claimed_skills`` has nothing
+        # to intersect with — there the analyzer's own matched skills stand
+        # (detection, not a student claim; the matrix rows say so explicitly).
+        if claimed_by_norm:
+            matched_norms = {
+                _norm(s) for s in (doc.get("skills") or []) if _norm(s) in claimed_by_norm
+            }
+            matched_norms.update(key for key in locators if key in claimed_by_norm)
+            matched = [claimed_by_norm[key] for key in claimed_by_norm if key in matched_norms]
+        else:
+            matched = [str(s) for s in (doc.get("skills") or []) if str(s).strip()]
+            matched_norms = {_norm(s) for s in matched}
 
         document_entries.append(
             {
                 "title": str(doc.get("title") or "Document"),
                 "source_type": doc.get("source_type"),
                 "status": doc.get("status"),
+                # Owner-only retained-original access (opaque artifact id +
+                # access-gated routes; honest available=False when the file was
+                # never retained). Stripped by the public report builder.
+                "original_document": _document_original_access(
+                    db, user_id, str(doc.get("document_evidence_id") or "")
+                ),
                 "skills": matched,
                 # Keep only locators for matched (claimed) skills so an
                 # ``evidence_objects`` entry for a skill the project never claimed
                 # can never leak through as a document locator.
                 "skill_locators": {key: val for key, val in locators.items() if key in matched_norms},
+                # Whether REAL analyzer output exists for this document (explicit
+                # analyzed status or recovered evidence locators). Drives the
+                # real-unmapped-proof layer only — filename/upload metadata alone
+                # stays False and can never qualify as proof.
+                "has_analyzed_evidence": bool(locators)
+                or str(doc.get("status") or "").strip().lower() == "analyzed",
             }
         )
 
     documents = [
-        {"title": e["title"], "source_type": e["source_type"], "status": e["status"]}
+        {
+            "title": e["title"],
+            "source_type": e["source_type"],
+            "status": e["status"],
+            "original_document": e["original_document"],
+        }
         for e in document_entries
     ]
     # Skills the matrix may mark as Document-Proof-supported — identical to the set
@@ -1655,6 +2671,7 @@ def build_student_vbr_report(
             "evidence_strength": _website_evidence_label(int(wp.get("evidence_strength_score") or 0)),
             "workflow_confidence": str(wp.get("workflow_confidence") or "insufficient"),
             "supported_skills": [str(s) for s in (wp.get("supported_skills") or [])],
+            "relationship_source": str(wp.get("relationship_source") or "legacy_metadata"),
         }
         for wp in website_proofs_raw
         if isinstance(wp, dict)
@@ -1697,6 +2714,29 @@ def build_student_vbr_report(
         telemetry.get("defense_answer_evidence")
     )
 
+    # Project Defense inspection cards (owner view) — a first-class recruiter
+    # inspection projection over the answer evidence above, parallel to GitHub /
+    # Website / Document inspection. Built from the already-safe answer objects
+    # plus the safe video evidence chips (for the timestamp/clip locator). Empty
+    # when there is no answer evidence yet.
+    # Authorized owner-only playable evidence: bounded transcript excerpts (from
+    # the session's transcript segments) and a signed playback handle for the
+    # owner's own recording. Both fail closed to "unavailable" without storage;
+    # the public projection re-derives its cards and never sees these.
+    defense_answer_excerpts = (
+        build_safe_answer_excerpts(db, str(session["id"])) if session is not None else {}
+    )
+    defense_recording = build_recording_playback(db, session) if session is not None else None
+
+    project_defense_inspection = build_project_defense_inspection_cards(
+        answer_evidence=defense_answer_evidence,
+        video_chips=video_chips,
+        project_title=str(project.get("title") or ""),
+        answer_excerpts=defense_answer_excerpts,
+        recording=defense_recording,
+        is_owner_view=True,
+    )
+
     questions: list[dict[str, Any]] = []
     chunk_count = 0
     answer_excerpts: dict[str, str] = {}
@@ -1725,11 +2765,190 @@ def build_student_vbr_report(
 
     # ── Skill evidence table ────────────────────────────────────────────────
     github_detected_skills = {_norm(s) for s in (github_proof.get("detected_skills") or [])} if github_proof else set()
-    website_supported_skills: set[str] = set()
-    for wp in website_proofs:
-        website_supported_skills.update(_norm(s) for s in wp["supported_skills"])
+
+    # Bridge the newer Smart GitHub Evidence pipeline (canonical ``skill_evidence``
+    # code-line rows) into the per-skill decision: a claimed skill earns "GitHub
+    # Proof" when real analyzed code evidence for THIS project's repo maps to it,
+    # even if it is missing from the attached proof's ``detected_skills``. Matched
+    # strictly by repo identity + claimed skill so repo metadata alone, an
+    # unrelated repo, or an unclaimed skill can never manufacture GitHub Proof.
+    project_repo_ids = _project_repo_identities(project, github_proof)
+    github_smart_skills = _collect_github_smart_supported_skills(
+        db,
+        user_id,
+        project_repo_ids=project_repo_ids,
+        claimed_skills=claimed_skills,
+    )
+
+    # Skill-specific Website Behavior Evidence (owner/private view only): what each
+    # attached Website Proof demonstrably showed + an honest per-skill relevance,
+    # mapped to the claimed skills the proof's extracted supported-skills name OR
+    # the observed behaviour genuinely demonstrates (conservative derivation).
+    # Kept off the public projection.
+    website_skill_evidence = collect_website_skill_evidence(
+        website_entries=website_entries,
+        website_details=website_details,
+        claimed_skills=claimed_skills,
+    )
+    # Canonical Website→project identity gate. Every row here came through an
+    # explicit project attachment (legacy project metadata, session project_id,
+    # artifact project_id, or confirmed relationship). It therefore counts by
+    # default. The fail-closed exception is a strong cross-project conflict: the
+    # recorded app identity exactly names another owned project.
+    # A duplicate row of THIS logical project is not "another project" — it
+    # shares the title/repo by construction and must never demote evidence the
+    # owner attached to the same logical project.
+    other_projects = [
+        row
+        for row in _owned_rows(db, "vbr_projects", user_id)
+        if str(row.get("id") or "") not in set(project_group_ids)
+    ]
+    extension_sessions = {
+        str(row.get("id") or ""): row
+        for row in _owned_rows(db, "extension_proof_sessions", user_id)
+        if row.get("id")
+    }
+    # Proof ids the owner EXPLICITLY confirmed belong to THIS project through
+    # the canonical finalization boundary. An explicit user confirmation is the
+    # strongest identity signal we have — it must never be demoted by the fuzzy
+    # cross-project conflict heuristics below (two owned projects legitimately
+    # sharing a repo URL or similar titles would otherwise exclude the proof
+    # from the very project the owner attached it to).
+    user_confirmed_proof_ids: set[str] = {
+        str(relation.get("proof_id"))
+        for relation in _owned_rows(
+            db, "proof_project_relationships", user_id, user_key="owner_user_id"
+        )
+        if relation.get("proof_type") == "website"
+        and relation.get("relationship_state") == "directly_linked"
+        and str(relation.get("project_id") or "") in set(project_group_ids)
+        and bool(relation.get("confirmed_by_user"))
+        and relation.get("proof_id")
+    }
+    for entry, wse in zip(website_entries, website_skill_evidence):
+        session_context = extension_sessions.get(str(entry.get("proof_session_id") or "")) or {}
+        session_metadata = (
+            session_context.get("metadata")
+            if isinstance(session_context.get("metadata"), dict)
+            else {}
+        )
+        identity_norm = _norm(
+            " ".join(
+                str(value or "")
+                for value in (
+                    wse.get("app_context"),
+                    session_context.get("title"),
+                    session_context.get("proof_objective"),
+                    session_metadata.get("project_title"),
+                )
+            )
+        )
+        session_repo = str(session_context.get("github_url") or "").lower().rstrip("/")
+        conflicting_project = next(
+            (
+                other
+                for other in other_projects
+                if (
+                    _norm(other.get("title"))
+                    and len(_norm(other.get("title")).replace(" ", "")) >= 8
+                    and _norm(other.get("title")) in identity_norm
+                )
+                or (
+                    session_repo
+                    and str(other.get("repo_url") or "").lower().rstrip("/") == session_repo
+                )
+            ),
+            None,
+        )
+        if str(entry.get("proof_session_id") or "") in user_confirmed_proof_ids:
+            state = "matched_direct"
+            reasons = [
+                "The student explicitly confirmed this Website Proof belongs to this project."
+            ]
+        elif conflicting_project:
+            conflicting_title = str(conflicting_project.get("title") or "another project")
+            state = "mismatched"
+            reasons = [
+                f"The recorded application identifies as '{wse.get('app_context')}', which matches "
+                f"another owned project ('{conflicting_title}'), not this project."
+            ]
+        else:
+            state = "matched_direct"
+            reasons = [
+                "The student explicitly attached or created this Website Proof for this owned project."
+            ]
+        wse["project_relationship_state"] = "directly_linked"
+        wse["project_identity_state"] = state
+        wse["project_identity_reasons"] = reasons
+        wse["counted_for_project"] = state == "matched_direct"
+    # The claimed skills that Website Proof supports — taken from the mapped
+    # behavior-evidence above so the skill matrix, the passport
+    # ``supporting_proof_types`` and the behavior-evidence cards can never
+    # disagree. A skill only earns the "Website Proof" source chip when a mapped
+    # skill row exists for it (extracted or safely derived); a generic website
+    # that mapped nothing adds no Website Proof chip to any skill.
+    website_supported_skills: set[str] = {
+        _norm(str(row.get("skill_name") or ""))
+        for entry in website_skill_evidence
+        if entry.get("counted_for_project")
+        for row in (entry.get("skills") or [])
+        if str(row.get("skill_name") or "").strip()
+    }
+    # Per-session canonical mapped skills (same source of truth) so the Website
+    # evidence TRACE cards attribute a proof only to the skills its behaviour
+    # actually supports — never the raw stored ``supported_skills``. Parallel to
+    # ``website_entries`` (``collect_website_skill_evidence`` yields one entry per
+    # entry, in order), so zip re-associates each mapping with its session id.
+    website_mapped_skills_by_session: dict[str, list[str]] = {}
+    for _entry, _wse in zip(website_entries, website_skill_evidence):
+        _sid = str(_entry.get("proof_session_id") or "")
+        if not _sid:
+            continue
+        website_mapped_skills_by_session[_sid] = [
+            str(r.get("skill_name"))
+            for r in (_wse.get("skills") or [])
+            if str(r.get("skill_name") or "").strip()
+        ] if _wse.get("counted_for_project") else []
 
     pipeline_lookup = _build_pipeline_lookup(pipeline_db, user_id, skill_pipeline_ids) if skill_pipeline_ids else {}
+
+    # A project whose owner never filled in ``claimed_skills`` but DID attach
+    # analyzed evidence still gets an honest skill matrix: rows are derived from
+    # the skills its attached evidence actually supports (document locators +
+    # identity-matched website mappings). This is detection, not a student
+    # claim — the report says so explicitly below. Nothing is derived from
+    # titles or repo-level keyword matches.
+    evidence_derived_skills: list[str] = []
+    if not claimed_skills:
+        seen_norm: set[str] = set()
+        for entry in document_entries:
+            for skill_name in entry.get("skills") or []:
+                key = _norm(str(skill_name))
+                if key and key not in seen_norm:
+                    seen_norm.add(key)
+                    evidence_derived_skills.append(str(skill_name))
+        # Attached GitHub Proof contributes its analyzer-detected skills the same
+        # way — the exact set ``_skill_evidence_row`` already treats as GitHub
+        # support for a claimed skill — so a GitHub-only project is not silently
+        # skill-less just because no other proof type is attached. Detection, not
+        # a student claim; the shared limitation below says so explicitly.
+        if github_proof is not None:
+            for skill_name in github_proof.get("detected_skills") or []:
+                key = _norm(str(skill_name))
+                if key and key not in seen_norm:
+                    seen_norm.add(key)
+                    evidence_derived_skills.append(str(skill_name))
+        for _entry, _wse in zip(website_entries, website_skill_evidence):
+            if not _wse.get("counted_for_project"):
+                continue
+            for row in _wse.get("skills") or []:
+                key = _norm(str(row.get("skill_name") or ""))
+                if key and key not in seen_norm:
+                    seen_norm.add(key)
+                    evidence_derived_skills.append(str(row.get("skill_name")))
+        evidence_derived_skills = evidence_derived_skills[:12]
+
+    matrix_skills = claimed_skills or evidence_derived_skills
 
     skill_evidence = [
         _skill_evidence_row(
@@ -1740,9 +2959,16 @@ def build_student_vbr_report(
             document_supported_skills,
             pipeline_lookup,
             video_chips,
+            github_smart_skills,
         )
-        for skill in claimed_skills
+        for skill in matrix_skills
     ]
+    if evidence_derived_skills and skill_evidence:
+        for row in skill_evidence:
+            row.setdefault("limitations", []).append(
+                "Skill derived from attached, analyzed evidence — the student did not formally "
+                "claim skills for this project."
+            )
 
     # ── Evidence traceability (claim → concrete evidence source) ─────────────
     repo_is_public = _repo_is_public(db, github_proof)
@@ -1756,6 +2982,7 @@ def build_student_vbr_report(
         documents=document_entries,
         website_proofs=website_entries,
         website_details=website_details,
+        website_mapped_skills_by_session=website_mapped_skills_by_session,
         analysis=analysis,
         defense_questions=defense_questions,
         video_chips=video_chips,
@@ -1763,6 +2990,27 @@ def build_student_vbr_report(
     traces_index = {t["trace_id"]: t for t in evidence_traces}
     for row in skill_evidence:
         _enrich_skill_row(row, traces_by_skill.get(_norm(row["skill"]), []), traces_index)
+
+    # ── Real-unmapped-proof context (private surfaces only) ──────────────────
+    # REAL analyzed proof attached to this project that no exact skill row
+    # consumed. Context only: never skill evidence, never counted anywhere, and
+    # never included on public projections (the public builders allowlist their
+    # fields and omit this one).
+    real_unmapped_proof_context = _build_real_unmapped_proof_context(
+        project_id=str(project["id"]),
+        project_title=project.get("title") or "",
+        skill_evidence=skill_evidence,
+        github_proof=github_proof,
+        github_code_evidence=github_code_evidence,
+        github_smart_evidence_count=_collect_github_smart_project_evidence_count(
+            db, user_id, project_repo_ids=project_repo_ids
+        ),
+        website_entries=website_entries,
+        website_skill_evidence=website_skill_evidence,
+        document_entries=document_entries,
+        analysis=analysis,
+        defense_questions=defense_questions,
+    )
 
     # ── Other student proofs for related skills (cross-proof vault matches) ───
     # The primary skill matrix + evidence traces above are built ONLY from proofs
@@ -1774,22 +3022,66 @@ def build_student_vbr_report(
     # never presented as if it belongs to this one. Lazy import breaks the import
     # cycle (the vault service imports scrubbers from this module).
     other_student_proofs: list[dict[str, Any]] = []
+    suggested_evidence: list[dict[str, Any]] = []
     if include_cross_proof:
         try:
-            from app.services.student_proof_vault_service import collect_related_skill_proofs
+            from app.services.student_proof_vault_service import (
+                collect_vault_items,
+                vault_items_for_skills,
+            )
 
-            other_student_proofs = collect_related_skill_proofs(
-                db, pipeline_db, user_id, str(project["id"]), claimed_skills
+            vault_items = collect_vault_items(db, pipeline_db, str(user_id))
+            other_student_proofs = vault_items_for_skills(
+                vault_items, claimed_skills, exclude_project_id=str(project["id"])
             )
         except Exception:  # pragma: no cover - the vault section is best-effort/additive
+            vault_items = []
             other_student_proofs = []
+        # "Suggested evidence to attach" (Step 4): unattached vault proofs whose
+        # safe metadata points at THIS project. Owner-only, clearly labelled
+        # "not counted until attached", never folded into the attached evidence
+        # package, and never on the public report projection. Best-effort.
+        try:
+            from app.services.proof_attachment_intelligence import (
+                classify_vault_attachments,
+                suggested_evidence_for_project,
+            )
+
+            overview = classify_vault_attachments(
+                vault_items,
+                [
+                    {
+                        "project_id": str(project["id"]),
+                        "project_title": project.get("title") or "",
+                        "repo_full_name": project.get("repo_full_name"),
+                        "claimed_skills": claimed_skills,
+                    }
+                ],
+            )
+            suggested_evidence = suggested_evidence_for_project(overview, str(project["id"]))
+        except Exception:  # pragma: no cover - suggestions are additive, never blocking
+            suggested_evidence = []
 
     # ── Limitations ──────────────────────────────────────────────────────────
     limitations: list[str] = []
     if github_proof is None:
         limitations.append("GitHub Proof not attached — repository evidence has not been independently checked.")
-    if not website_proofs:
+    counted_website_proof_count = sum(
+        1 for entry in website_skill_evidence if entry.get("counted_for_project")
+    )
+    excluded_website_proof_count = max(0, len(website_skill_evidence) - counted_website_proof_count)
+    if not website_skill_evidence:
         limitations.append("Website proof not attached.")
+    elif counted_website_proof_count == 0:
+        limitations.append(
+            "No Website Proof has a confirmed, identity-matched relationship to this project."
+        )
+    if excluded_website_proof_count:
+        limitations.append(
+            f"{excluded_website_proof_count} Website Proof relationship"
+            + (" is" if excluded_website_proof_count == 1 else "s are")
+            + " excluded from project claims pending confirmation or mismatch repair."
+        )
     if not documents:
         limitations.append("No document proof attached.")
     if not video_defense_recorded:
@@ -1823,8 +3115,10 @@ def build_student_vbr_report(
     next_actions: list[str] = []
     if github_proof is None:
         next_actions.append("Attach a GitHub Proof to strengthen repository-based evidence.")
-    if not website_proofs:
-        next_actions.append("Attach a Website Proof to demonstrate a working deployed app.")
+    if counted_website_proof_count == 0:
+        next_actions.append(
+            "Create or confirm a Website Proof explicitly linked to this project."
+        )
     if not documents:
         next_actions.append("Attach supporting documents (design notes, READMEs, etc.) as additional evidence.")
     if session is None or not questions:
@@ -1836,7 +3130,7 @@ def build_student_vbr_report(
     if analysis is not None and analysis.get("skills_missing_from_explanation"):
         next_actions.append("Explain the skills you missed in more depth in a future defense attempt.")
 
-    return {
+    report = {
         "project_id": str(project["id"]),
         "project_title": project.get("title") or "",
         "project_description": metadata.get("description") or "",
@@ -1845,13 +3139,23 @@ def build_student_vbr_report(
         "deployed_url": project.get("deployed_url") or None,
         "student_role": metadata.get("student_role") or "",
         "claimed_skills": claimed_skills,
-        "project_status": project.get("status") or "draft",
+        # The persisted project workflow status may legitimately remain
+        # ``questions_ready`` after answers were analyzed because Defense keeps
+        # its completion marker in metadata.  The report must describe the
+        # evidence state it is currently rendering, not expose that stale
+        # internal workflow cursor.
+        "project_status": (
+            "defense complete"
+            if project_defense_completed
+            else (project.get("status") or "draft")
+        ),
         "session_id": str(session["id"]) if session else None,
         "generated_at": _now_iso(),
         "evidence_package": {
             "github_proof_attached": github_proof is not None,
             "documents_count": len(documents),
-            "website_proofs_count": len(website_proofs),
+            "website_proofs_count": counted_website_proof_count,
+            "website_proofs_excluded_count": excluded_website_proof_count,
             "project_defense_completed": project_defense_completed,
             "video_defense_recorded": video_defense_recorded,
             "video_evidence_chip_count": len(video_chips),
@@ -1873,15 +3177,34 @@ def build_student_vbr_report(
         ),
         "documents": documents,
         "website_proofs": website_proofs,
+        "website_skill_evidence": website_skill_evidence,
         "project_defense_analysis": _report_safe_analysis(analysis),
         "defense_questions": defense_questions,
         "defense_answer_evidence": defense_answer_evidence,
+        "project_defense_inspection": project_defense_inspection,
         "video_evidence_chips": video_chips,
         "skill_evidence": skill_evidence,
         "evidence_traces": evidence_traces,
+        "real_unmapped_proof_context": real_unmapped_proof_context,
         "other_student_proofs": other_student_proofs,
+        "suggested_evidence": suggested_evidence,
         "limitations": limitations,
         "next_actions": next_actions,
         "preview_only": True,
         "public_recruiter_sharing_enabled": False,
     }
+
+    # Canonical claim→evidence map — the ONE deterministic claim/citation/
+    # relation/corroboration model shared with the Skill Report. Computed for
+    # the single-project report view only: the Work Passport builds a report per
+    # project with ``include_cross_proof=False`` and never reads this section.
+    if include_cross_proof:
+        from app.services.claim_evidence_synthesis_service import (
+            build_project_claim_evidence_map,
+        )
+
+        report["claim_evidence_map"] = build_project_claim_evidence_map(report)
+    else:
+        report["claim_evidence_map"] = None
+    _log_evidence_discovery_diagnostics(report, user_id=str(user_id))
+    return report

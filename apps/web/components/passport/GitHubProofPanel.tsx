@@ -22,6 +22,7 @@ import {
   StatusBadge,
   TOKEN,
 } from "./shared"
+import { ProofProjectAttachPanel } from "./ProofProjectAttachPanel"
 
 function EvidenceStrengthBar({ strength }: { strength: string | null | undefined }) {
   const map: Record<string, { pct: number; color: string }> = {
@@ -47,11 +48,15 @@ function EvidenceStrengthBar({ strength }: { strength: string | null | undefined
 
 type SyncStatus = "syncing" | "saved" | "error"
 
+// Proof statuses whose analysis is complete enough to attach to a project.
+const ATTACHABLE_STATUSES = new Set(["analyzed", "needs_more_evidence"])
+
 function GitHubProofCard({
   proof,
   onAnalyze,
   onArchive,
   onRetrySync,
+  onAttached,
   loading,
   syncStatus,
 }: {
@@ -59,6 +64,7 @@ function GitHubProofCard({
   onAnalyze: (id: string) => void
   onArchive: (id: string) => void
   onRetrySync: (id: string) => void
+  onAttached: () => void
   loading: Record<string, boolean>
   syncStatus?: SyncStatus
 }) {
@@ -78,6 +84,20 @@ function GitHubProofCard({
             <StatusBadge status={proof.status} />
             {proof.visibility && (
               <Badge tone={proof.visibility === "public" ? "sky" : "slate"}>{proof.visibility}</Badge>
+            )}
+            {/* Canonical relationship state — the SAME rows the Passport and
+                reports read; a display title can never fake attachment. */}
+            {!isArchived && (
+              <span
+                data-testid="github-relationship-state"
+                data-state={proof.project_relationship_state ?? "vault_only"}
+              >
+                {proof.project_relationship_state === "directly_linked" && proof.project_title ? (
+                  <Badge tone="emerald">Attached to {proof.project_title}</Badge>
+                ) : (
+                  <Badge tone="amber">Needs project attachment — not counted in project reports</Badge>
+                )}
+              </span>
             )}
           </div>
 
@@ -210,6 +230,22 @@ function GitHubProofCard({
                 Archive
               </Btn>
             </div>
+          )}
+
+          {/* Explicit project attachment — the shared canonical finalization
+              flow (existing project / create new / keep vault-only). Shown for
+              analyzed proofs so a GitHub-only project can appear in the Work
+              Passport without any Website Proof. */}
+          {!isArchived && ATTACHABLE_STATUSES.has(proof.status) && (
+            <ProofProjectAttachPanel
+              proofType="github"
+              proofId={proof.id}
+              relationshipState={proof.project_relationship_state}
+              attachedProjectTitle={proof.project_title}
+              defaultProjectTitle={proof.repo_name ? `${proof.repo_name}` : ""}
+              defaultRepoUrl={proof.repo_url}
+              onAttached={onAttached}
+            />
           )}
 
           {/* Skill Graph sync status */}
@@ -444,6 +480,7 @@ export function GitHubProofPanel({ sessionId }: { sessionId?: string }) {
               onAnalyze={handleAnalyze}
               onArchive={handleArchive}
               onRetrySync={runSync}
+              onAttached={load}
               loading={actionLoading}
               syncStatus={syncState[p.id]}
             />
@@ -467,6 +504,7 @@ export function GitHubProofPanel({ sessionId }: { sessionId?: string }) {
                 onAnalyze={handleAnalyze}
                 onArchive={handleArchive}
                 onRetrySync={runSync}
+                onAttached={load}
                 loading={actionLoading}
                 syncStatus={syncState[p.id]}
               />

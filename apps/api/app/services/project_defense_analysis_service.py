@@ -866,7 +866,7 @@ class ProjectDefenseAnalysisService:
 
         if isinstance(self._client, dict):
             existing = self._client.get(_TABLE, {}).get(proof_session_id)
-            if existing is None:
+            if existing is None or str(existing.get("user_id")) != str(user_id):
                 return None
             existing.update(patch)
             return existing
@@ -1025,9 +1025,12 @@ class ProjectDefenseAnalysisService:
         user_id: str,
         proof_session_id: str,
     ) -> dict[str, Any] | None:
-        """Retrieve the stored analysis result for a session."""
+        """Retrieve the stored analysis result for a session owned by ``user_id``."""
         if isinstance(self._client, dict):
-            return self._client.get(_TABLE, {}).get(proof_session_id)
+            row = self._client.get(_TABLE, {}).get(proof_session_id)
+            if row is None or str(row.get("user_id")) != str(user_id):
+                return None
+            return row
 
         try:
             res = (

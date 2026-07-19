@@ -273,10 +273,14 @@ def test_upload_response_hides_storage_paths(monkeypatch):
     monkeypatch.setattr(settings, "supabase_frame_evidence_bucket", FAKE_BUCKET)
 
     from app.main import app
-    from app.api import deps as _deps
+    from app.api.deps import get_current_user_id, get_db
 
     client = TestClient(app)
-    _deps._test_user_id = DEMO_USER_ID  # type: ignore[attr-defined]
+    # Authenticate via dependency override. Patching app.api.deps.get_current_user_id
+    # is ineffective — the route binds the function object at import time, so only
+    # dependency_overrides actually swaps the identity (the dev no-token fallback is
+    # gated off by default now, so relying on it would 401).
+    app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
 
     # Build a fake VideoKeyframeResult with one frame
     from app.services.video_keyframe_extractor_service import (
@@ -298,15 +302,28 @@ def test_upload_response_hides_storage_paths(monkeypatch):
     # Mock extractor + visual analysis service + storage
     mock_db = MagicMock()
     mock_db.storage = _make_storage_mock()
+    owned_session_response = MagicMock()
+    owned_session_response.data = {
+        "id": SESSION_ID,
+        "user_id": DEMO_USER_ID,
+        "status": "recording",
+    }
+    (
+        mock_db.table.return_value
+        .select.return_value
+        .eq.return_value
+        .eq.return_value
+        .maybe_single.return_value
+        .execute
+    ).return_value = owned_session_response
     mock_db.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock()
     mock_db.table.return_value.insert.return_value.execute.return_value = MagicMock()
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     with (
         patch("app.api.v1.endpoints.workflow_visual_frames.VideoKeyframeExtractorService") as mock_extractor,
         patch("app.api.v1.endpoints.workflow_visual_frames.WorkflowVisualAnalysisService") as mock_va,
         patch("app.api.v1.endpoints.workflow_visual_frames.VisualReasoningService") as mock_vr,
-        patch("app.api.deps.get_current_user_id", return_value=DEMO_USER_ID),
-        patch("app.api.deps.get_db", return_value=mock_db),
     ):
         mock_extractor.return_value.extract_keyframes.return_value = fake_result
 
@@ -337,6 +354,8 @@ def test_upload_response_hides_storage_paths(monkeypatch):
             f"/api/v1/student/extension-proof/sessions/{SESSION_ID}/workflow/video",
             files={"video": ("recording.webm", _io.BytesIO(video_bytes), "video/webm")},
         )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code in (200, 202)
     data = response.json()

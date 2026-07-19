@@ -15,9 +15,16 @@ Three surfaces:
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
-from app.schemas.vbr_student_report import VaultSkillSummary, VBREvidenceTrace
+from app.schemas.vbr_student_report import (
+    ProofAttachmentEntry,
+    RealUnmappedProofContext,
+    VaultSkillSummary,
+    VBREvidenceTrace,
+)
 
 
 # ── Owner-only publish controls ──────────────────────────────────────────────
@@ -70,8 +77,19 @@ class PassportSkillProjectRef(BaseModel):
     # This project's qualitative status FOR THIS SKILL (not the cross-project best).
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # The proof types that support THIS skill in THIS project only — a closed,
+    # skill-specific subset (GitHub / Website / Document / Project Defense /
+    # Video). Distinct from ``evidence_sources``, which is the whole project's
+    # source union; a proof type appears here only when the evidence mapping
+    # recorded it as supporting this exact skill (fails closed).
+    supporting_proof_types: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
+    # A safe, closed-vocabulary sentence describing what the Website Proof
+    # demonstrably showed for THIS skill in THIS project — present only when
+    # Website Proof supports this exact skill (else omitted). Never raw
+    # DOM/OCR/visual/provider text; owner-only drilldown context.
+    website_evidence_summary: str | None = None
     # The proof-native trace cards this project contributes for this skill.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
 
@@ -91,10 +109,15 @@ class PassportStrongestProjectLink(BaseModel):
     # This project's qualitative label FOR THIS SKILL (never a numeric score).
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # Skill-specific proof-type breakdown for this project (see PassportSkillProjectRef).
+    supporting_proof_types: list[str] = Field(default_factory=list)
     report_is_public: bool = False
     public_report_path: str | None = None
     project_id: str | None = None
     project_report_path: str | None = None
+    # Safe Website Proof behaviour sentence for this skill in this project (see
+    # PassportSkillProjectRef.website_evidence_summary). Owner-only drilldown.
+    website_evidence_summary: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -119,6 +142,11 @@ class PassportSkillSummary(BaseModel):
     strongest_project_status: str | None = None
     # The same strongest project as a linkable reference (owner-only routes).
     strongest_project: PassportStrongestProjectLink | None = None
+    # Proof-type sources that exist for this skill in the student's Proof Vault
+    # but are NOT attached to any project (vault-only / standalone evidence).
+    # Kept SEPARATE from ``projects`` so vault-only proof is never counted as
+    # project evidence — closed, canonical proof-type labels only. Owner-only.
+    vault_only_sources: list[str] = Field(default_factory=list)
     notes: str = ""
     limitations: list[str] = Field(default_factory=list)
 
@@ -132,6 +160,8 @@ class PublicPassportStrongestProject(BaseModel):
     project_title: str = ""
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # Skill-specific proof-type breakdown for this published project.
+    supporting_proof_types: list[str] = Field(default_factory=list)
     public_report_path: str
 
     model_config = {"extra": "forbid"}
@@ -144,6 +174,9 @@ class PublicPassportSkillProjectRef(BaseModel):
     # Per-project qualitative status for this skill (label only).
     skill_status: str = "Not assessed"
     evidence_sources: list[str] = Field(default_factory=list)
+    # Proof types supporting this skill in this published project only (closed
+    # label set; a proof type appears only where the mapping recorded it).
+    supporting_proof_types: list[str] = Field(default_factory=list)
     public_report_path: str
     # Per-project trace cards (published, recruiter-safe) for this skill.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
@@ -237,8 +270,9 @@ class ProofAttachmentSuggestion(BaseModel):
     Connects an *unattached* proof group to the project it likely belongs to,
     with the deterministic evidence-basis chips that produced the match, an
     honest hedged reason, a closed qualitative confidence label, and an explicit
-    limitation. Never carries a raw source id, raw evidence, or a numeric
-    confidence — and never appears on the public projection.
+    limitation. Website suggestions may carry the exact owner-only proof and
+    project ids required by the explicit confirmation endpoint; they never
+    appear on the public projection and never include raw evidence.
     """
 
     suggestion_id_safe: str = ""
@@ -249,6 +283,10 @@ class ProofAttachmentSuggestion(BaseModel):
     likely_project_title: str = ""
     # Owner-only project-report route (private passport surface only).
     likely_project_ref_safe: str | None = None
+    # Owner-only identifiers used only by the explicit Website attachment UI.
+    proof_id: str | None = None
+    likely_project_id: str | None = None
+    relationship_state: str = "vault_only"
     likely_skill_names: list[str] = Field(default_factory=list)
     suggestion_reason: str = ""
     evidence_basis_chips: list[str] = Field(default_factory=list)
@@ -256,6 +294,25 @@ class ProofAttachmentSuggestion(BaseModel):
     attachment_status: str = ""
     limitation: str = ""
     action_label: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+class ProofAttachmentOverview(BaseModel):
+    """Owner-only attached / suggested / unattached proof sections.
+
+    The three buckets are disjoint and deduplicated: each real-world proof
+    appears exactly once, suggested evidence never counts as attached, and
+    duplicate rows never inflate a count.
+    """
+
+    attached: list[ProofAttachmentEntry] = Field(default_factory=list)
+    suggested: list[ProofAttachmentEntry] = Field(default_factory=list)
+    unattached: list[ProofAttachmentEntry] = Field(default_factory=list)
+    attached_count: int = 0
+    suggested_count: int = 0
+    unattached_count: int = 0
+    note: str = ""
 
     model_config = {"extra": "forbid"}
 
@@ -287,6 +344,10 @@ class PassportProjectTopSkill(BaseModel):
     status: str = "Not assessed"
     skill_slug: str | None = None
     skill_report_path: str | None = None
+    # The proof types supporting THIS skill in THIS project (closed, skill-specific
+    # label set) — lets the project card show a per-skill proof breakdown without
+    # implying any proof type the evidence mapping did not record for this skill.
+    supporting_proof_types: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -298,6 +359,8 @@ class PublicPassportProjectTopSkill(BaseModel):
     skill: str
     status: str = "Not assessed"
     skill_slug: str | None = None
+    # Skill-specific proof-type breakdown for this published project (safe labels).
+    supporting_proof_types: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -335,6 +398,41 @@ class PassportProjectSummary(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PassportWebsiteProofContext(BaseModel):
+    """Owner-only, project-level-only Website Proof context (Diagnosis-C helper).
+
+    Surfaced when a project has an attached Website Proof that did NOT map to any
+    specific skill — it stays PROJECT-LEVEL evidence (the site exists and can be
+    inspected) but the observed behaviour was too generic to demonstrate a skill.
+    Lets the Skills Evidence Map explain, honestly, why Website Proof is present at
+    project level yet absent from the skill→project map — never a faked mapping.
+
+    Every field is a CLOSED-vocabulary label / already-safe helper sentence. Never
+    raw DOM/OCR/visual/provider text, screenshots, storage paths, signed URLs,
+    internal ids, ``proof_session_id``, user ids, scores, or weakly-supported
+    skills presented as verified evidence."""
+
+    project_id: str
+    project_title: str = ""
+    # Observed-behaviour classification (closed vocabulary): key + human label,
+    # e.g. "navigation_layout" / "Navigation / page layout".
+    focus_key: str = ""
+    focus_label: str = ""
+    # One safe sentence describing what the recorded page demonstrably showed.
+    explanation: str = ""
+    # Short closed-vocabulary reason it did not map a skill ("Navigation/layout
+    # evidence only", "Insufficient skill-specific runtime behavior", …).
+    reason: str = ""
+    # The concrete action to make it skill-specific (runtime behaviour to record).
+    action_guidance: str = ""
+    # Always False here — this is explicitly the NOT-skill-mapped case.
+    mapped_to_skills: bool = False
+    # Owner-only private route to this project's report (never a public link).
+    report_path: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 class PublicPassportProject(BaseModel):
     """Public featured project — links to its public VBR report, no internal ids."""
 
@@ -364,6 +462,9 @@ class EvidenceGraphOverview(BaseModel):
     skills_with_evidence: int = 0
     proof_count: int = 0
     attached_proof_count: int = 0
+    # Suggested evidence is an improvement opportunity — never part of the
+    # attached count, never presented as verified proof.
+    suggested_proof_count: int = 0
     unattached_proof_count: int = 0
     next_actions: list[str] = Field(default_factory=list)
 
@@ -400,8 +501,26 @@ class PassportIdentity(BaseModel):
     # Compact evidence-source summary badges, e.g. "GitHub Proof · 3".
     evidence_source_summary: list[str] = Field(default_factory=list)
     verification_label: str = "Verified Work Passport"
+    # Optional recruiter-safe profile photo for the Passport Card. ONLY ever a
+    # public, non-signed storage URL — never a signed/tokenized URL, a private
+    # storage path, or a raw storage key. Absent/unsafe → the card renders safe
+    # initials. Sanitized in ``_build_identity`` before it is ever emitted.
+    avatar_url: str | None = None
 
     model_config = {"extra": "forbid"}
+
+
+class PassportPhotoResponse(BaseModel):
+    """Result of setting or clearing the Passport Card profile photo.
+
+    ``avatar_url`` is the new public, non-signed photo URL (``None`` after a
+    remove, or when storage is not configured and the client keeps a local-only
+    preview). ``persisted`` is ``False`` when the photo could not be saved
+    server-side so the client can label it as device-local.
+    """
+
+    avatar_url: str | None = None
+    persisted: bool = True
 
 
 # ── Private / public passport responses ──────────────────────────────────────
@@ -425,6 +544,22 @@ class PrivateWorkPassportResponse(BaseModel):
     projects: list[PassportProjectSummary] = Field(default_factory=list)
     evidence_source_counts: dict[str, int] = Field(default_factory=dict)
 
+    # Project-level-only Website Proof context: attached Website Proofs that did
+    # NOT map to any skill (too-generic observed behaviour). Powers the Skills
+    # Evidence Map's honest "Website Proof exists but isn't skill-mapped" empty
+    # state — never counted as skill evidence. Owner-only; may be empty.
+    website_proof_project_context: list[PassportWebsiteProofContext] = Field(
+        default_factory=list
+    )
+
+    # REAL analyzed, project-attached proof that no exact skill row consumed —
+    # mirrored from each project's private report (the source of truth) so the
+    # passport shows the same "Attached proof not yet skill-mapped" context the
+    # report knows about. Context only: never skill evidence, never counted in
+    # proof filter counts / capability aggregates / graph nodes, and never on
+    # the public passport projection.
+    real_unmapped_proof_context: list[RealUnmappedProofContext] = Field(default_factory=list)
+
     # Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
     # dashboard). Each card carries category, qualitative status, counts, and a
     # few representative previews — never every proof card. The full evidence for
@@ -438,6 +573,11 @@ class PrivateWorkPassportResponse(BaseModel):
     # deterministic, qualitative attachment suggestions. Never on the public
     # projection.
     unattached_proof_summary: UnattachedProofSummary | None = None
+
+    # Attachment Intelligence Cleanup (Step 4): deduplicated attached /
+    # suggested / unattached sections. Owner-only — never on the public
+    # projection, which shows only published attached evidence.
+    attachment_overview: ProofAttachmentOverview | None = None
 
     project_count: int = 0
     published_report_count: int = 0
@@ -466,6 +606,37 @@ class PublicWorkPassportResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PublicSkillReportResponse(BaseModel):
+    """Recruiter-safe public Skill Report for one skill of a PUBLISHED passport.
+
+    The whole payload is the centralized ``public_safe_skill_report`` whitelist
+    projection (run through ``enforce_public_safe``), so it structurally carries
+    no private source ids, storage paths, signed URLs, snippets, owner routes,
+    counts-as-scores, or raw provider payloads. The chain / synthesis members are
+    the already-projected safe dict shapes (mirroring how the owner
+    ``SkillReportResponse`` types its Step-3/4 fields), never the internal
+    objects. ``status`` is a closed qualitative label — never a numeric score.
+    """
+
+    skill: str
+    skill_slug: str = ""
+    status: str = "Supporting evidence"
+    category: str = "Other"
+    synthesis_summary: str = ""
+    # Boolean coverage across evidence surfaces — never counts or scores.
+    source_coverage: dict[str, bool] = Field(default_factory=dict)
+    # Public-safe linked proof chains (``public_safe_linked_chain`` shape).
+    linked_proof_chains: list[dict[str, Any]] = Field(default_factory=list)
+    # Public-safe synthesis results (``public_safe_synthesis_result`` shape).
+    synthesis: list[dict[str, Any]] = Field(default_factory=list)
+    # Capped, safe supporting proofs that join no chain.
+    unlinked_supporting_evidence: dict[str, Any] = Field(default_factory=dict)
+    limitations: list[str] = Field(default_factory=list)
+    generated_at: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
 __all__ = [
     "PublishPassportRequest",
     "WorkPassportStatusResponse",
@@ -481,6 +652,8 @@ __all__ = [
     "PassportProofChainGap",
     "PassportSuggestedAttachment",
     "ProofAttachmentSuggestion",
+    "ProofAttachmentEntry",
+    "ProofAttachmentOverview",
     "UnattachedProofSummary",
     "PassportProjectTopSkill",
     "PublicPassportProjectTopSkill",
@@ -489,4 +662,5 @@ __all__ = [
     "PublicPassportProject",
     "PrivateWorkPassportResponse",
     "PublicWorkPassportResponse",
+    "PublicSkillReportResponse",
 ]

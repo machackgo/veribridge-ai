@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_db, require_admin_or_university_admin_user_id
 from app.main import app
 from app.services.recruiter_candidate_detail_service import (
     CandidateNotFoundError,
@@ -411,7 +411,9 @@ class TestRecruiterCandidateDetailService:
 
 def _make_client_with_db(db: dict) -> TestClient:
     app.dependency_overrides[get_db] = lambda: db
-    app.dependency_overrides[get_current_user_id] = lambda: "recruiter-user-1"
+    # Candidate discovery is an internal (admin/university_admin-gated) surface:
+    # a plain authenticated student must never browse other students' evidence.
+    app.dependency_overrides[require_admin_or_university_admin_user_id] = lambda: "recruiter-user-1"
     return TestClient(app)
 
 

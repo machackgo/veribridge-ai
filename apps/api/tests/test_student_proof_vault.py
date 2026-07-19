@@ -45,6 +45,7 @@ from app.services.vbr_work_passport_service import build_private_passport
 from tests.test_vbr_project_defense import (
     OTHER_USER_ID,
     USER_ID,
+    _create_project_defense,
     _seed_document_evidence,
     _seed_github_proof,
     _seed_skill_pipeline,
@@ -207,6 +208,104 @@ def test_collect_skill_summaries_are_compact_not_a_raw_dump(mem_store: dict, pip
     assert py["more_count"] == py["proof_count"] - len(py["previews"])
 
 
+def _preview_vault_item(**over: object) -> dict:
+    """A minimal, unattached vault item for preview-dedupe tests."""
+    base = {
+        "proof_type": "Document Proof",
+        "source_table": "optional_evidence_submissions",
+        "source_id": str(uuid4()),
+        "title": "Design Doc",
+        "safe_location": "page 2",
+        "safe_summary": "Overview of the design.",
+        "skill_name": "Python",
+        "is_attached_to_project": False,
+        "attached_project_ids": [],
+        "public_safe": True,
+    }
+    base.update(over)
+    return base
+
+
+def test_skill_preview_rows_collapse_exact_duplicates(mem_store: dict, pipeline_db: dict) -> None:
+    """Three vault rows that would render an identical preview (same proof type,
+    title, safe location and summary) collapse into ONE preview row — the honest
+    total proof count is still preserved in ``more_count``."""
+    items = [_preview_vault_item(source_id=f"doc-{i}") for i in range(3)]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 1, "identical-looking preview rows collapse to one"
+    assert py["proof_count"] == 3
+    assert py["more_count"] == py["proof_count"] - len(py["previews"])
+
+
+def test_github_preview_rows_stay_distinct_by_location(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Distinct GitHub file/line locations under one repo title keep separate
+    preview rows — dedupe must not swallow genuinely distinct code evidence."""
+    items = [
+        _preview_vault_item(
+            proof_type="GitHub Proof",
+            source_table="skill_evidence",
+            source_id="gh-1",
+            title="octocat/Hello-World",
+            safe_location="src/main.py:10",
+            safe_summary="implementation body",
+        ),
+        _preview_vault_item(
+            proof_type="GitHub Proof",
+            source_table="skill_evidence",
+            source_id="gh-2",
+            title="octocat/Hello-World",
+            safe_location="src/utils.py:22",
+            safe_summary="implementation body",
+        ),
+    ]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 2
+    assert {p["safe_location"] for p in py["previews"]} == {"src/main.py:10", "src/utils.py:22"}
+
+
+def test_document_preview_rows_stay_distinct_by_page(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Distinct document pages/sections keep separate preview rows when their
+    safe display identity differs (different location and summary)."""
+    items = [
+        _preview_vault_item(source_id="d-1", safe_location="page 2", safe_summary="API design"),
+        _preview_vault_item(source_id="d-2", safe_location="page 5", safe_summary="Testing strategy"),
+    ]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 2
+    assert {p["safe_location"] for p in py["previews"]} == {"page 2", "page 5"}
+
+
+def test_preview_rows_collapse_when_only_hidden_summary_differs(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Two rows with the same visible title and safe_location but a different
+    hidden safe_summary render identically — PreviewRow shows
+    ``title || safe_summary`` plus ``safe_location``, so the summary never shows
+    when a title exists. They must collapse to a single preview row instead of
+    surviving as two identical-looking rows."""
+    items = [
+        _preview_vault_item(source_id="d-1", safe_summary="Overview of the design."),
+        _preview_vault_item(source_id="d-2", safe_summary="A different hidden summary."),
+    ]
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID, items=items)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert len(py["previews"]) == 1, "same visible title/location collapses despite differing summary"
+    assert py["previews"][0]["title"] == "Design Doc"
+    assert py["proof_count"] == 2
+    assert py["more_count"] == py["proof_count"] - len(py["previews"])
+
+
 def test_collect_skill_summaries_normalize_and_categorize_high_level_skills(
     mem_store: dict, pipeline_db: dict
 ) -> None:
@@ -239,6 +338,64 @@ def test_private_passport_uses_compact_skill_summaries(mem_store: dict, pipeline
     assert py["has_unattached"] is True
     assert py["unattached_count"] >= 1
     assert any("not attached to any vbr project" in lim.lower() for lim in passport["limitations"])
+
+
+# ── Canonical relationship enrichment (skill-evidence-map-fix) ────────────────
+
+
+def test_vault_summary_flags_skill_graph_only_skill_as_unretained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A skill supported ONLY by the derived Skill-Graph signal has no retained,
+    # inspectable proof — it must be flagged so the map never shows it as evidence.
+    _seed_skill_pipeline(pipeline_db, skill_name="Kubernetes", support_status="strongly_supported")
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID)
+    k = next(s for s in summaries if s["skill"] == "Kubernetes")
+    assert k["has_retained_proof"] is False
+    assert set(k["proof_source_counts"]) == {"Skill Graph"}
+    assert k["connected_project_ids"] == []
+
+
+def test_vault_summary_marks_github_backed_skill_as_retained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_github_proof(mem_store, detected_skills=["Python"])
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert py["has_retained_proof"] is True
+
+
+def test_private_passport_resolves_connected_projects_for_attached_vault_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A GitHub proof detecting "Docker" is ATTACHED to a real VBR project. The
+    # vault summary must resolve its raw attachment to the grouped, on-passport
+    # project (the honest connected-project set), and flag retained proof.
+    gh_id = _seed_github_proof(
+        mem_store,
+        detected_skills=["Docker"],
+        submitted_skill_claims=["Docker"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Docker", "file_path": "Dockerfile", "line_start": 1, "line_end": 5}
+            ]
+        },
+    )
+    pid = _seed_project(
+        mem_store,
+        title="Boston Smart Accident Risk Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": gh_id}},
+    )
+
+    passport = build_private_passport(mem_store, pipeline_db, USER_ID)
+    docker = next(s for s in passport["vault_skill_summaries"] if s["skill"] == "Docker")
+    assert docker["has_retained_proof"] is True
+    # The raw attachment resolves to the single grouped project on the passport.
+    assert docker["connected_project_ids"] == [pid]
+    assert docker["connected_project_titles"] == ["Boston Smart Accident Risk Rerouting"]
 
 
 # ── Layer 2: full Skill Report for one selected skill ─────────────────────────
@@ -334,6 +491,323 @@ def test_collect_skill_report_returns_document_citation(mem_store: dict, pipelin
     assert doc["page_number"] == 4
     assert doc["citation"] == "Methodology"
     assert doc["safe_snippet"] == "Implemented the training loop in Python."
+
+
+# ── Document Proof inspection card ────────────────────────────────────────────
+
+
+def _doc_correlations(report: dict) -> list[dict]:
+    """Every Document corroboration card across chains + the standalone bucket."""
+    out: list[dict] = []
+    for chain in report.get("projects") or []:
+        out += chain.get("document_correlations") or []
+    out += (report.get("standalone_evidence") or {}).get("documents") or []
+    return out
+
+
+def _seed_ml_document(mem_store: dict) -> None:
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Final Year Project Report"},
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "confidence": "high",
+                "snippet": "We trained a gradient-boosted model on the housing dataset.",
+                "page_number": 4,
+                "section_label": "Model Architecture",
+                "reason": "Describes the ML model workflow and dataset.",
+                "figure_reference": "Figure 2",
+            }
+        ],
+    )
+
+
+def test_document_inspection_card_includes_locator_snippet_figure_and_limitation(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A. The DTO carries title, matched skill, page, citation, safe snippet,
+    figure reference, why_supported, and the limitation copy."""
+    _seed_ml_document(mem_store)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    corrs = _doc_correlations(report)
+    assert corrs, "a document correlation must exist"
+    card = corrs[0]["inspection_card"]
+    assert card is not None
+    assert card["title"] == "Final Year Project Report"
+    assert card["matched_skill"] == "Machine Learning"
+    assert card["page_number"] == 4
+    assert card["citation_label"] == "Model Architecture"
+    assert card["safe_snippet"] == "We trained a gradient-boosted model on the housing dataset."
+    assert card["figure_reference"] == "Figure 2"
+    assert card["why_supported"]
+    # Base limitation always present + the ML-specific clause.
+    assert "does not" in card["limitation"] and "independently prove" in card["limitation"]
+    assert "model workflow" in card["limitation"]
+
+
+def test_document_inspection_card_routes_table_reference(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """A table reference lands in table_reference, not figure_reference."""
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "Dataset features are enumerated below.",
+                "page_number": 2,
+                "table_reference": "Table 1",
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["table_reference"] == "Table 1"
+    assert card["figure_reference"] is None
+
+
+def test_document_inspection_card_never_exposes_unsafe_fields(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """B. The DTO does not carry raw_text, file_path, signed URL, storage path,
+    internal id, or raw provider JSON."""
+    _seed_document_evidence(
+        mem_store,
+        file_path="uploads/user-123/secret-report.pdf",
+        analysis_json={
+            "title": "Report",
+            "raw_text": "SHOULD-NEVER-LEAK full document body",
+            "extracted_text_preview": "SHOULD-NEVER-LEAK preview",
+            "signed_url": "https://bucket.example.com/x?token=SECRET",
+        },
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "safe excerpt", "page_number": 1}
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    blob = repr(card)
+    for leak in ("raw_text", "file_path", "extracted_text_preview", "signed_url", "SECRET", "SHOULD-NEVER-LEAK", "uploads/user-123"):
+        assert leak not in blob, f"unsafe fragment leaked: {leak}"
+    for forbidden in ("file_path", "storage_path", "signed_url", "document_id", "source_id", "raw_text"):
+        assert forbidden not in card
+
+
+def test_document_inspection_card_is_supporting_not_implementation_proof(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """C. The document is labeled supporting/corroborating — never implementation proof."""
+    _seed_ml_document(mem_store)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["evidence_role"] in ("Supporting evidence", "Corroborating document")
+    assert card["status"] == "Supporting evidence"
+    assert "does not" in card["limitation"] and "Demonstrated" not in card["evidence_role"]
+
+
+def test_document_inspection_card_download_disabled_without_consent(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """D. Download fields are null/disabled unless safe access is available."""
+    _seed_ml_document(mem_store)  # no download consent flag
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["can_download_document"] is False
+    assert card["document_download_url"] is None
+    assert card["document_open_url"] is None
+    assert "not available" in card["access_note"].lower()
+
+
+def test_document_inspection_card_download_consent_flags_capability_only(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Explicit student consent flips the capability flag but STILL mints no URL
+    from this view (any real download stays gated by its own endpoint)."""
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Shared Report", "recruiter_shareable": True},
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "safe excerpt", "page_number": 1}
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["can_download_document"] is True
+    assert card["document_download_url"] is None
+    assert card["document_open_url"] is None
+
+
+def test_document_inspection_card_no_locator_states_it_plainly(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """With no page/section/citation/snippet/figure, the card says so for the skill
+    (never invents a locator) and reports no figure/table evidence."""
+    _seed_document_evidence(
+        mem_store,
+        evidence_objects=[{"skill_name": "Machine Learning", "confidence": "high"}],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["page_number"] is None and card["citation_label"] is None
+    assert "no skill-specific citation was found for Machine Learning" in card["why_supported"]
+    assert card["visual_or_table_summary"] == (
+        "No skill-specific figure/table evidence was extracted from this document."
+    )
+
+
+# ── Skill-specific detail extraction (richer inspection) ──────────────────────
+
+
+def _seed_api_document(mem_store: dict, **evidence) -> None:
+    base = {
+        "skill_name": "API Development",
+        "confidence": "high",
+        "page_number": 7,
+        "section_label": "System Architecture",
+    }
+    base.update(evidence)
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Final Year Project Report"},
+        evidence_objects=[base],
+    )
+
+
+def test_api_document_card_includes_skill_specific_claims_and_technical_details(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """API Development card mines claim-level + technical detail bullets from the
+    analyzer's own bounded excerpts — not just one generic sentence."""
+    _seed_api_document(
+        mem_store,
+        snippet="API development is demonstrated through exposing the workflow as a backend service.",
+        reason="Document mentions API endpoints and cloud deployment as part of the routing workflow.",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["matched_skill"] == "API Development"
+    assert card["has_skill_specific_details"] is True
+    assert card["skill_specific_claims"], "claim-level statements must be surfaced"
+    assert any("backend service" in d for d in card["technical_details"])
+
+
+def test_api_document_card_surfaces_endpoint_and_request_response_details(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """When endpoint / request-response text is present it lands in the right lists."""
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "API Report"},
+        evidence_objects=[
+            {
+                "skill_name": "API Development",
+                "snippet": "The service exposes REST API endpoints for the routing workflow.",
+                "reason": "The request payload carries coordinates and the response returns a ranked route list.",
+                "page_number": 7,
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert any("endpoint" in d.lower() for d in card["api_endpoints"])
+    assert any("request payload" in d.lower() for d in card["request_response_details"])
+    assert any("service" in d.lower() for d in card["architecture_details"])
+    # Endpoint-level detail present → no missing note.
+    assert card["missing_detail_note"] is None
+
+
+def test_api_document_card_missing_note_when_no_endpoint_details(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """API claim without endpoint/request/response detail → explicit missing note."""
+    _seed_api_document(
+        mem_store,
+        snippet="This project involved API development for the workflow.",
+        reason="API development supported the overall project.",
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["api_endpoints"] == []
+    assert card["request_response_details"] == []
+    assert card["missing_detail_note"]
+    assert "endpoint route names" in card["missing_detail_note"]
+    assert "API Development" in card["missing_detail_note"]
+    # Still supports at the claim level.
+    assert card["skill_specific_claims"]
+
+
+def test_api_limitation_clause_applied(mem_store: dict, pipeline_db: dict) -> None:
+    """API family adds an API-specific limitation clause to the base limitation."""
+    _seed_api_document(mem_store, snippet="Backend API endpoints expose the workflow.")
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert "independently prove" in card["limitation"]
+    assert "endpoint routes" in card["limitation"]
+
+
+def test_document_detail_lists_are_bounded_and_never_whole_document(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """Detail lists are capped and each bullet is bounded — never the raw document."""
+    huge = "The API endpoint returns JSON. " * 40  # would be a whole-document dump
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Big Report"},
+        evidence_objects=[
+            {
+                "skill_name": "API Development",
+                "snippet": huge,
+                "reason": "API service backend endpoint request response integration.",
+                "page_number": 2,
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "API Development")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert len(card["technical_details"]) <= 5
+    for bullet in card["technical_details"]:
+        assert len(bullet) <= 200
+    # The raw multi-hundred-char blob is never echoed verbatim.
+    assert huge.strip() not in repr(card)
+
+
+def test_api_details_do_not_leak_into_unrelated_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """API-flavored text filed under an unrelated skill does not populate API lists."""
+    _seed_document_evidence(
+        mem_store,
+        analysis_json={"title": "Mixed Report"},
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "We trained a model and exposed an API endpoint for predictions.",
+                "reason": "Describes the ML model and dataset.",
+                "page_number": 3,
+            }
+        ],
+    )
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    # ML card mines ML detail, never the API endpoint/request lists.
+    assert card["api_endpoints"] == []
+    assert card["request_response_details"] == []
+    assert any("model" in d.lower() for d in card["technical_details"])
+
+
+def test_document_card_download_note_explains_file_not_retained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    """The honest document_access_note explains the original file is not retained,
+    and download stays disabled with no URL."""
+    _seed_ml_document(mem_store)
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Machine Learning")
+    card = _doc_correlations(report)[0]["inspection_card"]
+    assert card["can_download_document"] is False
+    assert card["document_download_url"] is None and card["document_open_url"] is None
+    assert "not retained" in card["document_access_note"]
+    assert card["document_access_label"] is None
 
 
 def test_collect_skill_report_lists_project_usage_and_gaps(mem_store: dict, pipeline_db: dict) -> None:
@@ -1280,11 +1754,17 @@ def _item(proof_type: str, *, pid: str | None, grade: str | None = None) -> dict
 def test_coherent_chain_true_for_impl_body_plus_corroboration_same_project() -> None:
     """A single attached project with a SKILL-RELEVANT GitHub implementation body
     AND a defense (>= 2 distinct sources) is a coherent chain → eligible for
-    Demonstrated. The body must prove the selected skill's own work (here: an
-    authoritative grade-time ML signal for a Machine Learning report) — a bare
-    implementation_body grade with no skill relevance no longer qualifies."""
+    Demonstrated. The body must prove the selected skill's own work through a
+    CONCRETE resolved purpose (here the adapter-stored ``model_training`` purpose
+    from the trusted excerpt) — a bare implementation_body grade, or a grade-time
+    ML signal on an unresolved purpose, no longer qualifies."""
     items = [
-        _ml_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            purpose_key="model_training",
+            ml_signal=True,
+        ),
         _item("Project Defense", pid="proj-a"),
     ]
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
@@ -1335,7 +1815,12 @@ def test_skill_status_coherent_ml_chain_is_demonstrated() -> None:
     """A single coherent project (skill-relevant implementation body + defense)
     reads Demonstrated — the known-skill happy path stays intact."""
     items = [
-        _ml_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
+        _purpose_github_item(
+            pid="proj-a",
+            grade=GRADE_IMPLEMENTATION_BODY,
+            purpose_key="model_training",
+            ml_signal=True,
+        ),
         _item("Project Defense", pid="proj-a"),
     ]
     status = _skill_status(
@@ -1518,14 +2003,18 @@ def test_coherent_chain_relevance_blocks_even_when_grade_survives() -> None:
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
 
 
-def test_coherent_chain_ml_signal_row_without_snippet_stays_demonstrated() -> None:
-    """A canonical ML row whose raw snippet is not re-exposed at read time (purpose
-    unknown) but whose grade-time verdict proved executable ML stays a coherent
-    implementation chain for Machine Learning."""
+def test_coherent_chain_unresolved_purpose_never_demonstrates_even_with_ml_signal() -> None:
+    """COUNTABILITY CONTRACT: a row whose purpose cannot be resolved (no snippet,
+    no stored purpose key) can never anchor a coherent implementation chain —
+    the grade-time ML verdict alone no longer stands in for a concrete purpose.
+    "Purpose unknown + Demonstrated" must be impossible."""
     items = [
         _purpose_github_item(pid="proj-a", grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True),
         _item("Project Defense", pid="proj-a"),
     ]
+    assert _has_coherent_impl_chain(items, skill="Machine Learning") is False
+    # The same chain WITH a concrete adapter-stored purpose is coherent again.
+    items[0]["code_block_purpose_key"] = "prediction_inference"
     assert _has_coherent_impl_chain(items, skill="Machine Learning") is True
 
 
@@ -3694,3 +4183,236 @@ def test_skill_summary_non_code_skill_never_told_to_attach_code(
 
     card = next(s for s in summaries if s["skill"] == "Communication")
     assert not any("GitHub" in a for a in card["strengthening_actions"])
+
+
+# ── Attachment Intelligence Cleanup (Step 4) ──────────────────────────────────
+
+
+def test_project_scoped_skill_report_never_marks_unrelated_global_evidence_attached(
+    client: TestClient, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A proof that is NOT attached to any project must never surface as an
+    attached project chain in the skill report — it stays clearly labelled
+    unattached/standalone, however strong the skill match is."""
+    from tests.test_vbr_project_defense import _create_project_defense
+
+    attached_proof_id = _seed_github_proof(mem_store)
+    created = _create_project_defense(
+        client, attached_proofs={"github_proof_id": attached_proof_id}
+    ).json()
+    project_id = created["project"]["id"]
+
+    # A second, UNATTACHED GitHub proof for a different repository that also
+    # claims Python — global vault evidence unrelated to the project above.
+    _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/otherowner/other-repo",
+        repo_owner="otherowner",
+        repo_name="other-repo",
+    )
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "Python", synthesize=False)
+
+    for chain in report["projects"]:
+        if chain.get("attached"):
+            assert chain.get("project_id") == project_id, (
+                "only the real attached project may produce an attached chain"
+            )
+        else:
+            assert chain.get("attached_status") != "Attached to a VBR project"
+
+    # The unrelated repo's evidence is still present somewhere in the report —
+    # but never inside an attached chain.
+    blob = str(report)
+    assert "other-repo" in blob
+    for chain in report["projects"]:
+        if chain.get("attached"):
+            assert "other-repo" not in str(chain)
+
+
+# ── Cross-view Website-Proof skill mapping consistency (single source of truth) ─
+#
+# The Work Passport / Project Report (build_student_vbr_report) and the Skill
+# Report (collect_skill_report) MUST agree about which skill a Website Proof
+# supports in a given project. Before the canonical mapping was shared, the
+# report DERIVED a skill from the observed behaviour (a Teachable prediction demo
+# → Machine Learning / Image Classification / Frontend) while the Skill Report
+# used only the proof's EXTRACTED supported_skills — so a recruiter saw Website
+# Proof in the Passport but "No Website Proof in this project for this skill" in
+# the Skill Report for the SAME skill-project pair. These tests lock that shut.
+
+
+def _seed_teachable_prediction_website(mem_store: dict, *, supported_skills: list[str]) -> str:
+    """A Teachable-Machine image-classification prediction Website Proof.
+
+    ``supported_skills`` is the proof's EXTRACTED list; the observed behaviour
+    (image upload → predicted class label) is what the canonical mapping DERIVES
+    Machine Learning / Image Classification / Frontend from.
+    """
+    return _seed_workflow_analysis(
+        mem_store,
+        target_website="https://teachablemachine.withgoogle.com",
+        supported_skills=supported_skills,
+        weakly_supported_skills=[],
+        workflow_summary=(
+            "The Teachable Machine model classified the image and displayed a "
+            "predicted class label with a confidence score."
+        ),
+        demonstrated_actions=["Selected an image class", "Read the predicted class label"],
+        observed_demonstration={"dom_summary": "A predicted class label and confidence bar were rendered."},
+        page_context_summary="Image classification prediction page.",
+        dom_evidence_status="available",
+        frame_ocr_evidence_summary={
+            "has_ocr_evidence": True,
+            "top_ocr_snippets": ["Prediction: cat", "Confidence: high"],
+            "detected_page_context": "prediction_output",
+            "frames_analyzed": 4,
+        },
+        visual_reasoning_summary={
+            "status": "analyzed",
+            "frames_analyzed": 4,
+            "summary": "An image classification result is displayed.",
+            "supported_signals": ["prediction result displayed"],
+        },
+    )
+
+
+def _ml_chain(report: dict, pid: str) -> dict:
+    return next(
+        p
+        for p in report["projects"]
+        if p.get("project_id") == pid or pid in (p.get("grouped_project_ids") or [])
+    )
+
+
+def test_website_derived_skill_flows_to_report_and_skill_report(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A derived Website→skill mapping appears identically in the Project Report
+    skill cards AND the Skill Report connected chain (never one but not the other)."""
+    session = _seed_teachable_prediction_website(mem_store, supported_skills=["Web Development"])
+    created = _create_project_defense(
+        client,
+        title="Teachable Machine Image Classification Demo",
+        claimed_skills=["Machine Learning", "Image Classification", "Frontend Development", "Browser APIs"],
+        attached_proofs={"website_proof_session_ids": [session]},
+    ).json()
+    pid = created["project"]["id"]
+
+    # ── Project Report: skill cards cite Website Proof for the DERIVED skills ──
+    body = client.get(f"/api/v1/student/vbr/projects/{pid}/report").json()
+    rows = {r["skill"]: r for r in body["skill_evidence"]}
+    assert "Website Proof" in rows["Machine Learning"]["supporting_sources"]
+    assert "Website Proof" in rows["Image Classification"]["supporting_sources"]
+    assert rows["Image Classification"]["status"] != "Not assessed"
+    assert "Website Proof" in rows["Frontend Development"]["supporting_sources"]
+    # Browser APIs is a generic family the behaviour does not derive — stays off.
+    assert "Website Proof" not in rows["Browser APIs"]["supporting_sources"]
+
+    # Evidence by Source: the proof IS attached (never "not attached" here).
+    assert body["evidence_package"]["website_proofs_count"] == 1
+    ev = next(e for e in body["website_skill_evidence"] if e["skill_mapping_available"])
+    mapped_skills = {s["skill_name"] for s in ev["skills"]}
+    assert {"Machine Learning", "Image Classification", "Frontend Development"} <= mapped_skills
+
+    # ── Skill Report (ML): the Teachable chain carries the SAME Website Proof ──
+    for slug in ("machine-learning", "image-classification", "frontend-development"):
+        report = collect_skill_report(mem_store, pipeline_db, USER_ID, slug, synthesize=False)
+        chain = _ml_chain(report, pid)
+        assert chain["website_evidence"], f"{slug}: derived Website Proof must appear in the chain"
+        assert "Website Proof" in chain["sources"]
+        assert not any("No Website Proof" in lim for lim in chain["limitations"]), (
+            f"{slug}: chain must not claim 'No Website Proof' when the canonical mapping maps it"
+        )
+
+
+def test_website_derived_skill_does_not_leak_to_unrelated_project(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A Website Proof derived onto ML for Teachable must NOT ride onto Boston,
+    which claims ML but has its own (non-website) evidence only."""
+    session = _seed_teachable_prediction_website(mem_store, supported_skills=["Web Development"])
+    _create_project_defense(
+        client,
+        title="Teachable Machine Image Classification Demo",
+        claimed_skills=["Machine Learning", "Image Classification"],
+        attached_proofs={"website_proof_session_ids": [session]},
+    )
+
+    gh = _seed_github_proof(
+        mem_store,
+        # Must match the project's declared repository — a contradictory pair
+        # is rejected by the canonical repository-identity gate.
+        repo_url="https://github.com/octocat/Boston",
+        repo_owner="octocat",
+        repo_name="Boston",
+        detected_skills=["Machine Learning"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Machine Learning", "file_path": "model.py", "line_start": 10, "line_end": 20}
+            ]
+        },
+    )
+    boston = _create_project_defense(
+        client,
+        title="Boston Smart Accident Risk Rerouting",
+        claimed_skills=["Machine Learning"],
+        repo_url="https://github.com/octocat/Boston",
+        attached_proofs={"github_proof_id": gh},
+    ).json()["project"]["id"]
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning", synthesize=False)
+    boston_chain = next(p for p in report["projects"] if p["project_id"] == boston)
+    assert not boston_chain["website_evidence"], "Boston must not inherit Teachable's Website Proof"
+    assert "Website Proof" not in boston_chain["sources"]
+    assert any("No Website Proof" in lim for lim in boston_chain["limitations"])
+
+
+def test_website_navigation_only_stays_project_level_everywhere(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """A generic navigation/layout Website Proof derives NO skill in either view —
+    it stays project-level and never becomes skill proof for ML."""
+    session = _seed_workflow_analysis(
+        mem_store,
+        target_website="https://demo.example.com",
+        supported_skills=[],
+        weakly_supported_skills=[],
+        workflow_summary="The user navigated between the app's pages using the sidebar menu.",
+        demonstrated_actions=["Opened the sidebar", "Switched between pages"],
+        page_context_summary="Navigation / page layout.",
+    )
+    created = _create_project_defense(
+        client,
+        title="Portfolio Site",
+        claimed_skills=["Machine Learning", "Frontend Development"],
+        attached_proofs={"website_proof_session_ids": [session]},
+    ).json()
+    pid = created["project"]["id"]
+
+    body = client.get(f"/api/v1/student/vbr/projects/{pid}/report").json()
+    rows = {r["skill"]: r for r in body["skill_evidence"]}
+    assert "Website Proof" not in rows["Machine Learning"]["supporting_sources"]
+    # The behaviour-evidence card exists but maps no skill (honest gap stated).
+    assert any(not e["skill_mapping_available"] for e in body["website_skill_evidence"])
+
+    report = collect_skill_report(mem_store, pipeline_db, USER_ID, "machine-learning", synthesize=False)
+    for chain in report["projects"]:
+        if chain.get("project_id") == pid:
+            assert not chain["website_evidence"], "navigation-only proof is not ML skill evidence"
+
+
+def test_website_mapping_helper_never_promotes_weakly_supported(
+    client, mem_store: dict, pipeline_db: dict
+) -> None:
+    """weakly_supported_skills are never treated as supporting_proof_types: a skill
+    only listed as weakly supported (and not derivable) earns no Website Proof."""
+    from app.services.website_skill_proof_focus import map_website_supported_skills
+
+    # navigation purpose derives nothing; a weakly-supported skill must not map.
+    mapped = map_website_supported_skills(
+        "navigation_layout",
+        extracted_supported_skills=[],
+        claimed_skills=["Kubernetes", "DevOps"],
+    )
+    assert mapped == []

@@ -18,7 +18,11 @@
 
 "use client"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+import { PUBLIC_API_BASE } from "./api-base"
+
+// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
+// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
+const API_BASE = PUBLIC_API_BASE
 
 /** sessionStorage keys — only this module reads/writes them. */
 const TOKEN_KEY = "vb_recruiter_token"

@@ -658,8 +658,8 @@ class WorkflowVisibleEvidenceService:
             try:
                 row_data, flags = sanitize_event(event)
                 privacy_flags_total.extend(flags)
-                self._insert_event(user_id, session_id, row_data)
-                stored += 1
+                if self._insert_event(user_id, session_id, row_data):
+                    stored += 1
             except Exception:
                 logger.warning(
                     "VISIBLE_EVIDENCE_INGEST_EVENT_FAILED session=%s event_type=%s",
@@ -775,7 +775,33 @@ class WorkflowVisibleEvidenceService:
 
     def _insert_event(
         self, user_id: str, session_id: str, row_data: dict[str, Any]
-    ) -> None:
+    ) -> bool:
+        event_id = str(row_data.get("event_id") or "")
+        if event_id:
+            if isinstance(self._client, dict):
+                duplicate = next(
+                    (
+                        row for row in self._client.get(_TABLE, {}).values()
+                        if str(row.get("user_id") or "") == str(user_id)
+                        and str(row.get("proof_session_id") or "") == str(session_id)
+                        and str(row.get("event_id") or "") == event_id
+                    ),
+                    None,
+                )
+                if duplicate:
+                    return False
+            else:
+                existing = (
+                    self._client.table(_TABLE)
+                    .select("id")
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", session_id)
+                    .eq("event_id", event_id)
+                    .limit(1)
+                    .execute()
+                )
+                if getattr(existing, "data", None):
+                    return False
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).isoformat()
         insert: dict[str, Any] = {
@@ -789,9 +815,10 @@ class WorkflowVisibleEvidenceService:
         if isinstance(self._client, dict):
             store = self._client.setdefault(_TABLE, {})
             store[insert["id"]] = insert
-            return
+            return True
 
         self._client.table(_TABLE).insert(insert).execute()
+        return True
 
     def _get_session(self, user_id: str, session_id: str) -> dict[str, Any] | None:
         """Return the extension_proof_sessions row for this user+session, or None."""

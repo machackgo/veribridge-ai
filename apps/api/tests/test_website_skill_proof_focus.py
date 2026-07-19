@@ -32,16 +32,25 @@ from app.services.website_skill_proof_focus import (
     classify_website_purpose,
     classify_website_skill_relevance,
     derive_website_evidence_chips,
+    derive_website_supported_skills,
     describe_website_purpose,
     describe_website_skill_relevance,
     is_direct_website_relevance,
     public_screenshot_access_label,
+    website_app_context,
     website_behavior_claim,
     website_chain_connection_note,
     website_corroboration_note,
     website_limitation_for,
+    website_missing_evidence_note,
+    website_output_observed,
+    website_page_context_label,
     website_purpose_summary,
+    website_recruiter_checklist,
+    website_runtime_claim,
     website_skill_relevance_summary,
+    website_target_domain,
+    website_user_action_observed,
 )
 
 from tests.test_student_proof_vault import _seed_project, mem_store, pipeline_db  # noqa: F401
@@ -462,6 +471,76 @@ def test_card_carries_purpose_relevance_chips_and_limitation() -> None:
     assert item.website_evidence_card is not None
 
 
+def test_card_public_live_url_is_directly_verifiable_live() -> None:
+    # A safe public open URL → the recruiter can open the current site, so the
+    # card is marked directly-verifiable-live and no deployment is recommended.
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        open_website_url="https://demo.example.com",
+    )
+    assert card["verification_mode"] == "directly_verifiable_live"
+    assert card["verification_mode_label"] == "Directly verifiable live"
+    assert card["deployment_recommended"] is False
+    assert "recruiter can open" in card["verification_note"].lower()
+
+
+def test_card_reachable_live_check_is_directly_verifiable_live() -> None:
+    # No attached open URL, but a reachable live-check final URL that is public
+    # → still directly verifiable live.
+    card = build_website_evidence_card(
+        purpose_key="dashboard_view",
+        relevance_key="direct_frontend_evidence",
+        skill="React",
+        live_check={"is_reachable": True, "final_url": "https://app.example.com/dash"},
+    )
+    assert card["verification_mode"] == "directly_verifiable_live"
+    assert card["deployment_recommended"] is False
+
+
+def test_card_localhost_is_recorded_replay_only_never_live() -> None:
+    # A localhost target never survives the safe-URL gate → recorded replay only,
+    # deployment recommended, and the local/non-public copy is used.
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        open_website_url="http://localhost:3000",
+        live_check={"is_reachable": True, "final_url": "http://127.0.0.1:8000/predict"},
+    )
+    assert card["open_website_url"] is None
+    assert card["verification_mode"] == "recorded_replay_only"
+    assert card["verification_mode_label"] == "Recorded replay only"
+    assert card["deployment_recommended"] is True
+    assert "local or non-public" in card["verification_note"].lower()
+
+
+def test_card_no_url_is_recorded_replay_only() -> None:
+    card = build_website_evidence_card(
+        purpose_key="interactive_form_flow",
+        relevance_key="direct_frontend_evidence",
+        skill="React",
+    )
+    assert card["verification_mode"] == "recorded_replay_only"
+    assert card["deployment_recommended"] is True
+
+
+def test_card_verification_fields_round_trip_through_schema() -> None:
+    card = build_website_evidence_card(
+        purpose_key="dashboard_view",
+        relevance_key="direct_frontend_evidence",
+        skill="React",
+        open_website_url="https://demo.example.com",
+    )
+    item = SkillReportEvidenceItem(
+        proof_type="Website Proof", source_id="s1", website_evidence_card=card
+    )
+    assert item.website_evidence_card is not None
+    assert item.website_evidence_card.verification_mode == "directly_verifiable_live"
+    assert item.website_evidence_card.deployment_recommended is False
+
+
 def test_card_screenshot_is_permission_gated_never_a_url() -> None:
     with_frames = build_website_evidence_card(
         purpose_key="dashboard_view",
@@ -537,6 +616,16 @@ def test_skill_report_website_item_carries_evidence_card(
     assert card["screenshot_preview_url"] is None
     assert card["observed_at"], "the capture date (date-only) rides on the card"
     assert len(str(card["observed_at"])) == 10
+    # Website Runtime Inspection fields flow through the full vault→card path.
+    assert "Machine Learning" in card["runtime_claim_observed"]
+    assert "prediction/result" in card["runtime_claim_observed"]
+    assert card["target_domain"] == "demo.example.com"
+    assert card["app_context"]  # domain / page title
+    assert card["is_public_live_url"] is True
+    assert card["is_local_or_private_url"] is False
+    assert "prediction" in (card["user_action_observed"] or "").lower()
+    assert "prediction/result" in (card["output_observed"] or "").lower()
+    assert any("Open the live website" in s for s in card["recruiter_checklist"])
 
 
 def test_public_view_carries_validated_chips_and_coerced_screenshot_status() -> None:
@@ -776,3 +865,430 @@ def test_public_projection_derives_claim_and_rederives_corroboration_note() -> N
     tampered["website_corroboration_note"] = "SMUGGLED tokens sk-ABC"
     reprojected = public_safe_evidence_artifact(tampered)
     assert "SMUGGLED" not in str(reprojected)
+
+
+# ── Conservative skill DERIVATION from safe summaries alone ───────────────────
+
+
+def test_derive_maps_specific_demonstrated_behaviour_only() -> None:
+    """A specific observed behaviour derives the matching-family skill; a generic
+    or unrelated skill is never derived from the same page."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        derive_website_supported_skills,
+    )
+
+    # ML prediction demo → ML skill derived, unrelated DevOps skill is not.
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    assert derive_website_supported_skills(purpose, ["Machine Learning", "Docker"]) == [
+        "Machine Learning"
+    ]
+
+    # Interactive frontend UI → frontend skill derived.
+    fe_purpose = classify_website_purpose(
+        workflow_summary="Typed a message into the chat interface and the assistant reply appeared."
+    )
+    assert "React" in derive_website_supported_skills(fe_purpose, ["React"])
+
+    # API request→result → backend skill derived.
+    api_purpose = classify_website_purpose(
+        workflow_summary="A request was sent to the API endpoint and the JSON response was rendered."
+    )
+    assert "FastAPI" in derive_website_supported_skills(api_purpose, ["FastAPI"])
+
+
+def test_derive_maps_nothing_for_generic_or_availability_pages() -> None:
+    """A landing/availability/unknown page derives NO skill — it stays project-level."""
+    from app.services.website_skill_proof_focus import (
+        PURPOSE_DEPLOYED_AVAILABILITY,
+        PURPOSE_UNKNOWN,
+        classify_website_purpose,
+        derive_website_supported_skills,
+    )
+
+    landing = classify_website_purpose(
+        workflow_summary="A landing page describing the product and its features was shown."
+    )
+    assert derive_website_supported_skills(landing, ["React", "Machine Learning"]) == []
+    # Bare availability / unknown purposes never derive a mapping.
+    assert derive_website_supported_skills(PURPOSE_DEPLOYED_AVAILABILITY, ["React"]) == []
+    assert derive_website_supported_skills(PURPOSE_UNKNOWN, ["React"]) == []
+
+
+def test_derive_never_invents_unclaimed_skills() -> None:
+    """Derivation only ever returns skills that were actually claimed."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        derive_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    assert derive_website_supported_skills(purpose, []) == []
+
+
+def test_broad_stored_supported_skills_never_leak_website_proof() -> None:
+    """A broad/dirty stored ``supported_skills`` list is a HINT ONLY: it never maps
+    Website Proof onto a skill whose safe observed behaviour has no skill-specific
+    relevance. An image-classification demo maps ML/Image-Classification (model
+    product-behaviour context) and the interactive UI supports Frontend, but the
+    infrastructure/data/security skills (Docker / AWS / SQL / Security) NEVER map
+    just because the stored list named them — a demo UI proves none of their
+    internals, so the observed behaviour has no relevance to them."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary=(
+            "The user uploaded an image and the model displayed a classification result."
+        )
+    )
+    claimed = [
+        "Machine Learning",
+        "Image Classification",
+        "React",
+        "Docker",
+        "AWS",
+        "SQL",
+        "Security",
+    ]
+    # The stored list is deliberately broad — it names skills the behaviour does not
+    # demonstrate. Only the genuinely-supported skills may map.
+    mapped = map_website_supported_skills(
+        purpose,
+        extracted_supported_skills=list(claimed),
+        claimed_skills=claimed,
+    )
+    mapped_names = {name for name, _basis in mapped}
+    assert {"Machine Learning", "Image Classification"} <= mapped_names
+    # The infra/data/security skills never leak in, despite being in supported_skills:
+    # a model-prediction demo carries no Docker/AWS/SQL/Security-specific relevance.
+    assert not (mapped_names & {"Docker", "AWS", "SQL", "Security"})
+
+
+def test_stored_supported_skill_without_relevance_is_dropped() -> None:
+    """A stored ``supported_skills`` value whose safe website behaviour has no
+    skill-specific relevance maps NOTHING — the stored list can never map by itself."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    # A bare-availability page: the stored list names Docker, but a reachable-only
+    # deployment has no Docker-specific relevance → no mapping.
+    purpose = classify_website_purpose(live_check={"is_reachable": True})
+    assert map_website_supported_skills(
+        purpose,
+        extracted_supported_skills=["Docker", "Kubernetes"],
+        claimed_skills=["Docker", "Kubernetes"],
+    ) == []
+
+    # An unclassifiable capture likewise maps nothing even when supported_skills
+    # names a claimed skill.
+    from app.services.website_skill_proof_focus import PURPOSE_UNKNOWN
+
+    assert map_website_supported_skills(
+        PURPOSE_UNKNOWN,
+        extracted_supported_skills=["React"],
+        claimed_skills=["React"],
+    ) == []
+
+
+def test_extracted_basis_still_labels_a_genuinely_supported_skill() -> None:
+    """When a stored ``supported_skills`` value IS genuinely supported by the observed
+    behaviour, it maps with the ``extracted`` provenance basis (the stored list is a
+    valid HINT, just never proof on its own)."""
+    from app.services.website_skill_proof_focus import (
+        classify_website_purpose,
+        map_website_supported_skills,
+    )
+
+    purpose = classify_website_purpose(
+        workflow_summary="Entered values and the model displayed a prediction result."
+    )
+    mapped = dict(
+        map_website_supported_skills(
+            purpose,
+            extracted_supported_skills=["Machine Learning"],
+            claimed_skills=["Machine Learning", "Docker"],
+        )
+    )
+    assert mapped == {"Machine Learning": "extracted"}
+
+
+def test_website_evidence_source_types_are_closed_and_ordered() -> None:
+    from app.services.website_skill_proof_focus import (
+        ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES,
+        website_evidence_source_types,
+    )
+
+    types = website_evidence_source_types(
+        has_dom=True, has_ocr=True, has_visual=True, has_nlp=True, live_reachable=True
+    )
+    assert types == [
+        "Website DOM",
+        "Website OCR",
+        "Website visual analysis",
+        "Website NLP",
+        "Website runtime behavior",
+    ]
+    assert set(types) <= ALLOWED_WEBSITE_EVIDENCE_SOURCE_TYPES
+    # None present → empty list (never fabricated).
+    assert website_evidence_source_types() == []
+
+
+# ── Feature engineering: richer safe signals reach the classifier ─────────────
+
+
+def test_page_context_prediction_output_maps_ml_and_image_classification() -> None:
+    """A capture the OCR stage classified as a prediction page maps to ML /
+    Image Classification even when the raw workflow text was thin — the closed
+    ``detected_page_context`` enum contributes a safe deterministic signal."""
+    purpose = classify_website_purpose(page_context="prediction_output")
+    assert purpose == "prediction_result_display"
+    assert derive_website_supported_skills(
+        purpose, ["Machine Learning", "Image Classification", "Docker"]
+    ) == ["Machine Learning", "Image Classification"]
+
+
+def test_training_ui_page_context_maps_ml_teachable_machine() -> None:
+    """A Teachable-Machine style training UI maps to ML product behaviour."""
+    purpose = classify_website_purpose(
+        workflow_summary="The user trained a model in the Teachable Machine interface.",
+        page_context="training_ui",
+    )
+    assert purpose == "prediction_result_display"
+    assert "Machine Learning" in derive_website_supported_skills(purpose, ["Machine Learning"])
+
+
+def test_live_check_summary_folds_into_classifier_haystack() -> None:
+    """The live-check recruiter summary (e.g. a route/risk recommendation) is a
+    safe signal the classifier reads — an API/prediction page maps precisely."""
+    purpose = classify_website_purpose(
+        live_check={
+            "is_reachable": True,
+            "summary": "The page returned a route recommendation with a computed risk score.",
+        }
+    )
+    # "recommendation" + "risk score" → a prediction/result behaviour, not bare availability.
+    assert purpose == "prediction_result_display"
+
+
+def test_extra_signals_fold_into_classifier_haystack() -> None:
+    """Additional already-safe visual/OCR signal phrases are read by the classifier."""
+    purpose = classify_website_purpose(
+        extra_signals=["A request was sent to the API endpoint and JSON was rendered."]
+    )
+    assert purpose == "api_backed_interaction"
+    assert "FastAPI" in derive_website_supported_skills(purpose, ["FastAPI"])
+
+
+def test_geospatial_map_narrative_maps_data_visualization() -> None:
+    """A route/traffic/accident map is data-visualization behaviour → maps a
+    Geospatial / Data Analysis skill, not an unrelated one."""
+    purpose = classify_website_purpose(
+        workflow_summary="An interactive map rendered the route with a traffic and accident overlay."
+    )
+    assert purpose == "data_visualization"
+    mapped = derive_website_supported_skills(
+        purpose, ["Geospatial Analysis", "Data Visualization", "Docker"]
+    )
+    assert "Geospatial Analysis" in mapped and "Data Visualization" in mapped
+    # A deployment/infra skill is never derived from a chart/map page.
+    assert "Docker" not in mapped
+
+
+def test_generic_page_context_stays_project_level_only() -> None:
+    """Marketing / demo / unknown / filtered page contexts contribute NO signal,
+    so a bare navigation/landing capture never maps a skill (project-level only)."""
+    for ctx in ("homepage_marketing", "demo_content", "unknown", "filtered_non_target_frame"):
+        purpose = classify_website_purpose(
+            workflow_summary="The user browsed between the app's pages using the navigation menu.",
+            page_context=ctx,
+        )
+        assert purpose == "navigation_layout"
+        assert derive_website_supported_skills(purpose, ["Machine Learning", "React"]) == []
+
+
+def test_enrichment_signals_are_purely_additive() -> None:
+    """The new optional signals can only ADD a stronger match — a strong workflow
+    narrative is unaffected by an empty/None page context or extra signals."""
+    strong = "Entered values and the model displayed a prediction result."
+    assert classify_website_purpose(workflow_summary=strong) == classify_website_purpose(
+        workflow_summary=strong, page_context=None, extra_signals=[]
+    )
+
+
+# ── Website Runtime Inspection: deep-inspection fields ────────────────────────
+
+
+def test_runtime_claim_is_skill_specific_per_relevance() -> None:
+    ml = website_runtime_claim("ml_product_context", "Machine Learning")
+    assert "Machine Learning" in ml and "prediction/result" in ml
+    fe = website_runtime_claim("direct_frontend_evidence", "React")
+    assert "interactive React UI" in fe
+    cloud = website_runtime_claim("deployment_availability_evidence", "Cloud Engineering")
+    # Cloud/MLOps: deployed runtime only when public — local replay never proves it.
+    assert "public/deployed" in cloud and "local replay alone does not prove" in cloud
+
+
+def test_runtime_claim_fails_closed_on_bogus_relevance() -> None:
+    claim = website_runtime_claim("totally-made-up", "React")
+    assert "needs review" in claim.lower()
+
+
+def test_user_action_and_output_are_purpose_specific_or_none() -> None:
+    assert "prediction" in (website_user_action_observed("prediction_result_display") or "").lower()
+    assert "prediction/result" in (website_output_observed("prediction_result_display") or "").lower()
+    # A purpose with no demonstrable action/output returns None (honest missing state).
+    assert website_user_action_observed("deployed_availability") is None
+    assert website_output_observed("deployed_availability") is None
+    assert website_user_action_observed("unknown_needs_review") is None
+
+
+def test_target_domain_only_from_safe_urls_never_private() -> None:
+    # Safe public URL → domain surfaces.
+    assert website_target_domain("https://demo.example.com/app", None, None) == "demo.example.com"
+    # Live-check final URL (already gated safe) is honoured too.
+    assert website_target_domain(None, "https://app.example.com/dash", None) == "app.example.com"
+    # A localhost/private host never yields a domain.
+    assert website_target_domain("http://localhost:3000", None, None) is None
+    assert website_target_domain(None, None, "Recorded session") is None
+    # The already-safe route-or-page locator ("host/path") is accepted as a floor.
+    assert website_target_domain(None, None, "demo.example.com/dashboard") == "demo.example.com"
+
+
+def test_app_context_prefers_known_app_then_title_then_domain() -> None:
+    assert website_app_context("teachablemachine.withgoogle.com", None) == "Teachable Machine"
+    assert website_app_context("myproj-abc.hf.space", None) == "Hugging Face Space"
+    # Generic host → page title wins over the bare domain.
+    assert website_app_context("myapp.vercel.app", "Crash Risk Predictor") == "Crash Risk Predictor"
+    # No title → bare domain.
+    assert website_app_context("myapp.vercel.app", None) == "myapp.vercel.app"
+    assert website_app_context(None, None) is None
+
+
+def test_page_context_label_maps_only_specific_contexts() -> None:
+    assert website_page_context_label("prediction_output") == "Prediction / output page"
+    assert website_page_context_label("training_ui") == "Model training interface"
+    # Generic/demo/unknown contexts add no specificity.
+    assert website_page_context_label("demo_content") is None
+    assert website_page_context_label("unknown") is None
+    assert website_page_context_label(None) is None
+
+
+def test_recruiter_checklist_live_reproduces_workflow() -> None:
+    steps = website_recruiter_checklist("directly_verifiable_live", "prediction_result_display")
+    joined = " ".join(steps).lower()
+    assert "open the live website" in joined
+    assert "provide similar input" in joined
+    assert "confirm the same output" in joined
+    assert "compare" in joined
+
+
+def test_recruiter_checklist_recorded_cannot_open_localhost() -> None:
+    steps = website_recruiter_checklist("recorded_replay_only", "prediction_result_display")
+    joined = " ".join(steps).lower()
+    assert "cannot open it directly" in joined
+    assert "recorded evidence package" in joined
+    assert "deploy the site to a public url" in joined
+    # No "open the live website" instruction for a recorded-only proof.
+    assert "open the live website" not in joined
+
+
+def test_missing_evidence_note_names_gaps_or_is_none() -> None:
+    # Thin capture: no visual/ocr/dom/workflow and no public URL → a precise note.
+    note = website_missing_evidence_note(
+        has_visual=False, has_ocr=False, has_dom=False, has_workflow=False, has_public_live_url=False
+    )
+    assert note is not None
+    assert "visual capture" in note and "public deployment URL" in note
+    assert "Record a stronger Website Proof" in note
+    # Rich, publicly verifiable capture → no note.
+    assert (
+        website_missing_evidence_note(
+            has_visual=True, has_ocr=True, has_dom=True, has_workflow=True, has_public_live_url=True
+        )
+        is None
+    )
+
+
+def test_card_carries_runtime_inspection_fields_for_ml() -> None:
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        workflow_summary="Entered accident details and a crash-risk prediction appeared.",
+        workflow_steps=["Enter details", "View prediction"],
+        has_visual_summary=True,
+        has_ocr_summary=True,
+        live_check={"is_reachable": True, "final_url": "https://demo.example.com/predict", "page_title": "Crash Risk"},
+        open_website_url="https://demo.example.com",
+        observed_at="2026-06-30T00:00:00Z",
+        page_context="prediction_output",
+    )
+    # Section 1 — skill-specific runtime claim (never generic).
+    assert "Machine Learning" in card["runtime_claim_observed"]
+    assert "prediction/result" in card["runtime_claim_observed"]
+    # Section 2 — concrete observed facts.
+    assert card["target_domain"] == "demo.example.com"
+    assert card["app_context"]  # page title or domain
+    assert card["page_context_label"] == "Prediction / output page"
+    assert "prediction" in card["user_action_observed"].lower()
+    assert "prediction/result" in card["output_observed"].lower()
+    assert card["visible_text_observed"]  # safe OCR-derived sentence (has_ocr_summary)
+    assert card["is_public_live_url"] is True
+    assert card["is_local_or_private_url"] is False
+    # Section 4 — recruiter checklist for a live proof.
+    assert any("Open the live website" in s for s in card["recruiter_checklist"])
+    # A rich live capture leaves no missing-evidence note.
+    assert card["missing_evidence_note"] is None
+    # ML honesty limitation preserved.
+    assert "does not, by itself, prove model training" in card["limitation"]
+    # Schema round-trip validates the enriched card.
+    item = SkillReportEvidenceItem(
+        proof_type="Website Proof", source_id="s1", website_evidence_card=card
+    )
+    assert item.website_evidence_card is not None
+    assert item.website_evidence_card.runtime_claim_observed == card["runtime_claim_observed"]
+    assert item.website_evidence_card.is_local_or_private_url is False
+
+
+def test_card_local_proof_has_no_domain_and_recorded_checklist() -> None:
+    card = build_website_evidence_card(
+        purpose_key="prediction_result_display",
+        relevance_key="ml_product_context",
+        skill="Machine Learning",
+        open_website_url="http://localhost:3000",
+    )
+    # No public URL → no leaked domain, recorded-replay checklist, missing note.
+    assert card["target_url_safe"] is None
+    assert card["target_domain"] is None
+    assert card["is_public_live_url"] is False
+    assert card["is_local_or_private_url"] is True
+    assert any("cannot open it directly" in s for s in card["recruiter_checklist"])
+    assert card["missing_evidence_note"] is not None
+    assert "public deployment URL" in card["missing_evidence_note"]
+
+
+def test_card_runtime_fields_never_leak_raw_or_private() -> None:
+    card = build_website_evidence_card(
+        purpose_key="chat_prompt_interface",
+        relevance_key="genai_product_context",
+        skill="Generative AI",
+        has_ocr_summary=True,
+        has_dom_summary=True,
+        open_website_url="https://storage.internal/bucket/frame.jpg?X-Amz-Signature=SECRET",
+        live_check={"is_reachable": True, "final_url": "http://127.0.0.1:9000/private"},
+    )
+    blob = repr(card)
+    assert "X-Amz-Signature" not in blob and "SECRET" not in blob
+    assert "127.0.0.1" not in blob and "localhost" not in blob
+    # visible_text is the closed derived sentence, not any raw OCR dump.
+    assert card["visible_text_observed"] == card["ocr_evidence_summary_safe"]
+    assert card["target_domain"] is None

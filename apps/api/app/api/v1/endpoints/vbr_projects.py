@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.schemas.vbr_project import (
     VBRDeployedUrlCheckResponse,
     VBRProjectCreateRequest,
@@ -230,7 +230,8 @@ def _set_project_status(db: Any, project_id: str, new_status: str) -> None:
 )
 def create_project(
     body: VBRProjectCreateRequest,
-    user_id: str = Depends(get_current_user_id),
+    # First-write flow: vbr_projects FKs public.users — provision fresh users.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> VBRProjectResponse:
     repo_ref = parse_github_repo_url(body.repo_url)

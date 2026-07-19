@@ -30,6 +30,7 @@ from app.services.public_report_safety_service import (
     defense_privacy_is_clean,
     enforce_public_safe,
     public_safe_defense_analysis,
+    public_safe_document_inspection_card,
     public_safe_evidence_artifact,
     public_safe_linked_chain,
     public_safe_skill_name,
@@ -238,6 +239,51 @@ def test_public_safe_evidence_artifact_strips_source_id_metadata_and_scrubs() ->
     _assert_no_scores(out)
     # Whole projection must pass the fail-closed gate.
     assert contains_unsafe_fields(out) is False
+
+
+def test_public_safe_website_artifact_marks_verification_mode() -> None:
+    # Public website evidence with a safe public URL → directly-verifiable-live,
+    # closed recruiter copy, no deployment recommendation. Verification is
+    # DERIVED from the revalidated public_url, never echoed from the payload.
+    live = public_safe_evidence_artifact(
+        {
+            "evidence_id": "ev_website_abcdef123456",
+            "source_type": "website",
+            "source_label": "Website Proof",
+            "canonical_skill_name": "React",
+            "website_purpose_key": "dashboard_view",
+            "website_screenshot_available": True,
+            "website_screenshot_access_label": "private_candidate_permission_required",
+            "public_safe": True,
+            "public_url": "https://my-risk-demo.vercel.app/dash",
+            # Hostile echoes must be ignored — recomputed from the safe URL.
+            "website_verification_mode": "recorded_replay_only",
+            "website_verification_note": "leak me",
+        }
+    )
+    assert live["website_verification_mode"] == "directly_verifiable_live"
+    assert live["website_verification_mode_label"] == "Directly verifiable live"
+    assert live["website_deployment_recommended"] is False
+    assert "leak me" not in str(live)
+    _assert_no_leaks(live)
+    _assert_no_scores(live)
+    assert contains_unsafe_fields(live) is False
+
+    # A localhost/private URL is stripped by _safe_url → recorded replay only.
+    local = public_safe_evidence_artifact(
+        {
+            "evidence_id": "ev_website_abcdef123456",
+            "source_type": "website",
+            "canonical_skill_name": "React",
+            "website_purpose_key": "prediction_result_display",
+            "website_screenshot_available": True,
+            "public_safe": True,
+            "public_url": "http://localhost:3000",
+        }
+    )
+    assert local["public_url"] is None
+    assert local["website_verification_mode"] == "recorded_replay_only"
+    assert local["website_deployment_recommended"] is True
 
 
 # ── Step 3 — linked proof chain ───────────────────────────────────────────────
@@ -1759,3 +1805,424 @@ def test_public_safe_defense_analysis_is_enforce_public_safe_clean() -> None:
     # enforce_public_safe would raise if the placeholder still smelled unsafe.
     assert enforce_public_safe(projected) == projected
     assert contains_unsafe_fields(projected) is False
+
+
+# ── Document Proof inspection card (public projection) ────────────────────────
+
+
+def _private_inspection_card(**overrides) -> dict:
+    card = {
+        "title": "Final Year Project Report",
+        "source_type": "Document Proof",
+        "status": "Supporting evidence",
+        "matched_skill": "Machine Learning",
+        "project_title": "Housing Price Predictor",
+        "evidence_role": "Corroborating document",
+        "page_number": 4,
+        "section_label": "Model Architecture",
+        "citation_label": "Model Architecture",
+        "safe_snippet": "We trained a gradient-boosted model on the housing dataset.",
+        "figure_reference": "Figure 2",
+        "table_reference": None,
+        "diagram_reference": None,
+        "visual_or_table_summary": None,
+        "why_supported": "Describes the ML model workflow and dataset.",
+        "corroborates": "GitHub implementation",
+        "limitation": "Document Proof supports or corroborates the claim but does not independently prove implementation.",
+        "access_note": "Original document download is not available from this view yet.",
+        "can_download_document": False,
+        "document_download_url": None,
+        "document_open_url": None,
+        "is_public_safe": False,
+        "is_attached_to_project": True,
+    }
+    card.update(overrides)
+    return card
+
+
+def test_public_doc_inspection_strips_snippet_unless_public_safe() -> None:
+    """I. The snippet is stripped when the card is not explicitly public-safe, and
+    kept only when it is."""
+    private = public_safe_document_inspection_card(_private_inspection_card())
+    assert private["safe_snippet"] is None
+    # Safe locator + reason still survive so recruiters can still inspect.
+    assert private["page_number"] == 4
+    assert private["citation_label"] == "Model Architecture"
+    assert private["figure_reference"] == "Figure 2"
+    assert private["why_supported"]
+
+    public = public_safe_document_inspection_card(
+        _private_inspection_card(is_public_safe=True, safe_snippet="safe excerpt kept")
+    )
+    assert public["safe_snippet"] == "safe excerpt kept"
+
+
+def test_public_doc_inspection_never_exposes_raw_path_id_or_signed_url() -> None:
+    """J. Hostile raw text / path / id / signed URL smuggled into fields never
+    survive, and the projection passes the whole-payload unsafe scan."""
+    hostile = _private_inspection_card(
+        is_public_safe=True,
+        title=f"Report {_LOCAL_PATH}",
+        why_supported=f"Contains {_SIGNED_URL} and {_ACCESS_TOKEN}",
+        safe_snippet=f"leak {_STORAGE_PATH} {_UUID}",
+        matched_skill=f"Machine Learning {_PRIVATE_ID}",
+        access_note=f"see {_FILE_URI}",
+        section_label=_EMAIL,
+    )
+    projected = public_safe_document_inspection_card(hostile)
+    blob = json.dumps(projected)
+    for leak in (_LOCAL_PATH, _SIGNED_URL, _ACCESS_TOKEN, _STORAGE_PATH, _FILE_URI, _EMAIL, "token=", "eyJ"):
+        assert leak not in blob, f"unsafe fragment leaked: {leak}"
+    # No internal-id / path / raw keys are introduced by the projection.
+    for forbidden in ("source_id", "file_path", "storage_path", "signed_url", "document_id", "raw_text"):
+        assert forbidden not in projected
+    assert enforce_public_safe(projected) == projected
+
+
+def test_public_doc_inspection_disables_download_unless_safe() -> None:
+    """K. Download stays disabled unless BOTH explicit consent AND a safe URL; a
+    private/unsafe URL never produces a download button."""
+    # Consent but no URL → still disabled, private access note.
+    consent_no_url = public_safe_document_inspection_card(
+        _private_inspection_card(can_download_document=True)
+    )
+    assert consent_no_url["can_download_document"] is False
+    assert consent_no_url["document_download_url"] is None
+    assert consent_no_url["document_open_url"] is None
+    assert "private" in consent_no_url["access_note"].lower()
+
+    # Consent + an unsafe (signed/storage) URL → dropped, still disabled.
+    unsafe_url = public_safe_document_inspection_card(
+        _private_inspection_card(can_download_document=True, document_download_url=_SIGNED_URL)
+    )
+    assert unsafe_url["can_download_document"] is False
+    assert unsafe_url["document_download_url"] is None
+
+    # Consent + a genuinely safe public URL → enabled.
+    safe = public_safe_document_inspection_card(
+        _private_inspection_card(
+            can_download_document=True, document_open_url="https://example.com/shared/report.pdf"
+        )
+    )
+    assert safe["can_download_document"] is True
+    assert safe["document_open_url"] == "https://example.com/shared/report.pdf"
+
+
+def test_public_doc_inspection_shows_safe_technical_details_and_citation() -> None:
+    """L. Public projection keeps bounded, safe technical detail lists + missing
+    note + locator (recruiter-inspectable), even while the raw excerpt is gone."""
+    projected = public_safe_document_inspection_card(
+        _private_inspection_card(
+            matched_skill="API Development",
+            skill_specific_claims=["API development is demonstrated through a backend service."],
+            technical_details=[
+                "API development is demonstrated through a backend service.",
+                "Document mentions API endpoints and cloud deployment.",
+            ],
+            api_endpoints=["Document mentions API endpoints and cloud deployment."],
+            request_response_details=[],
+            architecture_details=["Exposing the workflow as a backend service."],
+            implementation_hints=[],
+            missing_detail_note="No endpoint route names were extracted from this document.",
+            has_skill_specific_details=True,
+        )
+    )
+    assert projected["safe_snippet"] is None  # raw excerpt still stripped
+    assert projected["technical_details"], "safe technical details survive publicly"
+    assert any("backend service" in d for d in projected["technical_details"])
+    assert projected["api_endpoints"]
+    assert projected["missing_detail_note"] == "No endpoint route names were extracted from this document."
+    assert projected["has_skill_specific_details"] is True
+    # Bounded + capped.
+    assert len(projected["technical_details"]) <= 5
+
+
+def test_public_doc_inspection_scrubs_unsafe_fragments_from_detail_lists() -> None:
+    """M. Any path/signed-URL/token smuggled into a detail bullet never survives."""
+    hostile = _private_inspection_card(
+        matched_skill="API Development",
+        technical_details=[
+            f"backend service {_STORAGE_PATH}",
+            f"endpoint at {_SIGNED_URL}",
+            "clean detail about the backend service",
+        ],
+        api_endpoints=[f"route {_LOCAL_PATH}"],
+        missing_detail_note=f"missing {_ACCESS_TOKEN}",
+    )
+    projected = public_safe_document_inspection_card(hostile)
+    blob = json.dumps(projected)
+    for leak in (_STORAGE_PATH, _SIGNED_URL, _LOCAL_PATH, _ACCESS_TOKEN, "token=", "eyJ"):
+        assert leak not in blob, f"unsafe fragment leaked from detail list: {leak}"
+    assert enforce_public_safe(projected) == projected
+
+
+def test_public_doc_inspection_download_disabled_shows_private_access_note() -> None:
+    """N. With download disabled, the document access note is the neutral private
+    message and no label/URL is emitted."""
+    projected = public_safe_document_inspection_card(_private_inspection_card())
+    assert projected["can_download_document"] is False
+    assert projected["document_access_label"] is None
+    assert "private" in projected["document_access_note"].lower()
+    assert "verified excerpts and locators only" in projected["document_access_note"].lower()
+
+
+def test_public_doc_inspection_none_for_non_dict() -> None:
+    assert public_safe_document_inspection_card(None) is None
+    assert public_safe_document_inspection_card("nope") is None
+
+
+# ── Project Defense inspection cards — fail-closed public projection ──────────
+
+
+def _owner_inspection_card(**overrides) -> dict:
+    """One owner Project Defense inspection card (public-safe by default)."""
+    base = {
+        "evidence_id_safe": "defense-inspection-1",
+        "question_text": "How does your model make predictions?",
+        "question_kind": "skill_explanation",
+        "project_title": "Boston Housing",
+        "mapped_skill": "Machine Learning",
+        "claim_type": "skill_understanding",
+        "answer_purpose": "skill_explanation",
+        "evidence_role": "candidate_explanation",
+        "qualitative_status": "Explained with evidence",
+        "safe_answer_summary": "I trained a regression model and use it for inference on features.",
+        "evidence_basis_chips": ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+        "timestamp_label": "Video 03:12",
+        "clip_start_seconds": 192.0,
+        "clip_end_seconds": 205.0,
+        "clip_available": True,
+        "corroborates_github": True,
+        "corroborates_website": False,
+        "corroborates_document": False,
+        "corroboration_summary": "Corroborating defense evidence: GitHub Proof (implementation) for the same project.",
+        "what_this_demonstrates": "The student explained this Machine Learning claim in their own words.",
+        "limitation": "Project Defense is explanation evidence.",
+        "public_safe": True,
+        "withheld_reason": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_public_inspection_clean_card_derives_summary_and_keeps_locator() -> None:
+    """A clean, public-safe card keeps its safe question, a DERIVED summary (never
+    the raw answer text), the clip locator, and the corroboration flags."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card()], {"privacy_scan_status": "clean"}
+    )
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["question_text"]
+    # The candidate's raw answer text is NEVER echoed — summary is derived wording.
+    assert "regression model" not in card["safe_answer_summary"]
+    assert card["safe_answer_summary"]
+    # The clip locator survives as a label + seconds only.
+    assert card["clip_available"] is True
+    assert card["timestamp_label"] == "Video 03:12"
+    assert card["corroborates_github"] is True
+    # No internal id / raw status leaks.
+    assert "question_id" not in card
+
+
+def test_public_inspection_unsafe_status_withholds_answer_and_clip() -> None:
+    """When the session privacy review did not pass, every card is a withheld
+    placeholder: no answer text, no question text, no clip, a withheld reason."""
+    from app.services.public_report_safety_service import (
+        DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card()], {"privacy_scan_status": "flagged"}
+    )
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is False
+    assert card["withheld_reason"] == DEFENSE_INSPECTION_WITHHELD_MESSAGE
+    assert card["safe_answer_summary"] == DEFENSE_INSPECTION_WITHHELD_MESSAGE
+    assert card["question_text"] is None
+    assert card["clip_available"] is False
+    assert card["timestamp_label"] is None
+    # No answer-derived content, corroboration, or internal id survives.
+    assert "regression model" not in json.dumps(card)
+    assert card["corroborates_github"] is False
+    assert "question_id" not in card
+
+
+def test_public_inspection_per_card_not_public_safe_is_withheld() -> None:
+    """Even on a clean session, a card marked ``public_safe: False`` (e.g. a
+    contradicted answer) fails closed to a withheld placeholder."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card(public_safe=False)], {"privacy_scan_status": "clean"}
+    )
+    assert cards[0]["public_safe"] is False
+    assert cards[0]["question_text"] is None
+    assert "regression model" not in json.dumps(cards[0])
+
+
+def test_public_inspection_preserves_limitation_and_corroboration_labels() -> None:
+    """A clean card keeps the honest limitation framing and corroboration labels."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    cards = public_safe_project_defense_inspection(
+        [_owner_inspection_card(corroborates_website=True)],
+        {"privacy_scan_status": "clean"},
+    )
+    card = cards[0]
+    assert card["limitation"]
+    assert card["corroboration_summary"]
+    assert card["corroborates_website"] is True
+
+
+def test_public_inspection_strips_unsafe_free_text_and_ids() -> None:
+    """Defense in depth: storage paths / signed URLs / SSNs in owner free text are
+    scrubbed, and no internal id survives, on the public card."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    dirty = _owner_inspection_card(
+        corroboration_summary="See storage_path=vbr/sessions/abc and https://x/y?token=abc",
+        what_this_demonstrates="my SSN is 123-45-6789",
+        question_id="internal-qid-123",  # extra key must never survive
+    )
+    cards = public_safe_project_defense_inspection([dirty], {"privacy_scan_status": "clean"})
+    blob = json.dumps(cards[0])
+    for unsafe in ("vbr/sessions", "token=abc", "123-45-6789", "internal-qid-123", "question_id"):
+        assert unsafe not in blob
+
+
+# ── Playable evidence + transcript excerpt — fail-closed public projection ─────
+
+
+def test_public_inspection_never_exposes_recording_playback_url() -> None:
+    """A recruiter NEVER receives a private recording link, even on a clean,
+    public-safe card. The playback URLs are dropped and ``video_available`` is
+    reported as False with the fixed private-recording note."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        video_available=True,
+        video_playback_url="https://proj.supabase.co/storage/v1/object/sign/vbr/sessions/s1/processed/full.webm?token=abc",
+        clip_playback_url="https://proj.supabase.co/storage/v1/object/sign/vbr/sessions/s1/processed/full.webm?token=abc#t=192,205",
+        recording_access_note="Your defense recording is available to play here.",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "clean"})
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["video_playback_url"] is None
+    assert card["clip_playback_url"] is None
+    assert card["video_available"] is False
+    # No storage path / signed URL / token leaks anywhere on the card.
+    blob = json.dumps(card).lower()
+    for unsafe in ("supabase", "storage/v1/object/sign", "token=abc", "vbr/sessions"):
+        assert unsafe not in blob
+    # The recruiter-facing recording note is the fixed private message.
+    assert "private" in card["recording_access_note"].lower()
+
+
+def test_public_inspection_withholds_verbatim_transcript_excerpt_even_when_clean() -> None:
+    """Fail closed: the candidate's verbatim transcript excerpt is an owner-only
+    enrichment. Even on a clean, public-safe card the recruiter never receives
+    the spoken words — only the derived summary + timestamp labels."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        transcript_excerpt_available=True,
+        safe_transcript_excerpt="I trained a regression model and validated the features before inference.",
+        transcript_excerpt_start_label="03:10",
+        transcript_excerpt_end_label="03:25",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "clean"})
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["transcript_excerpt_available"] is False
+    assert card["safe_transcript_excerpt"] is None
+    assert card["transcript_excerpt_start_label"] is None
+    assert card["transcript_excerpt_end_label"] is None
+    # The candidate's verbatim words never appear on the public card.
+    assert "regression model" not in json.dumps(card)
+    assert "private" in card["transcript_access_note"].lower()
+
+
+def test_public_inspection_unsafe_withholds_transcript_excerpt_and_video() -> None:
+    """When the session privacy review did not pass, the transcript excerpt and
+    every playback URL are withheld along with the answer text."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        video_available=True,
+        video_playback_url="https://x/y?token=abc",
+        transcript_excerpt_available=True,
+        safe_transcript_excerpt="something the candidate said",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "flagged"})
+    card = cards[0]
+    assert card["public_safe"] is False
+    assert card["video_playback_url"] is None
+    assert card["clip_playback_url"] is None
+    assert card["video_available"] is False
+    assert card["safe_transcript_excerpt"] is None
+    assert card["transcript_excerpt_available"] is False
+    assert "something the candidate said" not in json.dumps(card)
+    assert "private" in card["transcript_access_note"].lower()
+
+
+def test_public_inspection_scrubs_unsafe_transcript_excerpt() -> None:
+    """Defense in depth: a storage path / token that slipped into the owner
+    excerpt is scrubbed before it reaches the public card."""
+    from app.services.public_report_safety_service import (
+        public_safe_project_defense_inspection,
+    )
+
+    owner = _owner_inspection_card(
+        transcript_excerpt_available=True,
+        safe_transcript_excerpt="see storage_path=vbr/sessions/abc and https://x/y?token=abc123",
+    )
+    cards = public_safe_project_defense_inspection([owner], {"privacy_scan_status": "clean"})
+    blob = json.dumps(cards[0])
+    for unsafe in ("vbr/sessions", "token=abc123", "storage_path=vbr"):
+        assert unsafe not in blob
+
+
+# ── Real-unmapped-proof context is a private-only key (fail-closed) ──────────
+
+
+def test_real_unmapped_proof_context_key_fails_the_public_scan() -> None:
+    """12. ``real_unmapped_proof_context`` is a PRIVATE-only layer: if it ever
+    reaches a public payload (any nesting, any casing shape), the unsafe-field
+    scan trips and the public gate refuses to serve the payload."""
+    from app.services.public_report_safety_service import (
+        PublicReportUnsafeError,
+        contains_unsafe_fields,
+        enforce_public_safe,
+    )
+
+    leaked = {"report_title": "Verified Build Report", "real_unmapped_proof_context": []}
+    assert contains_unsafe_fields(leaked)
+    with pytest.raises(PublicReportUnsafeError):
+        enforce_public_safe(leaked)
+
+    nested = {"projects": [{"realUnmappedProofContext": [{"proof_type": "GitHub Proof"}]}]}
+    assert contains_unsafe_fields(nested)
+
+    clean = {"report_title": "Verified Build Report", "skill_evidence": []}
+    assert not contains_unsafe_fields(clean)

@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "VeriBridge",
-  "version": "0.1.0",
+  "version": "0.2.1",
+  "version_name": "0.2.1 (recorder schema 1)",
   "description": "Record project workflow evidence for skill verification.",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "host_permissions": ["<all_urls>"],

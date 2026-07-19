@@ -416,6 +416,69 @@ class SkillEvidencePipelineService:
             pipeline.artifacts = [_artifact_response_to_student_summary(a) for a in artifacts]
         return pipelines
 
+    def has_artifact_matching(self, student_id: str, **artifact_data_filters: str) -> bool:
+        """True when any of the student's pipelines carries an artifact whose
+        ``artifact_data`` matches every given (field, value) pair.
+
+        Two queries on Supabase (pipeline ids + one filtered artifact lookup)
+        instead of scanning every artifact of every pipeline — the sync
+        services' idempotency checks call this on every save.
+        """
+        if isinstance(self._client, dict):
+            pipeline_ids = {
+                str(r.get("id")) for r in self._dict_list_pipelines_for_user(student_id)
+            }
+            return any(
+                str(r.get("pipeline_id")) in pipeline_ids
+                and all(
+                    (r.get("artifact_data") or {}).get(field) == value
+                    for field, value in artifact_data_filters.items()
+                )
+                for r in self._dict_table(_ARTIFACTS_TABLE).values()
+            )
+        rows_result = (
+            self._client.table(_PIPELINES_TABLE).select("id").eq("student_id", student_id).execute()
+        )
+        pipeline_ids = [str(r["id"]) for r in (getattr(rows_result, "data", []) or [])]
+        if not pipeline_ids:
+            return False
+        query = (
+            self._client.table(_ARTIFACTS_TABLE)
+            .select("id")
+            .in_("pipeline_id", pipeline_ids)
+        )
+        for field, value in artifact_data_filters.items():
+            query = query.eq(f"artifact_data->>{field}", value)
+        result = query.limit(1).execute()
+        return bool(getattr(result, "data", []) or [])
+
+    def has_artifact_for_session(
+        self, student_id: str, *, kind: str, vbr_session_id: str
+    ) -> bool:
+        """True when any of the student's pipelines carries an artifact whose
+        ``artifact_data`` matches (kind, vbr_session_id)."""
+        return self.has_artifact_matching(student_id, kind=kind, vbr_session_id=vbr_session_id)
+
+    def list_pipeline_rows_for_student(self, student_id: str) -> list[SkillEvidencePipelineResponse]:
+        """Pipelines owned by the student WITHOUT their artifact summaries.
+
+        One query instead of 1+N — for callers (e.g. sync services) that only
+        need the pipeline rows themselves and would otherwise trigger an
+        artifact fetch per pipeline.
+        """
+        if isinstance(self._client, dict):
+            rows = self._dict_list_pipelines_for_user(student_id)
+        else:
+            result = (
+                self._client.table(_PIPELINES_TABLE)
+                .select("*")
+                .eq("student_id", student_id)
+                .order("confidence_score", desc=True)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+        return [_pipeline_row_to_response(r) for r in rows]
+
     def get_pipeline(self, pipeline_id: str, student_id: str) -> SkillEvidencePipelineResponse:
         """Fetch a single pipeline (with its own artifact summaries);
         raises PipelineNotFoundError if absent."""

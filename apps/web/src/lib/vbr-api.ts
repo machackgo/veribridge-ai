@@ -1,8 +1,11 @@
 "use client"
 
 import { fetchAPI } from "@/lib/api"
+import { PUBLIC_API_BASE } from "@/lib/api-base"
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
+// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
+const API_BASE = PUBLIC_API_BASE
 
 /**
  * Client for the Verified Build Report (VBR) session recording endpoints.
@@ -39,6 +42,58 @@ export type VideoEvidenceChip = {
   question_id?: string | null
   source: string
   source_type: string
+}
+
+/**
+ * A Project Defense recruiter *inspection* card for one defended question — the
+ * defense parallel to GitHub / Website / Document inspection. Explanation /
+ * corroboration evidence only: it shows student understanding and communication,
+ * never standalone proof of implementation, runtime behavior, or authorship.
+ *
+ * All fields are optional / null-safe so older payloads and the fail-closed
+ * public projection (which drops answer-derived content) render cleanly. Carries
+ * no internal ids, raw transcript, media paths, or signed URLs. `clip_*` is a
+ * safe time-range locator only.
+ */
+export type ProjectDefenseInspectionCard = {
+  evidence_id_safe: string
+  question_text?: string | null
+  question_kind?: string
+  project_title?: string
+  mapped_skill?: string | null
+  claim_type?: string
+  answer_purpose?: string
+  evidence_role?: string
+  qualitative_status?: string
+  safe_answer_summary?: string
+  evidence_basis_chips?: string[]
+  timestamp_label?: string | null
+  clip_start_seconds?: number | null
+  clip_end_seconds?: number | null
+  clip_available?: boolean
+  corroborates_github?: boolean
+  corroborates_website?: boolean
+  corroborates_document?: boolean
+  corroboration_summary?: string
+  what_this_demonstrates?: string
+  limitation?: string
+  public_safe?: boolean
+  withheld_reason?: string | null
+  // Playable evidence + safe transcript excerpt. The playback URLs are an
+  // authorized owner URL only (present on the private view); the public
+  // projection sends them as null. `safe_transcript_excerpt` is a bounded,
+  // sanitized snippet — never the full transcript or raw transcript_segments.
+  video_available?: boolean
+  video_playback_url?: string | null
+  clip_playback_url?: string | null
+  transcript_excerpt_available?: boolean
+  safe_transcript_excerpt?: string | null
+  transcript_excerpt_start_label?: string | null
+  transcript_excerpt_end_label?: string | null
+  transcript_access_note?: string
+  recording_access_note?: string
+  is_private_owner_view?: boolean | null
+  is_public_share_safe?: boolean
 }
 
 export type VBRSessionResponse = {
@@ -174,6 +229,25 @@ export async function getVBRProject(projectId: string): Promise<VBRProjectRespon
 export async function listVBRProjects(): Promise<VBRProjectResponse[]> {
   const res = await fetchAPI("/api/v1/student/vbr/projects")
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load projects (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Explicitly create a new owned VBR project. Used by the shared proof→project
+ * attach flow when the student chooses "create a new project" — the canonical
+ * project row is persisted FIRST, then the proof is finalized against it. The
+ * client never creates a project implicitly from proof metadata.
+ */
+export async function createVBRProject(input: {
+  title: string
+  repo_url: string
+  deployed_url?: string | null
+}): Promise<VBRProjectResponse> {
+  const res = await fetchAPI("/api/v1/student/vbr/projects", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to create project (HTTP ${res.status}).`))
   return res.json()
 }
 
@@ -328,6 +402,167 @@ export async function transcribeVBRSession(sessionId: string): Promise<VBRTransc
   return res.json()
 }
 
+export type VBRTranscriptSegment = {
+  start_s: number
+  end_s: number
+  text: string
+}
+
+/**
+ * Owner-only private transcript preview. Served to the student who owns the
+ * session so the recorder/workspace page can render their generated transcript.
+ * Never exposed on the public recruiter report (sanitized separately).
+ */
+export type VBRSessionTranscriptResponse = {
+  session_id: string
+  status: string
+  transcript_id: string | null
+  provider: string | null
+  language: string | null
+  segment_count: number
+  duration_s: number | null
+  preview_text: string
+  truncated: boolean
+  segments: VBRTranscriptSegment[]
+}
+
+/** Fetch the owner's private transcript preview for a session. */
+export async function getVBRSessionTranscript(
+  sessionId: string
+): Promise<VBRSessionTranscriptResponse> {
+  const res = await fetchAPI(`/api/v1/student/vbr/sessions/${encodeURIComponent(sessionId)}/transcript`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load transcript (HTTP ${res.status}).`))
+  return res.json()
+}
+
+// ─── Original Proof Access — owner-safe captured-frame artifacts ─────────────
+
+/**
+ * One owner-safe captured-frame locator for a Website Proof session. Carries
+ * only what the UI needs to render the frame through the visibility-gated
+ * thumbnail proxy — never storage paths, raw bytes, OCR text, or provider JSON.
+ */
+export type SafeVisualFrameDescriptor = {
+  frame_id: string
+  frame_type: string
+  timestamp_ms?: number | null
+  timestamp_label?: string | null
+  has_thumbnail: boolean
+}
+
+export type SessionVisualFramesResponse = {
+  session_id: string
+  frame_count: number
+  frames: SafeVisualFrameDescriptor[]
+}
+
+/**
+ * Owner-only listing of the frames VeriBridge captured during a Website Proof
+ * session. The backend scopes the query to the authenticated caller, so a
+ * foreign session id returns an empty list (indistinguishable from "no frames").
+ */
+export async function listWebsiteProofFrames(sessionId: string): Promise<SessionVisualFramesResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/workflow/visual-frames`
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load captured frames (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Fetch one captured frame's thumbnail through the authorized, visibility-gated
+ * proxy and return a local object URL for an <img> element. The signed storage
+ * location never reaches the DOM — only the streamed bytes. Returns null on any
+ * failure (the caller shows an honest "frames could not be loaded" note).
+ * Callers must revoke the returned URL (URL.revokeObjectURL) when done.
+ */
+export async function fetchFrameThumbnailObjectUrl(frameId: string): Promise<string | null> {
+  try {
+    const res = await fetchAPI(`/api/v1/proof/frame-thumbnail/${encodeURIComponent(frameId)}`)
+    if (!res.ok) return null
+    const blob = await res.blob()
+    if (!blob || blob.size === 0) return null
+    return URL.createObjectURL(blob)
+  } catch {
+    return null
+  }
+}
+
+// ─── Retained proof artifacts + first-class Video Proofs ─────────────────────
+
+/**
+ * Stream one RETAINED proof artifact (document original, video proof original,
+ * extracted frame, …) through the access-gated artifact route and return a
+ * local object URL. The backend re-checks the caller's access per request —
+ * owner-only artifacts 404 for anyone else — and no storage path or signed URL
+ * ever reaches the DOM. Returns null on any failure (callers show an honest
+ * unavailable note, never a broken player/frame). Callers must revoke the
+ * returned URL when done.
+ */
+export async function fetchProofArtifactObjectUrl(artifactId: string): Promise<string | null> {
+  try {
+    const res = await fetchAPI(`/api/v1/proofs/artifacts/${encodeURIComponent(artifactId)}/view`)
+    if (!res.ok) return null
+    const blob = await res.blob()
+    if (!blob || blob.size === 0) return null
+    return URL.createObjectURL(blob)
+  } catch {
+    return null
+  }
+}
+
+export type VideoProofTranscriptSegment = {
+  seq: number
+  start_s: number
+  end_s: number
+  text: string
+  speaker?: string | null
+}
+
+export type VideoProofTranscriptResponse = {
+  video_proof_id: string
+  transcript_status: string
+  segment_count: number
+  segments: VideoProofTranscriptSegment[]
+}
+
+/** Timestamped narration transcript for a Video Proof (owner, or anyone once shared). */
+export async function getVideoProofTranscript(proofId: string): Promise<VideoProofTranscriptResponse> {
+  const res = await fetchAPI(`/api/v1/proofs/video/${encodeURIComponent(proofId)}/transcript`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load video transcript (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * One safe extracted-frame locator for a Video Proof. Frame bytes stream via
+ * the gated artifact route (`fetchProofArtifactObjectUrl(frame_artifact_id)`).
+ * OCR / activity fields are populated only by a real CV pipeline (future) —
+ * they are honestly null until then.
+ */
+export type VideoProofFrameDescriptor = {
+  frame_id: string
+  timestamp_s?: number | null
+  timestamp_label?: string | null
+  frame_artifact_id?: string | null
+  ocr_text?: string | null
+  activity_summary?: string | null
+  relevance_to_skill?: string | null
+}
+
+export type VideoProofFramesResponse = {
+  video_proof_id: string
+  frames_status: string
+  frame_count: number
+  frames: VideoProofFrameDescriptor[]
+}
+
+/** Safe extracted-frame descriptors for a Video Proof (owner, or anyone once shared). */
+export async function listVideoProofFrames(proofId: string): Promise<VideoProofFramesResponse> {
+  const res = await fetchAPI(`/api/v1/proofs/video/${encodeURIComponent(proofId)}/frames`)
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load video frames (HTTP ${res.status}).`))
+  return res.json()
+}
+
 // ─── Project Defense (Phase 1 — individual project defense) ────────────────
 
 export type ProjectDefenseAttachedProofsRequest = {
@@ -417,6 +652,93 @@ export type ProjectDefenseSyncResult = {
   errors: string[]
 }
 
+// ─── Project-first defense flow (defend an existing project) ────────────────
+//
+// Project Defense is a defense layer on top of an existing project, not a
+// fourth standalone proof form. These responses expose only safe, already-
+// derived summaries — never raw proof payloads, storage paths, or scores.
+
+export type DefenseStatus = "not_started" | "in_progress" | "completed"
+
+export type DefenseEvidenceTypeSummary = {
+  attached: boolean
+  count: number
+  /** Safe display label only (repo full name / doc titles / website URLs). */
+  label: string
+}
+
+export type ProjectDefenseEvidenceSummary = {
+  github_proof: DefenseEvidenceTypeSummary
+  documents: DefenseEvidenceTypeSummary
+  website_proof: DefenseEvidenceTypeSummary
+  project_defense: DefenseEvidenceTypeSummary
+}
+
+export type EligibleProjectResponse = {
+  id: string
+  title: string
+  description: string
+  claimed_skills: string[]
+  repo_full_name: string | null
+  defense_status: DefenseStatus
+  report_ready: boolean
+  evidence: ProjectDefenseEvidenceSummary
+  created_at: string
+  updated_at: string
+}
+
+export type EligibleProjectsResponse = {
+  projects: EligibleProjectResponse[]
+}
+
+export type ProjectDefenseContextResponse = {
+  project: VBRProjectResponse
+  metadata: ProjectDefenseMetadataResponse
+  evidence: ProjectDefenseEvidenceSummary
+  defense_status: DefenseStatus
+  report_ready: boolean
+  session_id: string | null
+  questions: VBRSessionQuestionResponse[]
+  /** True when the active session's defense evidence is already on the Skill Graph. */
+  skill_graph_synced?: boolean
+}
+
+export type AttachProofsResponse = {
+  project: VBRProjectResponse
+  metadata: ProjectDefenseMetadataResponse
+  evidence: ProjectDefenseEvidenceSummary
+}
+
+/** List the current user's projects that can be defended. */
+export async function listEligibleDefenseProjects(): Promise<EligibleProjectResponse[]> {
+  const res = await fetchAPI("/api/v1/student/vbr/project-defense/eligible-projects")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load projects (HTTP ${res.status}).`))
+  const data: EligibleProjectsResponse = await res.json()
+  return data.projects
+}
+
+/** Fetch the defense context (evidence + status + any in-progress session) for a project. */
+export async function getProjectDefenseContext(projectId: string): Promise<ProjectDefenseContextResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/project-defense/projects/${encodeURIComponent(projectId)}/context`
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load project defense context (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Attach existing owned proofs to a selected project. */
+export async function attachProjectDefenseProofs(
+  projectId: string,
+  body: ProjectDefenseAttachedProofsRequest
+): Promise<AttachProofsResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/project-defense/projects/${encodeURIComponent(projectId)}/attach-proofs`,
+    { method: "POST", body: JSON.stringify(body) }
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to attach proofs (HTTP ${res.status}).`))
+  return res.json()
+}
+
 /** Create an individual Project Defense identity and attach existing proof sources. */
 export async function createProjectDefense(
   body: ProjectDefenseCreateRequest
@@ -436,6 +758,20 @@ export async function generateDefenseQuestions(projectId: string): Promise<Gener
     { method: "POST" }
   )
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to generate defense questions (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Create a *fresh* Project Defense recording session (new attempt) for a project.
+ * Used by "Record another defense" — a completed/processed session is
+ * non-retryable, so this always returns a brand-new session id to record into.
+ */
+export async function createNewDefenseSession(projectId: string): Promise<GenerateDefenseQuestionsResponse> {
+  const res = await fetchAPI(
+    `/api/v1/student/vbr/projects/${encodeURIComponent(projectId)}/defense-sessions`,
+    { method: "POST" }
+  )
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to start a new defense session (HTTP ${res.status}).`))
   return res.json()
 }
 
@@ -477,10 +813,33 @@ export type VBRReportGitHubProofSummary = {
   repo_is_public?: boolean
 }
 
+/**
+ * Owner-only access descriptor for the RETAINED original document file.
+ * Present ONLY on the private student report (the public builder strips it).
+ * Carries the opaque artifact id plus the access-gated view/download API
+ * routes — the backend re-checks ownership on every request, so the descriptor
+ * is inert for anyone but the owner. Never a storage path, bucket, or signed
+ * URL. `available === false` is the honest not-retained state, explained by
+ * `note`.
+ */
+export type VBRReportDocumentOriginalAccess = {
+  available: boolean
+  artifact_id: string | null
+  file_name: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  page_count: number | null
+  open_path: string | null
+  download_path: string | null
+  note: string | null
+}
+
 export type VBRReportDocumentSummary = {
   title: string
   source_type: string | null
   status: string | null
+  /** Owner-only retained-original access (private report only; absent/null on public surfaces). */
+  original_document?: VBRReportDocumentOriginalAccess | null
 }
 
 export type VBRReportWebsiteProofSummary = {
@@ -490,10 +849,69 @@ export type VBRReportWebsiteProofSummary = {
   supported_skills: string[]
 }
 
+/**
+ * How one attached Website Proof's observed behaviour relates to ONE of the
+ * project's claimed skills. Every field is a closed backend vocabulary label —
+ * never a numeric score, never proof strength. `is_direct_evidence` is true only
+ * for the families allowed to read as DIRECT skill evidence (interactive
+ * frontend UI, rendered data-visualisation); ML / GenAI / DevOps skills always
+ * read as product-behaviour / availability context, never implementation proof.
+ */
+export type WebsiteProofSkillRelevance = {
+  skill_name: string
+  relevance_key: string
+  relevance_label: string
+  relevance_summary: string
+  limitation: string
+  is_direct_evidence: boolean
+}
+
+/**
+ * Skill-specific Website Behavior Evidence for ONE attached Website Proof —
+ * owner/private project report only (never on the public projection). Empty
+ * `skills` with `skill_mapping_available === false` means the proof is captured
+ * but not yet mapped to a specific skill; the gap is stated, never faked.
+ */
+export type WebsiteProofSkillEvidence = {
+  target_website: string
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_analysis_path?: string | null
+  website_timeline?: { timestamp_label?: string | null; description: string }[]
+  project_relationship_state?: string
+  project_identity_state?: string
+  project_identity_reasons?: string[]
+  counted_for_project?: boolean
+  behavior_claim: string
+  website_purpose_key: string
+  website_purpose_label: string
+  website_purpose_summary: string
+  /**
+   * Website Runtime Inspection fields (deep inspection). Section 1
+   * `runtime_claim_observed` is keyed by the primary mapped skill's relevance
+   * (empty when nothing mapped). Section 2 target/app/page context + observed
+   * user action / visible output. Section 4 verification mode + recruiter
+   * checklist. All closed-vocabulary / already-safe — never raw payloads.
+   */
+  runtime_claim_observed?: string
+  target_domain?: string
+  app_context?: string
+  page_context_label?: string
+  user_action_observed?: string
+  output_observed?: string
+  verification_mode?: string
+  verification_mode_label?: string
+  recruiter_checklist?: string[]
+  skills: WebsiteProofSkillRelevance[]
+  skill_mapping_available: boolean
+}
+
 export type VBRReportEvidencePackageSummary = {
   github_proof_attached: boolean
   documents_count: number
   website_proofs_count: number
+  website_proofs_excluded_count?: number
   project_defense_completed: boolean
   video_defense_recorded: boolean
   video_evidence_chip_count: number
@@ -556,6 +974,15 @@ export type EvidenceTrace = {
   timestamp?: string | null
   /** Human timestamp label for video traces (e.g. "02:14"). */
   timestamp_label?: string | null
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_replay_duration_seconds?: number | null
+  website_replay_mime_type?: string | null
+  website_analysis_path?: string | null
+  website_timeline?: { timestamp_label?: string | null; description: string }[]
+  /** Owner-only retained-original document access (private report only; null on public surfaces). */
+  document_original?: VBRReportDocumentOriginalAccess | null
   limitation: string
   is_publicly_openable: boolean
   private_evidence_note?: string | null
@@ -632,6 +1059,14 @@ export type VaultProofItem = {
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null
+  project_hint?: string | null
+  project_relationship_state?: string | null
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_replay_duration_seconds?: number | null
+  website_replay_mime_type?: string | null
+  website_analysis_path?: string | null
   page_number?: number | null
   section_label?: string | null
   citation?: string | null
@@ -677,6 +1112,15 @@ export type VaultSkillSummary = {
   project_ids: string[]
   project_titles: string[]
   project_count: number
+  /** Grouped, on-passport project ids the skill's vault proof is attached to
+   *  (duplicate-attempt raw rows resolved to their representative project). The
+   *  honest connected-project set — never the inflated raw `project_count`. */
+  connected_project_ids?: string[]
+  connected_project_titles?: string[]
+  /** True when a retained, inspectable proof source (GitHub / Document / Website /
+   *  Project Defense / Video) backs this skill — false when it is only a derived
+   *  Skill-Graph/AI signal (a bare suggestion). */
+  has_retained_proof?: boolean
   proof_source_counts: Record<string, number>
   proof_count: number
   attached_count: number
@@ -754,6 +1198,14 @@ export type SkillReportEvidenceItem = {
   has_precise_line_evidence?: boolean | null
   github_line_url?: string | null
   repo_url?: string | null
+  project_hint?: string | null
+  project_relationship_state?: string | null
+  website_replay_available?: boolean
+  website_replay_path?: string | null
+  website_artifact_id?: string | null
+  website_replay_duration_seconds?: number | null
+  website_replay_mime_type?: string | null
+  website_analysis_path?: string | null
   // Canonical (old GitHub Profile & Proof engine) fields — precise
   // selection_reason ("API endpoint decorator") + optional subskill / graph node.
   selection_reason?: string | null
@@ -767,6 +1219,7 @@ export type SkillReportEvidenceItem = {
   timestamp_label?: string | null
   workflow_summary?: string | null
   workflow_steps: string[]
+  workflow_timeline?: { timestamp_label?: string | null; description: string }[]
   dom_summary?: string | null
   ocr_summary?: string | null
   visual_summary?: string | null
@@ -819,18 +1272,62 @@ export type WebsiteEvidenceCard = {
    * demonstrably shown, phrased as a checkable statement.
    */
   behavior_claim?: string | null
+  /**
+   * Website Runtime Inspection — Section 1: a concise SKILL-SPECIFIC claim about
+   * the recorded runtime behaviour (closed backend template keyed by the
+   * conservative website→skill relevance, so ML/GenAI/DevOps never overclaim).
+   */
+  runtime_claim_observed?: string | null
+  /**
+   * Section 2 — target site / app context. `target_url_safe` is present only for
+   * a safe public URL; `target_domain` is derived from a safe URL (a
+   * local/private capture leaves both null). `app_context` is a recognised
+   * hosted-app name / page title / domain; `page_context_label` a safe label for
+   * the pipeline's closed OCR page-context enum.
+   */
+  target_url_safe?: string | null
+  target_domain?: string | null
+  app_context?: string | null
+  page_context_label?: string | null
+  is_public_live_url?: boolean
+  is_local_or_private_url?: boolean
+  /**
+   * Section 2 — the exact observed user action and visible output/result (closed
+   * per-purpose sentences; null when neither is demonstrable).
+   * `visible_text_observed` is the SAFE OCR-derived sentence, never raw OCR.
+   */
+  user_action_observed?: string | null
+  output_observed?: string | null
+  visible_text_observed?: string | null
+  visited_pages_count?: number | null
   website_purpose_key: string
   website_purpose_label: string
   website_purpose_summary: string
   skill_relevance_key: string
   skill_relevance_label: string
   skill_relevance_summary: string
+  /** Section 4 — the recruiter verification checklist (live vs recorded-only). */
+  recruiter_checklist?: string[]
+  /** Section 5/6 — honest note naming the missing runtime evidence + next step. */
+  missing_evidence_note?: string | null
   observed_behavior_summary?: string | null
   visual_evidence_summary?: string | null
   ocr_evidence_summary_safe?: string | null
   dom_evidence_summary_safe?: string | null
   evidence_basis_chips: string[]
   limitation: string
+  /**
+   * Recruiter verification mode (GitHub-Proof-style inspection split).
+   * `"directly_verifiable_live"` when a public safe live URL is available — the
+   * recruiter can open the current site and inspect runtime behaviour; else
+   * `"recorded_replay_only"` when the proof was captured from a local/private
+   * host, so only VeriBridge's recorded replay is available. Label/note are
+   * closed recruiter copy; `deployment_recommended` flags the replay-only case.
+   */
+  verification_mode?: string | null
+  verification_mode_label?: string | null
+  verification_note?: string | null
+  deployment_recommended?: boolean
   open_website_url?: string | null
   screenshot_available: boolean
   /** "private_candidate_permission_required" | "unavailable" (closed enum). */
@@ -860,6 +1357,72 @@ export type SkillReportProjectUsage = {
  * A document shown as connected *corroboration* — never a standalone dump. It
  * answers "what does this document corroborate?" with one safe citation.
  */
+/**
+ * Skill-specific, recruiter-facing inspection view of one Document Proof — what
+ * the document says (bounded safe snippet), where (page/section/citation/figure),
+ * and why it supports the SELECTED skill. Never a whole-document dump: it carries
+ * no raw text, OCR/provider JSON, storage paths, signed URLs, or internal ids.
+ * On a public projection `safe_snippet` is stripped unless `is_public_safe`, and
+ * download is disabled unless `can_download_document` AND a safe URL are present.
+ */
+export type DocumentProofInspectionCard = {
+  title: string
+  source_type?: string | null
+  status?: string | null
+  matched_skill?: string | null
+  project_title?: string | null
+  /** "Supporting evidence" / "Corroborating document". */
+  evidence_role: string
+  page_number?: number | null
+  section_label?: string | null
+  citation_label?: string | null
+  /** Bounded excerpt only; absent on a public projection unless public-safe. */
+  safe_snippet?: string | null
+  /** Safe reference labels (e.g. "Figure 2", "Table 1") — never the raw figure. */
+  figure_reference?: string | null
+  table_reference?: string | null
+  diagram_reference?: string | null
+  visual_or_table_summary?: string | null
+  why_supported: string
+  corroborates?: string | null
+  limitation: string
+  /**
+   * Skill-specific detail lists (bounded, normalized, already-safe strings) mined
+   * from the analyzer's own excerpts for the SELECTED skill — never raw document
+   * text, never invented. Empty when the document only supports the skill at the
+   * claim level (then `missing_detail_note` explains what was not extracted).
+   */
+  skill_specific_claims?: string[]
+  technical_details?: string[]
+  api_endpoints?: string[]
+  request_response_details?: string[]
+  architecture_details?: string[]
+  implementation_hints?: string[]
+  /** "What is still missing" note when exact (e.g. endpoint-level) detail is absent. */
+  missing_detail_note?: string | null
+  has_skill_specific_details?: boolean
+  /** Safe download/open gating message — never a storage path or signed URL. */
+  access_note: string
+  /** Button label when download is enabled (e.g. "Download document"). */
+  document_access_label?: string | null
+  /** Fuller, honest access explanation — never a storage path or signed URL. */
+  document_access_note?: string
+  can_download_document: boolean
+  document_download_url?: string | null
+  document_open_url?: string | null
+  is_public_safe: boolean
+  is_attached_to_project: boolean
+  /**
+   * Whether the ORIGINAL uploaded file is retained as a gated proof artifact
+   * (migration 056). `document_artifact_id` is the opaque artifact id for the
+   * authorized view/download routes — never a storage path or signed URL; the
+   * backend re-checks access per request, so the id is inert for anyone the
+   * policy does not admit. Absent on legacy payloads (not retained).
+   */
+  document_retained?: boolean
+  document_artifact_id?: string | null
+}
+
 export type SkillReportDocumentCorrelation = {
   source_id: string
   document_title: string
@@ -883,6 +1446,13 @@ export type SkillReportDocumentCorrelation = {
   /** Safe download gating message — never a storage path or signed URL. */
   document_access_note?: string
   limitation: string
+  /**
+   * Skill-specific inspection view of this document (what it says, where, and why
+   * it supports the SELECTED skill). Absent on legacy payloads built before it.
+   */
+  inspection_card?: DocumentProofInspectionCard | null
+  /** Whether the ORIGINAL uploaded file is retained as a gated proof artifact. */
+  document_retained?: boolean
 }
 
 /** One evidence-cited synthesis statement (Proof Synthesis Agent). */
@@ -891,6 +1461,43 @@ export type SkillProofSynthesisStatement = {
   source: string
   /** The real evidence ids this statement was built from (never fabricated). */
   evidence_ids: string[]
+}
+
+/** One claimed skill on a Video Proof and its honest evidential basis. */
+export type SkillReportVideoProofSkillSupport = {
+  skill: string
+  /** "mentioned_in_narration" (skill name appears in the transcript) or "claimed_only". */
+  basis: string
+  /** ALWAYS false — a demo video never verifies a skill by itself. */
+  verified: boolean
+}
+
+/**
+ * One first-class Video Proof (uploaded/recorded demo video) in a Skill Report.
+ * Availability flags are derived ONLY from genuinely retained/extracted data;
+ * playback/transcript/frames load lazily through the gated proof routes using
+ * the opaque ids here — never storage paths or signed URLs.
+ */
+export type SkillReportVideoProofCard = {
+  proof_id: string
+  title: string
+  source_kind: string
+  source_kind_label: string
+  duration_label?: string | null
+  replay_available: boolean
+  transcript_available: boolean
+  frames_available: boolean
+  segment_count: number
+  frame_count: number
+  /** Opaque artifact id for gated playback (never a path / signed URL). */
+  original_artifact_id?: string | null
+  demo_summary: string
+  proof_strength_label: string
+  skills_supported: SkillReportVideoProofSkillSupport[]
+  limitations: string[]
+  corroborates_with: string[]
+  needs_review: boolean
+  public_safe: boolean
 }
 
 /** One project's connected proof chain for a skill — artifacts + corroboration. */
@@ -913,6 +1520,19 @@ export type SkillReportProjectChain = {
   document_more_count: number
   defense_evidence: SkillReportEvidenceItem[]
   video_evidence: SkillReportEvidenceItem[]
+  /**
+   * First-class Video Proofs (uploaded/recorded demo videos) attached to this
+   * chain's project(s) and claiming this report's skill. Distinct from
+   * `video_evidence` (timestamped moments inside a Project Defense recording).
+   * Absent on older payloads — treat as `[]`.
+   */
+  video_proofs?: SkillReportVideoProofCard[]
+  /**
+   * Project Defense inspection cards for THIS chain, scoped to the report's
+   * skill (owner view). Explanation / corroboration evidence only; untargeted
+   * transcript moments never appear here. Absent on older payloads.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
   /**
    * One safe sentence explaining how this chain's Website Proof corroborates its
    * other sources ("the website demonstrates the behaviour, GitHub code shows the
@@ -1139,6 +1759,11 @@ export type SkillReportStandaloneEvidence = {
   document_more_count: number
   defense: SkillReportEvidenceItem[]
   video: SkillReportEvidenceItem[]
+  /**
+   * First-class Video Proofs claiming this skill that are not attached to any
+   * chain project. Absent on older payloads — treat as `[]`.
+   */
+  video_proofs?: SkillReportVideoProofCard[]
   skill_graph: SkillReportEvidenceItem[]
 }
 
@@ -1156,6 +1781,258 @@ export type SkillReportOverview = {
 }
 
 /** Layer 2 — the full, recruiter-verifiable evidence for one selected skill. */
+// ── Canonical claim→evidence contracts (see api app/schemas/canonical_evidence.py)
+// The backend synthesizes ALL relationships (tiers, identity, corroboration);
+// the frontend only renders these structures — it never re-infers them.
+
+export type CanonicalAccessDescriptor = {
+  kind: string
+  label: string
+  available: boolean
+  action_label?: string | null
+  /** Set ONLY for genuinely public targets (GitHub line link, live site). */
+  url?: string | null
+  requires_owner_permission?: boolean
+  note?: string | null
+}
+
+export type CanonicalVideoDescriptor = {
+  proof_type: string
+  recording_available: boolean
+  availability: "retained" | "not_retained" | "pending" | string
+  duration_label?: string | null
+  mime_type?: string | null
+  transcript_available: boolean
+  poster_available?: boolean
+  timeline_events: { timestamp_label?: string | null; description: string }[]
+  cited_segments: { start_label?: string | null; end_label?: string | null; description: string }[]
+  access?: CanonicalAccessDescriptor | null
+  limitations: string[]
+}
+
+export type CanonicalDocumentAccess = {
+  retained: boolean
+  excerpts_only: boolean
+  open_available: boolean
+  download_available: boolean
+  publication_state: string
+  original_filename?: string | null
+  mime_type?: string | null
+  limitations: string[]
+}
+
+export type CanonicalProjectRelationship = {
+  state: "directly_linked" | "suggested_match" | "mismatched_project" | "vault_only" | "legacy_unresolved" | string
+  project_id?: string | null
+  project_title?: string | null
+  match_method: string
+  counted: boolean
+  confirmed_by_user: boolean
+  reasons: string[]
+  action_label?: string | null
+}
+
+export type ProofFinalizationResult = {
+  proof_id: string
+  proof_type: string
+  project_id: string
+  project_relationship: CanonicalProjectRelationship
+  evidence_item_count: number
+  supported_skill_count: number
+  unsupported_skill_count: number
+  claim_link_count: number
+  artifact_ids: string[]
+  report_eligibility: string
+  warnings: string[]
+  failure_category?: string | null
+  already_finalized: boolean
+  finalized_at?: string | null
+}
+
+export type CanonicalDocumentBlock = {
+  document_id?: string | null
+  document_title: string
+  page_number?: number | null
+  block_type: string
+  bounding_box?: number[] | null
+  extracted_text?: string | null
+  table_cells: string[][]
+  visual_description?: string | null
+  nearby_caption?: string | null
+  extraction_confidence: string
+  model_limitation?: string | null
+  preview_url?: string | null
+  open_page_url?: string | null
+}
+
+export type CanonicalProjectFeature = {
+  id: string
+  project_id?: string | null
+  title: string
+  description: string
+  feature_type: string
+  related_skills: string[]
+  repo_paths: string[]
+  routes: string[]
+  runtime_workflows: string[]
+  document_sections: string[]
+  defense_question_ids: string[]
+}
+
+/**
+ * Honest per-bucket proof-SOURCE counts (distinct proof types, never raw
+ * citation rows). Only direct + corroborating contribute to a supported-proof
+ * count; every other bucket renders visibly but is never counted.
+ */
+export type CanonicalSourceCounts = {
+  direct: number
+  corroborating: number
+  context_only: number
+  pending: number
+  vault_only: number
+  unsupported: number
+  direct_sources: string[]
+  corroborating_sources: string[]
+  context_only_sources: string[]
+  pending_sources: string[]
+  vault_only_sources: string[]
+  unsupported_sources: string[]
+}
+
+export type CanonicalSkillClaim = {
+  id: string
+  project_id?: string | null
+  skill_id: string
+  skill_name: string
+  claim_text: string
+  claim_scope: string
+  feature_ids: string[]
+  /** Closed qualitative ladder — never a numeric score. */
+  qualitative_status: string
+  strongest_evidence_tier: string
+  /** Honest per-bucket source counts for THIS claim. */
+  source_counts?: CanonicalSourceCounts
+  limitations: string[]
+}
+
+export type CanonicalEvidenceCitation = {
+  evidence_id: string
+  proof_type: string
+  project_id?: string | null
+  skill_id?: string | null
+  claim_id?: string | null
+  feature_id?: string | null
+  source_title: string
+  citation_type?: string
+  source_proof_id?: string | null
+  source_artifact_id?: string | null
+  source_locator?: string | null
+  file_path?: string | null
+  symbol_name?: string | null
+  start_line?: number | null
+  end_line?: number | null
+  /** Analyzed context window (trusted provenance) when wider than the target
+   *  lines — rendered as "Analyzed context"; the target citation above is
+   *  never rewritten to pretend the wider window was the target. */
+  context_start_line?: number | null
+  context_end_line?: number | null
+  /** Analyzer version that produced the stored classification. */
+  analysis_version?: string | null
+  commit_sha?: string | null
+  code_excerpt?: string | null
+  timestamp_start_label?: string | null
+  timestamp_end_label?: string | null
+  transcript_excerpt?: string | null
+  question_text?: string | null
+  page_number?: number | null
+  section_title?: string | null
+  figure_or_table?: string | null
+  observed_action?: string | null
+  observed_output?: string | null
+  route_or_page?: string | null
+  explanation: string
+  relevance: string
+  strength: string
+  github_tier?: string | null
+  identity_state?: "matched_direct" | "possible_match_review" | "project_context" | "mismatched" | "unrelated" | null
+  identity_reasons: string[]
+  /** THE flag: mismatched / context / pending citations render but never count. */
+  counted_as_direct_evidence: boolean
+  /** Weak/repo-level context deduplicated into the map-level grouped section. */
+  grouped_context?: boolean
+  /** Video citation folded into the SAME defense recording's citation — a
+   *  citation layer, never an independent proof source. */
+  duplicate_of_evidence_id?: string | null
+  project_relationship?: CanonicalProjectRelationship | null
+  evidence_status?: string
+  evidence_quality?: string
+  privacy_state?: string
+  publication_state?: string
+  analysis_pending?: boolean
+  access?: CanonicalAccessDescriptor | null
+  actions?: CanonicalAccessDescriptor[]
+  video?: CanonicalVideoDescriptor | null
+  document_access?: CanonicalDocumentAccess | null
+  document_block?: CanonicalDocumentBlock | null
+  limitations: string[]
+}
+
+export type CanonicalEvidenceRelation = {
+  source_evidence_id: string
+  target_evidence_id?: string | null
+  relation_type: string
+  claim_id?: string | null
+  feature_id?: string | null
+  reason: string
+  confidence_label: string
+}
+
+export type CanonicalCorroborationGroup = {
+  group_id: string
+  claim_id: string
+  feature_id?: string | null
+  evidence_ids: string[]
+  sources: string[]
+  alignment_reason: string
+  independent_sources: boolean
+  unique_contributions: string[]
+  limitations: string[]
+}
+
+export type CanonicalContradiction = {
+  contradiction_id: string
+  kind: string
+  claim_id?: string | null
+  evidence_ids: string[]
+  description: string
+  recommended_action: string
+}
+
+export type CanonicalEvidenceGap = {
+  claim_id?: string | null
+  proof_type?: string | null
+  description: string
+  recommended_action: string
+}
+
+export type ClaimEvidenceMap = {
+  schema_version: number
+  scope: "skill_report" | "project_report" | string
+  skill_name?: string | null
+  project_id?: string | null
+  claims: CanonicalSkillClaim[]
+  features: CanonicalProjectFeature[]
+  citations: CanonicalEvidenceCitation[]
+  relations: CanonicalEvidenceRelation[]
+  corroborations: CanonicalCorroborationGroup[]
+  contradictions: CanonicalContradiction[]
+  gaps: CanonicalEvidenceGap[]
+  /** Map-level union of the per-claim source buckets. */
+  source_counts?: CanonicalSourceCounts
+  recruiter_actions: string[]
+  limitations: string[]
+}
+
 export type SkillReport = {
   skill: string
   skill_slug: string
@@ -1199,6 +2076,11 @@ export type SkillReport = {
   skill_graph: SkillReportEvidenceItem[]
   gaps: string[]
   generated_at: string
+  /**
+   * Canonical claim→evidence map (deterministic backend synthesis; shared
+   * contract with the Project Report). Absent/null on legacy payloads.
+   */
+  claim_evidence_map?: ClaimEvidenceMap | null
 }
 
 /**
@@ -1272,13 +2154,34 @@ export type VBRStudentProjectReportResponse = {
   github_proof: VBRReportGitHubProofSummary | null
   documents: VBRReportDocumentSummary[]
   website_proofs: VBRReportWebsiteProofSummary[]
+  /**
+   * Skill-specific Website Behavior Evidence (owner/private view only): what each
+   * attached Website Proof demonstrably showed + an honest per-skill relevance,
+   * projected only for the claimed skills the proof's extracted supported-skills
+   * actually name. Never present on the public projection.
+   */
+  website_skill_evidence?: WebsiteProofSkillEvidence[]
 
   project_defense_analysis: VBRReportProjectDefenseAnalysis | null
   defense_questions: VBRReportQuestionSummary[]
   video_evidence_chips: VideoEvidenceChip[]
+  /**
+   * First-class Project Defense inspection cards (owner view) — one per
+   * defended question, parallel to GitHub / Website / Document inspection.
+   * Explanation / corroboration evidence only. Absent on older payloads.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
 
   skill_evidence: VBRReportSkillEvidenceRow[]
   evidence_traces?: EvidenceTrace[]
+
+  /**
+   * PRIVATE-ONLY "Attached proof not yet skill-mapped": REAL analyzed proof
+   * attached to this project that no exact claimed skill row consumed. Context
+   * only — never part of the skill evidence matrix, never on the public
+   * projection. Absent on older payloads.
+   */
+  real_unmapped_proof_context?: RealUnmappedProofContext[]
 
   /**
    * "Other student proofs for related skills" — safe student-vault proofs that
@@ -1288,8 +2191,22 @@ export type VBRStudentProjectReportResponse = {
    */
   other_student_proofs?: VaultSkillGroup[]
 
+  /**
+   * "Suggested evidence to attach" (owner-only): unattached vault proofs whose
+   * safe metadata points at this project. Clearly labelled "not counted until
+   * attached" — never part of the attached evidence package, never on the
+   * public report. May be absent on older payloads.
+   */
+  suggested_evidence?: ProofAttachmentEntry[]
+
   limitations: string[]
   next_actions: string[]
+
+  /**
+   * Canonical claim→evidence map (deterministic backend synthesis; shared
+   * contract with the Skill Report). Absent/null on legacy payloads.
+   */
+  claim_evidence_map?: ClaimEvidenceMap | null
 
   preview_only: boolean
   public_recruiter_sharing_enabled: boolean
@@ -1438,6 +2355,13 @@ export type PublicVBRProjectReport = {
   skill_evidence: VBRReportSkillEvidenceRow[]
   evidence_traces?: EvidenceTrace[]
   video_evidence_chips: PublicVideoEvidenceChip[]
+  /**
+   * Recruiter-safe Project Defense inspection cards. Fail-closed: when the
+   * session is not public-safe each card is a withheld placeholder (no answer
+   * text, no clip locator, `public_safe: false`, `withheld_reason` set). Absent
+   * on older payloads.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
 
   limitations: string[]
 
@@ -1531,8 +2455,17 @@ export type PassportSkillProjectRef = {
   /** This project's qualitative status FOR THIS SKILL (not the cross-project best). */
   skill_status?: string
   evidence_sources: string[]
+  /** The proof types supporting THIS skill in THIS project only — a closed,
+   *  skill-specific subset. Distinct from `evidence_sources` (the whole
+   *  project's union); a type appears here only where the mapping recorded it
+   *  for this exact skill, so it fails closed. */
+  supporting_proof_types?: string[]
   report_is_public: boolean
   public_report_path: string | null
+  /** Safe, closed-vocabulary sentence for what Website Proof demonstrably showed
+   *  for THIS skill in THIS project. Present only when Website Proof supports this
+   *  exact skill; never raw DOM/OCR/visual/provider text. */
+  website_evidence_summary?: string | null
   /** Proof-native trace cards this project contributes for this skill. */
   evidence_traces?: EvidenceTrace[]
 }
@@ -1547,10 +2480,15 @@ export type PassportStrongestProjectLink = {
   /** This project's qualitative label FOR THIS SKILL (never a score). */
   skill_status?: string
   evidence_sources: string[]
+  /** Skill-specific proof-type breakdown for this project (see PassportSkillProjectRef). */
+  supporting_proof_types?: string[]
   report_is_public?: boolean
   public_report_path?: string | null
   project_id?: string | null
   project_report_path?: string | null
+  /** Safe Website Proof behaviour sentence for this skill in this project (see
+   *  PassportSkillProjectRef.website_evidence_summary). */
+  website_evidence_summary?: string | null
 }
 
 /** A grouped, evidence-backed skill. `status` is always a qualitative label. */
@@ -1569,6 +2507,10 @@ export type PassportSkillSummary = {
   strongest_project_status?: string | null
   /** The same strongest project as a linkable reference (owner-only routes). */
   strongest_project?: PassportStrongestProjectLink | null
+  /** Proof-type sources that exist for this skill in the vault but are NOT
+   *  attached to any project (vault-only / standalone evidence). Kept separate
+   *  from `projects` so vault-only proof is never counted as project evidence. */
+  vault_only_sources?: string[]
   notes: string
   limitations: string[]
 }
@@ -1598,6 +2540,9 @@ export type PassportProjectTopSkill = {
   status: string
   skill_slug?: string | null
   skill_report_path?: string | null
+  /** Proof types supporting THIS skill in THIS project (closed, skill-specific
+   *  label set) — lets the project card show a per-skill proof breakdown. */
+  supporting_proof_types?: string[]
 }
 
 /**
@@ -1663,8 +2608,73 @@ export type EvidenceGraphOverview = {
   skills_with_evidence: number
   proof_count: number
   attached_proof_count: number
+  /** Suggested evidence — an improvement opportunity, never part of the
+   *  attached count. May be absent on older payloads. */
+  suggested_proof_count?: number
   unattached_proof_count: number
   next_actions: string[]
+}
+
+// ── Attachment Intelligence Cleanup (Step 4) ─────────────────────────────────
+
+/** How a proof relates to the student's projects — a closed three-way state. */
+export type AttachmentState = "attached" | "suggested" | "unattached"
+
+/** Closed relation-strength labels — never a numeric confidence. Only
+ *  `deterministic` (or user-attached) evidence ever counts as attached. */
+export type RelationStrength = "deterministic" | "likely" | "weak" | "none"
+
+/** Closed reason codes explaining an entry's attachment state. */
+export type RelationReason =
+  | "user_attached"
+  | "exact_project_id_match"
+  | "exact_repo_match"
+  | "exact_document_attachment"
+  | "exact_website_attachment"
+  | "project_defense_session"
+  | "title_similarity_suggestion"
+  | "skill_overlap_suggestion"
+  | "repo_owner_repo_suggestion"
+  | "no_match"
+
+/**
+ * One deduplicated proof entry in the attachment overview (owner-only).
+ * Safe display fields only — no source ids/tables, storage paths, signed
+ * URLs, raw text, or provider payloads. `entry_id_safe` is a one-way digest
+ * (also the stable React key).
+ */
+export type ProofAttachmentEntry = {
+  entry_id_safe: string
+  proof_type: string
+  display_title: string
+  source_label: string
+  attachment_state: AttachmentState
+  relation_reason: RelationReason
+  relation_strength: RelationStrength
+  reason_label: string
+  status_label: string
+  project_titles: string[]
+  /** Owner-only project-report routes (never on the public projection). */
+  project_refs_safe: string[]
+  skill_names: string[]
+  /** How many duplicate vault rows collapsed into this one entry (≥1). */
+  duplicate_count: number
+}
+
+/**
+ * Owner-only attached / suggested / unattached proof sections. The buckets are
+ * disjoint and deduplicated: each real-world proof appears exactly once,
+ * suggested evidence never counts as attached, and duplicate rows never
+ * inflate a count.
+ */
+export type ProofAttachmentOverview = {
+  attached: ProofAttachmentEntry[]
+  suggested: ProofAttachmentEntry[]
+  unattached: ProofAttachmentEntry[]
+  attached_count: number
+  suggested_count: number
+  unattached_count: number
+  note: string
 }
 
 /** One missing proof-chain source on a project card — qualitative gap + safe
@@ -1703,6 +2713,10 @@ export type ProofAttachmentSuggestion = {
   likely_project_title: string
   /** Owner-only project-report route (absent when the project id is unknown). */
   likely_project_ref_safe?: string | null
+  /** Owner-only exact ids for explicit Website Proof confirmation. */
+  proof_id?: string | null
+  likely_project_id?: string | null
+  relationship_state?: string
   likely_skill_names: string[]
   suggestion_reason: string
   evidence_basis_chips: string[]
@@ -1759,6 +2773,64 @@ export type PassportProjectSummary = {
   report: PassportProjectReportStatus
 }
 
+/**
+ * Owner-only, project-level-only Website Proof context. Surfaced when a project
+ * has an attached Website Proof that did NOT map to any specific skill — it stays
+ * project-level evidence (the site exists / can be inspected) but the observed
+ * behaviour was too generic to demonstrate a skill. Every field is a closed label
+ * / safe sentence — never raw evidence, ids, scores, or a faked skill mapping.
+ */
+export type PassportWebsiteProofContext = {
+  project_id: string
+  project_title: string
+  /** Observed-behaviour classification key (e.g. "navigation_layout"). */
+  focus_key: string
+  /** Human label for the classification (e.g. "Navigation / page layout"). */
+  focus_label: string
+  /** One safe sentence describing what the recorded page demonstrably showed. */
+  explanation: string
+  /** Short reason it did not map a skill ("Navigation/layout evidence only", …). */
+  reason: string
+  /** The concrete runtime behaviour to record to make it skill-specific. */
+  action_guidance: string
+  /** Always false — this is explicitly the NOT-skill-mapped case. */
+  mapped_to_skills: boolean
+  /** Owner-only private route to this project's report. */
+  report_path: string
+}
+
+/**
+ * PRIVATE-ONLY: one REAL, analyzed, project-attached proof source that no exact
+ * claimed skill row consumed — the "Attached proof not yet skill-mapped" layer.
+ *
+ * Exact skill-mapped evidence stays exact; this context is shown separately so
+ * real proof is never hidden AND never confused with a skill claim. It is NEVER
+ * skill evidence, never counted in proof filter counts / skill / project counts
+ * / capability aggregates / graph nodes, and never present on public payloads.
+ * Fake metadata (a repo URL, a website URL, a filename, an unanswered question
+ * plan) can never produce an entry — the backend qualifies only genuinely
+ * analyzed proof.
+ */
+export type RealUnmappedProofContext = {
+  /** Canonical proof-type label: "GitHub Proof" | "Website Proof" | "Document Proof" | "Project Defense". */
+  proof_type: "GitHub Proof" | "Website Proof" | "Document Proof" | "Project Defense" | string
+  project_id: string
+  project_title: string
+  /** Owner-only private route to the project's report preview. */
+  report_url?: string | null
+  /** Honest closed reason the proof did not map to an exact skill row. */
+  reason: string
+  /** One safe, bounded sentence describing the real analyzed proof. */
+  safe_summary: string
+  /** Short label for the kind of analyzed evidence (e.g. "Analyzed source evidence"). */
+  evidence_label?: string | null
+  observed_at?: string | null
+  /** Count of analyzed evidence items backing this entry (never a score). */
+  source_count?: number | null
+  /** In-page anchor of the matching proof section on the project report. */
+  inspection_anchor?: string | null
+}
+
 /** The owner-only private Work Passport (full evidence wallet). */
 /**
  * Recruiter-safe candidate identity header for the Verified Work Passport.
@@ -1778,6 +2850,15 @@ export type PassportIdentity = {
   last_updated: string | null
   evidence_source_summary: string[]
   verification_label: string
+  /**
+   * Optional recruiter-safe profile photo URL for the Passport Card. It is part
+   * of the already-public identity payload, so it must only ever be a
+   * public-safe image URL — never a signed/tokenized storage URL, a private
+   * storage path, or a raw storage key. The card additionally sanitizes it
+   * (see `publicSafeAvatarUrl`) and falls back to safe initials when absent or
+   * unsafe. May be absent on older payloads.
+   */
+  avatar_url?: string | null
 }
 
 export type PrivateWorkPassport = {
@@ -1798,6 +2879,20 @@ export type PrivateWorkPassport = {
   projects: PassportProjectSummary[]
   evidence_source_counts: Record<string, number>
   /**
+   * Project-level-only Website Proof context: attached Website Proofs that did
+   * NOT map to any skill (too-generic observed behaviour). Powers the Skills
+   * Evidence Map's honest "Website Proof exists but isn't skill-mapped" empty
+   * state. Never counted as skill evidence; may be absent on older payloads.
+   */
+  website_proof_project_context?: PassportWebsiteProofContext[]
+  /**
+   * PRIVATE-ONLY "Attached proof not yet skill-mapped" layer, mirrored from
+   * each project's private report. Rendered as a standing secondary panel
+   * below the Skill Evidence Map — never as skill evidence, never counted in
+   * any filter count / aggregate / graph. Absent on older payloads.
+   */
+  real_unmapped_proof_context?: RealUnmappedProofContext[]
+  /**
    * Student Proof Vault — Layer 1: COMPACT per-skill summaries (the main
    * dashboard). Each card carries category, qualitative status, counts, and a
    * few representative previews — never every proof card. The full evidence for
@@ -1813,6 +2908,12 @@ export type PrivateWorkPassport = {
    * public passport; may be absent on older payloads.
    */
   unattached_proof_summary?: UnattachedProofSummary | null
+  /**
+   * Attachment Intelligence Cleanup (Step 4): deduplicated attached /
+   * suggested / unattached sections. Owner-only — never on the public
+   * passport; may be absent on older payloads.
+   */
+  attachment_overview?: ProofAttachmentOverview | null
   project_count: number
   published_report_count: number
   limitations: string[]
@@ -1825,6 +2926,8 @@ export type PublicPassportSkillProjectRef = {
   /** Per-project qualitative status for this skill (label only). */
   skill_status?: string
   evidence_sources: string[]
+  /** Proof types supporting this skill in this published project only. */
+  supporting_proof_types?: string[]
   public_report_path: string
   /** Per-project trace cards (published, recruiter-safe) for this skill. */
   evidence_traces?: EvidenceTrace[]
@@ -1838,6 +2941,8 @@ export type PublicPassportStrongestProject = {
   project_title: string
   skill_status?: string
   evidence_sources: string[]
+  /** Skill-specific proof-type breakdown for this published project. */
+  supporting_proof_types?: string[]
   public_report_path: string
 }
 
@@ -1860,6 +2965,8 @@ export type PublicPassportProjectTopSkill = {
   skill: string
   status: string
   skill_slug?: string | null
+  /** Skill-specific proof-type breakdown for this published project (safe labels). */
+  supporting_proof_types?: string[]
 }
 
 /** A public featured project — links to its public VBR report. */
@@ -1874,6 +2981,13 @@ export type PublicPassportProject = {
   top_skills?: PublicPassportProjectTopSkill[]
   /** Safe relationship sentence (qualitative labels only). */
   evidence_relationship_note?: string | null
+  /**
+   * Recruiter-safe Project Defense inspection cards for this featured project.
+   * Only present when the public passport DTO safely supports it; otherwise
+   * absent and nothing is shown. Fail-closed cards render a withheld
+   * placeholder — never raw transcript, segments, or internal ids.
+   */
+  project_defense_inspection?: ProjectDefenseInspectionCard[]
   public_report_path: string
   published_at: string | null
 }
@@ -1902,6 +3016,66 @@ export type PublicWorkPassport = {
 export async function getPrivateWorkPassport(): Promise<PrivateWorkPassport> {
   const res = await fetchAPI("/api/v1/student/vbr/passport")
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/**
+ * Confirm that an owned Website Proof belongs to an owned project.
+ *
+ * This is the only client mutation that upgrades a vault-only/suggested
+ * relationship to countable evidence. The API re-checks ownership for both
+ * records and records user-confirmation provenance; the client never infers or
+ * writes a relationship from a title/skill match.
+ */
+export async function confirmWebsiteProofProjectRelationship(input: {
+  proof_id: string
+  project_id: string
+}): Promise<CanonicalProjectRelationship> {
+  return confirmProofProjectRelationship({ proof_type: "website", ...input })
+}
+
+/**
+ * Confirm that ANY owned proof (website / document / github / project_defense /
+ * video) belongs to an owned project — the shared finalization boundary. The
+ * API re-checks ownership of both records, persists the canonical relationship
+ * + claim links, and records user-confirmation provenance. The client never
+ * infers or writes a relationship from a title/skill match.
+ */
+export async function confirmProofProjectRelationship(input: {
+  proof_type: string
+  proof_id: string
+  project_id: string
+}): Promise<CanonicalProjectRelationship> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/proof-relationships/confirm", {
+    method: "POST",
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorMessage(res, `Failed to attach proof (HTTP ${res.status}).`),
+    )
+  }
+  return res.json()
+}
+
+/**
+ * Finalize a completed Website Proof through the shared canonical evidence
+ * service.  The server re-checks proof/project ownership, retained replay,
+ * analysis identity, project conflicts, and idempotency on every call.
+ */
+export async function finalizeWebsiteProof(input: {
+  proof_id: string
+  project_id: string
+}): Promise<ProofFinalizationResult> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/proofs/finalize", {
+    method: "POST",
+    body: JSON.stringify({ proof_type: "website", ...input }),
+  })
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorMessage(res, `Failed to save Website Proof (HTTP ${res.status}).`),
+    )
+  }
   return res.json()
 }
 
@@ -1959,6 +3133,176 @@ export async function unpublishWorkPassport(): Promise<WorkPassportStatus> {
   return res.json()
 }
 
+// ── Beam links (dynamic revocable short QR) ───────────────────────────────────
+
+/**
+ * Owner view of one Beam short link. `short_path` (`/b/{code}`) is what the
+ * Beam Card QR encodes (made absolute with the app origin client-side);
+ * `public_passport_path` is where the code currently resolves. Rotating or
+ * revoking the link invalidates every previously shared copy of the QR at
+ * scan time — the code itself carries no identity and no internal ids.
+ */
+export type BeamLink = {
+  id: string
+  code: string
+  status: "active" | "revoked" | "expired" | string
+  short_path: string
+  public_passport_path: string
+  event_tag: string | null
+  expires_at: string | null
+  revoked_at: string | null
+  created_at: string | null
+}
+
+/**
+ * Get the caller's active Beam link, minting one if none exists (idempotent —
+ * the same code is reused until the owner rotates/revokes it). Requires a
+ * PUBLISHED passport; the backend rejects unpublished passports with a clear
+ * error rather than ever minting a link to a private surface.
+ */
+export async function getOrCreateBeamLink(eventTag?: string): Promise<BeamLink> {
+  const res = await fetchAPI("/api/v1/student/vbr/beam/links", {
+    method: "POST",
+    body: JSON.stringify(eventTag ? { event_tag: eventTag } : {}),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to prepare your Beam link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Rotate a Beam link: the old code dies immediately, a new one is minted. */
+export async function rotateBeamLink(linkId: string): Promise<BeamLink> {
+  const res = await fetchAPI(`/api/v1/student/vbr/beam/links/${encodeURIComponent(linkId)}/rotate`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to rotate your Beam link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Revoke a Beam link: every shared copy of the QR goes inactive. Idempotent. */
+export async function revokeBeamLink(linkId: string): Promise<BeamLink> {
+  const res = await fetchAPI(`/api/v1/student/vbr/beam/links/${encodeURIComponent(linkId)}/revoke`, {
+    method: "POST",
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to revoke your Beam link (HTTP ${res.status}).`))
+  return res.json()
+}
+
+// ── Apple Wallet Passport Pass ────────────────────────────────────────────────
+
+/**
+ * Owner-only Apple Wallet readiness. `enabled` is the ONE flag the UI obeys —
+ * it is true only when the backend feature flag is on AND the Apple pass
+ * identifiers are configured AND the signing certificates are actually present,
+ * i.e. only when the `.pkpass` endpoint can produce a REAL signed pass. The
+ * granular booleans exist for diagnostics only; no paths or secrets ever ride
+ * on this response.
+ */
+export type AppleWalletAvailability = {
+  enabled: boolean
+  feature_flag: boolean
+  identifiers_configured: boolean
+  signing_ready: boolean
+}
+
+/** The gated signed-pass endpoint (owner auth; served only when configured). */
+export const APPLE_WALLET_PKPASS_PATH = "/api/v1/student/vbr/wallet/apple/pass.pkpass"
+
+/**
+ * Ask the backend whether it can issue a real signed Apple Wallet pass.
+ * FAIL-CLOSED: any error (network, auth, old backend without the endpoint)
+ * reports disabled — the UI must never show an "Add to Apple Wallet" button
+ * it cannot honor.
+ */
+export async function getAppleWalletAvailability(): Promise<AppleWalletAvailability> {
+  const disabled: AppleWalletAvailability = {
+    enabled: false,
+    feature_flag: false,
+    identifiers_configured: false,
+    signing_ready: false,
+  }
+  try {
+    const res = await fetchAPI("/api/v1/student/vbr/wallet/apple/availability")
+    if (!res.ok) return disabled
+    const data: unknown = await res.json()
+    const record = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>
+    return {
+      enabled: record.enabled === true,
+      feature_flag: record.feature_flag === true,
+      identifiers_configured: record.identifiers_configured === true,
+      signing_ready: record.signing_ready === true,
+    }
+  } catch {
+    return disabled
+  }
+}
+
+/**
+ * Download the signed `.pkpass` bundle (authenticated — the endpoint is
+ * owner-only, so a plain <a href> cannot carry the bearer token). The caller
+ * hands the blob to the browser; Safari opens it straight into Wallet via its
+ * `application/vnd.apple.pkpass` content type.
+ */
+export async function downloadAppleWalletPass(): Promise<Blob> {
+  const res = await fetchAPI(APPLE_WALLET_PKPASS_PATH)
+  if (!res.ok) {
+    throw new Error(
+      await parseErrorMessage(res, `Apple Wallet pass is unavailable right now (HTTP ${res.status}).`),
+    )
+  }
+  return res.blob()
+}
+
+// ── Passport Card profile photo ───────────────────────────────────────────────
+
+/** Image types accepted for the Passport Card profile photo. */
+export const PASSPORT_PHOTO_ACCEPT = ["image/jpeg", "image/png", "image/webp"] as const
+/** Max profile-photo size (5 MB). Enforced client-side and again server-side. */
+export const PASSPORT_PHOTO_MAX_BYTES = 5 * 1024 * 1024
+/** Friendly, reused message for any invalid profile-photo selection. */
+export const PASSPORT_PHOTO_INVALID_MESSAGE =
+  "Please upload a JPG, PNG, or WebP image under 5MB."
+
+export type PassportPhotoResult = {
+  /** New public, non-signed photo URL, or null (removed / storage not set up). */
+  avatar_url: string | null
+  /** False when the photo could not be saved server-side (device-local preview). */
+  persisted: boolean
+}
+
+/**
+ * Client-side guard for a chosen profile photo — returns a friendly error
+ * message when the file's type or size is unacceptable, else null. The server
+ * re-validates authoritatively; this just gives instant feedback before upload.
+ */
+export function validatePassportPhoto(file: File): string | null {
+  if (!(PASSPORT_PHOTO_ACCEPT as readonly string[]).includes(file.type)) {
+    return PASSPORT_PHOTO_INVALID_MESSAGE
+  }
+  if (file.size > PASSPORT_PHOTO_MAX_BYTES) {
+    return PASSPORT_PHOTO_INVALID_MESSAGE
+  }
+  return null
+}
+
+/** Upload / replace the current user's Passport Card profile photo. */
+export async function uploadPassportPhoto(file: File): Promise<PassportPhotoResult> {
+  const body = new FormData()
+  body.append("file", file)
+  const res = await fetchAPI("/api/v1/student/vbr/passport/identity/photo", {
+    method: "PUT",
+    body,
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to upload photo (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Remove the current user's Passport Card profile photo. */
+export async function removePassportPhoto(): Promise<PassportPhotoResult> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/identity/photo", { method: "DELETE" })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to remove photo (HTTP ${res.status}).`))
+  return res.json()
+}
+
 /** Fetch a published recruiter-safe public Work Passport by its slug. No auth required. */
 export async function getPublicWorkPassportBySlug(
   slug: string,
@@ -1974,6 +3318,139 @@ export async function getPublicWorkPassportBySlug(
 
   if (!response.ok) {
     throw new Error(`Failed to load passport (HTTP ${response.status}).`)
+  }
+
+  return response.json()
+}
+
+// ── Public Skill Report (recruiter link-review) ───────────────────────────────
+
+/**
+ * One public-safe evidence member inside a public linked proof chain. The
+ * backend whitelist projection guarantees: no source ids, storage paths,
+ * snippets, or owner routes — `public_url` is only ever a revalidated public
+ * http(s) link, and every free-text field is scrubbed prose.
+ */
+export type PublicSkillReportEvidence = {
+  evidence_id: string | null
+  source_type: string
+  source_label: string
+  canonical_skill_name: string | null
+  subskill_name?: string | null
+  project_title: string | null
+  exact_location: string | null
+  safe_summary: string
+  proof_strength: string
+  public_safe: boolean
+  limitations: string[]
+  public_url: string | null
+  // Website-only extras (closed-vocabulary labels; absent on other sources).
+  website_purpose_label?: string
+  website_behavior_claim?: string
+  website_skill_relevance_label?: string
+  website_evidence_chips?: string[]
+  website_screenshot_available?: boolean
+  website_screenshot_access_label?: string
+  website_verification_mode_label?: string
+  website_verification_note?: string
+}
+
+/** One public-safe linked proof chain (Step 3 projection). */
+export type PublicSkillReportChain = {
+  chain_id: string | null
+  project_title: string | null
+  canonical_skill_name: string | null
+  chain_label: string
+  linked_evidence_ids: string[]
+  source_types_present: string[]
+  primary_source_type: string | null
+  connection_reasons: string[]
+  proof_strength_summary: { label?: string; strengths_present?: string[] }
+  limitations: string[]
+  public_safe: boolean
+  evidence: PublicSkillReportEvidence[]
+}
+
+/** One cited public synthesis claim — always carries opaque `ev_…` citations. */
+export type PublicSkillSynthesisClaim = {
+  claim_id: string | null
+  claim: string
+  supporting_evidence_ids: string[]
+  why_connected: string
+  limitations: string[]
+  qualitative_tier: string
+  public_safe: boolean
+}
+
+/** One chain's public synthesis result (Step 4 projection). */
+export type PublicSkillSynthesisResult = {
+  chain_id: string | null
+  canonical_skill_name: string | null
+  project_title: string | null
+  claims: PublicSkillSynthesisClaim[]
+  overall_summary: string
+  limitations: string[]
+  public_safe: boolean
+  source: string
+}
+
+/** A compact safe card for a proof that joins no chain. */
+export type PublicSkillReportUnlinkedItem = {
+  proof_type: string
+  title: string
+  safe_summary: string
+  safe_location: string | null
+  corroborates: string
+  limitation: string
+}
+
+/**
+ * The recruiter-safe public Skill Report for one skill of a PUBLISHED passport.
+ * `status` is a closed qualitative label — never a numeric score.
+ */
+export type PublicSkillReport = {
+  skill: string
+  skill_slug: string
+  status: string
+  category: string
+  synthesis_summary: string
+  source_coverage: Record<string, boolean>
+  linked_proof_chains: PublicSkillReportChain[]
+  synthesis: PublicSkillSynthesisResult[]
+  unlinked_supporting_evidence: {
+    items: PublicSkillReportUnlinkedItem[]
+    count: number
+    more_count: number
+  }
+  limitations: string[]
+  generated_at: string
+}
+
+/** The public Skill Report route for a passport slug + skill slug. */
+export function publicSkillReportPath(passportSlug: string, skillSlug: string): string {
+  return `/p/${encodeURIComponent(passportSlug)}/skills/${encodeURIComponent(skillSlug)}`
+}
+
+/**
+ * Fetch one skill's recruiter-safe public Skill Report. No auth required.
+ * Accepts a canonical skill name or a URL slug; 404 (unknown slug, unpublished
+ * passport, or skill with no proof) resolves to `null` for the safe empty state.
+ */
+export async function getPublicSkillReport(
+  slug: string,
+  skill: string,
+): Promise<PublicSkillReport | null> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/public/p/${encodeURIComponent(slug)}/skills/${encodeURIComponent(skill)}`,
+    { headers: { "Content-Type": "application/json" }, cache: "no-store" },
+  )
+
+  if (response.status === 404) {
+    return null
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to load skill report (HTTP ${response.status}).`)
   }
 
   return response.json()

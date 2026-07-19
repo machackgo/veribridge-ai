@@ -86,13 +86,14 @@ def debug_config() -> dict[str, Any]:
     elif not url:
         hint = "SUPABASE_URL is missing."
 
-    jwt_secret_ok = settings.auth_configured
+    jwt_secret_present = bool(settings.supabase_jwt_secret.get_secret_value())
+    auth_ok = settings.auth_configured
 
-    if hint is None and not jwt_secret_ok:
+    if hint is None and not auth_ok:
         hint = (
-            "SUPABASE_JWT_SECRET is missing. "
-            "JWT auth will not work — dev fallback (DEMO_USER_ID) is active. "
-            "Find it at: Supabase dashboard → Settings → API → JWT Settings → JWT Secret."
+            "JWT verification is unconfigured: no SUPABASE_URL (for JWKS-based "
+            "ES256/RS256 verification) and no legacy SUPABASE_JWT_SECRET. "
+            "Every authenticated request will fail closed with 401."
         )
 
     return {
@@ -107,9 +108,9 @@ def debug_config() -> dict[str, Any]:
             "configured": settings.supabase_configured,
         },
         "auth": {
-            "jwt_secret_present": jwt_secret_ok,
-            "mode": "jwt" if jwt_secret_ok else "demo_fallback",
-            "demo_user_id": settings.demo_user_id if not jwt_secret_ok else None,
+            "jwt_secret_present": jwt_secret_present,
+            "jwks_url": settings.supabase_jwks_url or None,
+            "mode": "jwt" if auth_ok else "unconfigured",
         },
         "hint": hint,
     }
@@ -122,6 +123,11 @@ def debug_config() -> dict[str, Any]:
     "/bootstrap-demo-user",
     status_code=status.HTTP_200_OK,
     summary="Create demo user row in public.users (dev only)",
+    # Run the production guard as a route-level dependency so it executes
+    # BEFORE the get_db / get_current_user_id parameter dependencies. Otherwise
+    # a production deployment without Supabase configured would fail resolving
+    # get_db (RuntimeError) before the endpoint could return its 403.
+    dependencies=[Depends(_block_in_production)],
 )
 def bootstrap_demo_user(
     user_id: str = Depends(get_current_user_id),
@@ -135,10 +141,8 @@ def bootstrap_demo_user(
     pointing to ``users.id``.
 
     In development, this is safe to call multiple times — it is idempotent.
-    Returns 403 in production.
+    Returns 403 in production (enforced by the route-level dependency above).
     """
-    _block_in_production()
-
     service = StudentProfileService(db)
 
     try:

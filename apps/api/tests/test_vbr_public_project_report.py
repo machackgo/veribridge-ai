@@ -204,6 +204,97 @@ def test_public_report_exposes_safe_links_only(client: TestClient, mem_store: di
     assert "storage_path" not in raw
 
 
+def test_public_report_shows_safe_document_reference_only(
+    client: TestClient, mem_store: dict
+) -> None:
+    """L. The public project report exposes a safe document reference (title/page/
+    citation) but never the raw excerpt, storage path, or internal document id."""
+    github_proof_id = _seed_github_proof(mem_store)
+    document_id = _seed_document_evidence(
+        mem_store,
+        file_path="uploads/user-123/secret-report.pdf",
+        analysis_json={"title": "Final Year Project Report"},
+        evidence_objects=[
+            {
+                "skill_name": "Machine Learning",
+                "snippet": "RAWDOCEXCERPTSHOULDNOTLEAK trained a model on the dataset.",
+                "page_number": 4,
+                "section_label": "Model Architecture",
+                "reason": "Describes the ML workflow.",
+            }
+        ],
+    )
+    created = _create_project_defense(
+        client,
+        attached_proofs={
+            "github_proof_id": github_proof_id,
+            "document_evidence_ids": [document_id],
+        },
+    ).json()
+    project_id = created["project"]["id"]
+    token = _publish(client, project_id).json()["public_token"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, token).json()
+    raw = json.dumps(body)
+
+    # No raw excerpt, storage path, or internal document id ever reaches the public
+    # surface.
+    assert "RAWDOCEXCERPTSHOULDNOTLEAK" not in raw
+    assert "uploads/user-123" not in raw
+    assert "secret-report.pdf" not in raw
+    assert document_id not in raw
+    # A safe document reference (the title) is still present for recruiters.
+    assert "Final Year Project Report" in raw
+
+
+def test_public_report_never_exposes_original_document_access(
+    client: TestClient, mem_store: dict
+) -> None:
+    """Even when the original document file IS retained (owner-only artifact),
+    the recruiter-safe public report exposes NO raw-document action: no
+    original_document descriptor on the document summaries, no document_original
+    descriptor on the evidence traces, no artifact id, and no gated
+    view/download route anywhere in the payload."""
+    from app.services import proof_artifact_service as artifacts
+
+    document_id = _seed_document_evidence(
+        mem_store,
+        evidence_objects=[
+            {"skill_name": "Machine Learning", "snippet": "trained a model", "page_number": 4}
+        ],
+    )
+    artifact = artifacts.register_artifact_with_bytes(
+        mem_store,
+        owner_user_id=USER_ID,
+        proof_type="document",
+        artifact_type="document_original",
+        data=b"docx-bytes",
+        file_name="VeriBridge-AI.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        proof_id=document_id,
+        access_policy="owner_only",
+    )
+    assert artifact is not None
+
+    created = _create_project_defense(
+        client, attached_proofs={"document_evidence_ids": [document_id]}
+    ).json()
+    token = _publish(client, created["project"]["id"]).json()["public_token"]
+
+    app.dependency_overrides.pop(get_current_user_id, None)
+    body = _get_public(client, token).json()
+
+    for document in body.get("documents") or []:
+        assert not document.get("original_document")
+    for trace in body.get("evidence_traces") or []:
+        assert not trace.get("document_original")
+    raw = json.dumps(body)
+    assert artifact["id"] not in raw
+    assert "/artifacts/" not in raw
+    assert "VeriBridge-AI.docx" not in raw
+
+
 def test_invalid_token_returns_404(client: TestClient) -> None:
     assert _get_public(client, "definitely-not-a-real-token").status_code == 404
 
@@ -941,9 +1032,24 @@ def test_public_report_fail_closed_on_local_path_value(
     client: TestClient, mem_store: dict, monkeypatch
 ) -> None:
     """A local ``/Users/…`` path lurking in a non-scrubbed position fails closed."""
-    report = _minimal_report(documents=[{"title": "Doc", "local_path": "/Users/me/secret.pdf"}])
+    report = _minimal_report(
+        skill_evidence=[{"skill": "Python", "local_path": "/Users/me/secret.pdf"}]
+    )
     response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
     assert response.status_code == 404, response.text
+
+
+def test_public_report_document_projection_drops_unexpected_private_fields(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """The documents allowlist projection keeps ONLY title/source_type/status —
+    an unexpected private field (e.g. a stray local path) on a document summary
+    is stripped before the response, never served."""
+    report = _minimal_report(documents=[{"title": "Doc", "local_path": "/Users/me/secret.pdf"}])
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, report)
+    assert response.status_code == 200, response.text
+    assert "/Users/me/secret.pdf" not in response.text
+    assert "local_path" not in response.text
 
 
 def test_public_report_scrubs_email_in_free_text(
@@ -1307,3 +1413,128 @@ def test_public_report_non_dict_analysis_still_withholds_orphaned_artifacts(
         "hidden from this public report" in (t.get("safe_summary") or "").lower()
         for t in defense_traces
     )
+
+
+# ── Project Defense inspection cards on the public project report ─────────────
+
+
+def _clean_inspection_report(status: str = "clean") -> dict:
+    """A student-report payload carrying one public-safe Project Defense
+    inspection card plus a matching clean analysis."""
+    return _minimal_report(
+        claimed_skills=["Machine Learning"],
+        project_defense_analysis={
+            "transcript_summary": "The candidate explained their model.",
+            "skills_mentioned": ["Machine Learning"],
+            "skills_explained_well": ["Machine Learning"],
+            "skills_missing_from_explanation": [],
+            "overall_assessment": "Partially demonstrated",
+            "explanation_clarity": "Demonstrated",
+            "ownership_signal": "Partially demonstrated",
+            "technical_depth": "Supporting evidence",
+            "consistency_with_evidence": "Supporting evidence",
+            "risk_flags": [],
+            "recruiter_summary": "Project defense analyzed.",
+            "recommended_improvements": [],
+            "privacy_scan_status": status,
+        },
+        project_defense_inspection=[
+            {
+                "evidence_id_safe": "defense-inspection-1",
+                "question_text": "How does your model make predictions?",
+                "question_kind": "skill_explanation",
+                "project_title": "Boston Housing",
+                "mapped_skill": "Machine Learning",
+                "claim_type": "skill_understanding",
+                "answer_purpose": "skill_explanation",
+                "evidence_role": "candidate_explanation",
+                "qualitative_status": "Explained with evidence",
+                "safe_answer_summary": f"I trained a model; my SSN is {_DEFENSE_SSN}.",
+                "evidence_basis_chips": ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+                "timestamp_label": "Video 03:12",
+                "clip_start_seconds": 192.0,
+                "clip_end_seconds": 205.0,
+                "clip_available": True,
+                "corroborates_github": True,
+                "corroborates_website": False,
+                "corroborates_document": False,
+                "corroboration_summary": "Corroborating defense evidence: GitHub Proof.",
+                "what_this_demonstrates": "The student explained this Machine Learning claim.",
+                "limitation": "Project Defense is explanation evidence.",
+                "public_safe": status == "clean",
+                "withheld_reason": None,
+            }
+        ],
+    )
+
+
+def test_public_report_clean_inspection_shows_safe_card(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A clean session publishes a safe inspection card: derived summary (no raw
+    answer text / SSN), safe question, clip locator, corroboration flags."""
+    response = _publish_and_get_with_report(client, mem_store, monkeypatch, _clean_inspection_report())
+    assert response.status_code == 200, response.text
+    assert _DEFENSE_SSN not in response.text
+
+    cards = response.json()["project_defense_inspection"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is True
+    assert card["question_text"]
+    assert _DEFENSE_SSN not in json.dumps(card)
+    assert card["clip_available"] is True
+    assert card["timestamp_label"] == "Video 03:12"
+    assert card["corroborates_github"] is True
+    assert "question_id" not in card
+
+
+def test_public_report_flagged_inspection_is_withheld(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """A privacy-flagged session withholds the inspection card entirely: no answer
+    text, no question text, no clip, and the SSN never appears anywhere."""
+    response = _publish_and_get_with_report(
+        client, mem_store, monkeypatch, _clean_inspection_report(status="flagged")
+    )
+    assert response.status_code == 200, response.text
+    assert _DEFENSE_SSN not in response.text
+
+    cards = response.json()["project_defense_inspection"]
+    assert len(cards) == 1
+    card = cards[0]
+    assert card["public_safe"] is False
+    assert card["withheld_reason"]
+    assert card["question_text"] is None
+    assert card["clip_available"] is False
+    assert card["corroborates_github"] is False
+
+
+# ── Real-unmapped-proof context must never reach the public report ────────────
+
+
+def test_public_report_excludes_real_unmapped_proof_context(
+    client: TestClient, mem_store: dict
+) -> None:
+    """11. The private report carries real_unmapped_proof_context, but the public
+    projection never includes it (nor any 'real_unmapped' fragment)."""
+    from tests.test_vbr_student_report import _seed_canonical_skill_evidence
+
+    # Real analyzed GitHub code evidence for an UNCLAIMED skill → the private
+    # report has a real-unmapped GitHub entry.
+    _seed_canonical_skill_evidence(mem_store, skill_name="Docker")
+    project_id = _create_project_defense(client).json()["project"]["id"]
+
+    private = client.get(f"/api/v1/student/vbr/projects/{project_id}/report").json()
+    assert any(
+        e["proof_type"] == "GitHub Proof"
+        for e in private["real_unmapped_proof_context"]
+    ), "precondition: the private report must carry the unmapped context"
+
+    token = _publish(client, project_id).json()["public_token"]
+    response = _get_public(client, token)
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert "real_unmapped_proof_context" not in body
+    assert "real_unmapped" not in json.dumps(body).lower()

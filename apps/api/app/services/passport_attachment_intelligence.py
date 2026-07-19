@@ -253,6 +253,10 @@ def _group_unattached(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "repo_id": "",
                 "domain": "",
                 "text_norm": "",
+                # Owner-only canonical Website Proof identifiers. Repeated
+                # per-skill vault rows for one session collapse to one id.
+                "proof_ids": [],
+                "relationship_state": "",
                 "item_count": 0,
             }
             groups[key] = group
@@ -272,7 +276,32 @@ def _group_unattached(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             )
         if proof_type == _PROOF_WEBSITE and not group["domain"]:
             group["domain"] = _item_domain(item)
+        if proof_type == _PROOF_WEBSITE:
+            proof_id = str(item.get("source_id") or "").strip()
+            if proof_id and proof_id not in group["proof_ids"]:
+                group["proof_ids"].append(proof_id)
+            if not group["relationship_state"]:
+                group["relationship_state"] = str(
+                    item.get("project_relationship_state") or "vault_only"
+                )
+            # Strong Website→project suggestion signals captured at proof
+            # creation. Repository identity and the student's selected proof
+            # objective/project title are safe metadata; neither is an attached
+            # edge and neither becomes countable without confirmation.
+            if not group["repo_id"]:
+                group["repo_id"] = _repo_identity(item.get("repo_url"))
+            hint = _norm(item.get("project_hint"))
+            if hint and len(hint) > len(group["text_norm"]):
+                group["text_norm"] = hint
         if proof_type == _PROOF_DOCUMENT:
+            # Owner-only canonical Document Proof identifier — repeated
+            # per-skill vault rows for one submission collapse to one id, so an
+            # explicit attach action can always name the exact document.
+            proof_id = str(item.get("source_id") or "").strip()
+            if proof_id and proof_id not in group["proof_ids"]:
+                group["proof_ids"].append(proof_id)
+            if not group["relationship_state"]:
+                group["relationship_state"] = "vault_only"
             # Safe, already-sanitized document text only (title/summary/snippet).
             text = " ".join(
                 _norm(item.get(f)) for f in ("title", "safe_summary", "safe_snippet")
@@ -294,7 +323,7 @@ def _match_signals(group: dict[str, Any], project: dict[str, Any]) -> list[str]:
     project_repo = str(project.get("repo_full_name") or "").strip().lower()
     group_title_norm = _norm(group.get("title"))
 
-    if proof_type == _PROOF_GITHUB and group.get("repo_id") and project_repo:
+    if proof_type in (_PROOF_GITHUB, _PROOF_WEBSITE) and group.get("repo_id") and project_repo:
         if group["repo_id"] == project_repo:
             chips.append(CHIP_MATCHING_REPOSITORY)
 
@@ -303,6 +332,12 @@ def _match_signals(group: dict[str, Any], project: dict[str, Any]) -> list[str]:
             project_repo and _domain_matches_title(group["domain"], _norm(project_repo.split("/")[-1]))
         ):
             chips.append(CHIP_MATCHING_WEBSITE_DOMAIN)
+
+    if proof_type == _PROOF_WEBSITE and group.get("text_norm") and project_title_norm:
+        # Exact normalized project-title containment inside the student-selected
+        # proof objective/title. Weak keyword overlap is deliberately insufficient.
+        if _title_contains(group["text_norm"], project_title_norm):
+            chips.append(CHIP_MATCHING_PROJECT_TITLE)
 
     if proof_type == _PROOF_DOCUMENT and group.get("text_norm"):
         if _title_contains(group["text_norm"], project_title_norm):
@@ -405,6 +440,40 @@ def _safe_suggestion_id(group: dict[str, Any], project_id: str) -> str:
     return f"attach-{hashlib.sha256(parts.encode()).hexdigest()[:12]}"
 
 
+def _suggestion_display_identity(group: dict[str, Any]) -> str:
+    """Canonical DISPLAY identity of a proof group, for suggestion dedupe.
+
+    Collapses duplicate-looking suggestions — the same repository, the same
+    website domain, or the same document/proof title — into ONE card, while
+    keeping genuinely distinct evidence apart. A GitHub group WITHOUT a stable
+    repository identity falls back to its per-source-row group ident, so two
+    distinct file/line proofs that merely share a title never merge. The value
+    is only ever mixed into a dedupe key here (never shown); the group ident is
+    itself already hashed before exposure.
+    """
+    proof_type = str(group.get("proof_type") or "")
+    ident = str(group.get("ident") or "")
+    if proof_type == _PROOF_GITHUB:
+        repo = str(group.get("repo_id") or "")
+        return f"repo:{repo}" if repo else ident
+    if proof_type == _PROOF_WEBSITE:
+        domain = str(group.get("domain") or "")
+        if domain:
+            return f"domain:{domain}"
+        repo = str(group.get("repo_id") or "")
+        if repo:
+            return f"repo:{repo}"
+        hint = _squash(group.get("text_norm"))
+        if hint:
+            return f"hint:{hint}"
+        squashed = _squash(group.get("title"))
+        return f"site:{squashed}" if squashed else ident
+    # Document / Skill Graph / any other suggestible type: same safe title is the
+    # same displayed proof.
+    title = _norm(group.get("title"))
+    return f"title:{title}" if title else ident
+
+
 def build_attachment_suggestions(
     vault_items: list[dict[str, Any]],
     project_summaries: list[dict[str, Any]],
@@ -425,7 +494,40 @@ def build_attachment_suggestions(
     if not project_summaries:
         return []
 
-    suggestions: list[dict[str, Any]] = []
+    # Suggestions are merged by DISPLAY identity + target project, so two
+    # duplicate-looking cards (same repo / website domain / document title
+    # pointing at the same project) collapse into one row with the honest
+    # grouped proof count summed. The SAME proof suggested to two DIFFERENT
+    # projects stays two rows (the target ref is part of the key).
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str, str]] = []
+
+    def _record(suggestion: dict[str, Any], group: dict[str, Any], project_ref: str) -> None:
+        key = (
+            str(group.get("proof_type") or ""),
+            _suggestion_display_identity(group),
+            project_ref,
+        )
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = suggestion
+            order.append(key)
+            return
+        existing["proof_count"] = int(existing.get("proof_count") or 1) + int(
+            suggestion.get("proof_count") or 1
+        )
+        for skill in suggestion.get("likely_skill_names") or []:
+            if (
+                skill not in existing["likely_skill_names"]
+                and len(existing["likely_skill_names"]) < _MAX_SUGGESTION_SKILLS
+            ):
+                existing["likely_skill_names"].append(skill)
+        # A merged card may represent several different Website sessions. Such
+        # a card stays review-only because attachment must always name one exact
+        # proof; never guess which hidden session the student meant.
+        if existing.get("proof_id") != suggestion.get("proof_id"):
+            existing["proof_id"] = None
+
     for group in _group_unattached(vault_items):
         candidates: list[dict[str, Any]] = []
         for project in project_summaries:
@@ -459,6 +561,13 @@ def build_attachment_suggestions(
             "proof_count": int(group.get("item_count") or 1),
             "likely_skill_names": likely_skills[:_MAX_SUGGESTION_SKILLS],
             "attachment_status": "Not attached to a VBR project",
+            "relationship_state": str(group.get("relationship_state") or "vault_only"),
+            "proof_id": (
+                group["proof_ids"][0]
+                if group["proof_type"] in (_PROOF_WEBSITE, _PROOF_DOCUMENT)
+                and len(group.get("proof_ids") or []) == 1
+                else None
+            ),
             "limitation": _SUGGESTION_LIMITATION,
             "action_label": _ACTION_LABEL,
         }
@@ -467,30 +576,35 @@ def build_attachment_suggestions(
         if best["skill_only"] and len(tied) > 1:
             # Several projects tie on nothing but skill overlap — never guess
             # one of them. Surface the proof without a suggested project.
-            suggestions.append(
+            _record(
                 {
                     **base,
                     "suggestion_id_safe": _safe_suggestion_id(group, ""),
                     "likely_project_title": "",
                     "likely_project_ref_safe": None,
+                    "likely_project_id": None,
                     "suggestion_reason": SKILL_TIE_REVIEW_REASON,
                     "evidence_basis_chips": [CHIP_MATCHING_SKILL],
                     "confidence_label": LABEL_NEEDS_REVIEW,
-                }
+                },
+                group,
+                "",
             )
             continue
 
         project = best["project"]
         project_id = str(project.get("project_id") or "")
-        suggestions.append(
+        # Owner-only report-preview route (private passport surface only).
+        project_ref = (
+            f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report" if project_id else None
+        )
+        _record(
             {
                 **base,
                 "suggestion_id_safe": _safe_suggestion_id(group, project_id),
                 "likely_project_title": str(project.get("project_title") or ""),
-                # Owner-only report-preview route (private passport surface only).
-                "likely_project_ref_safe": (
-                    f"{_PRIVATE_PROJECT_REPORT_PREFIX}{project_id}/report" if project_id else None
-                ),
+                "likely_project_ref_safe": project_ref,
+                "likely_project_id": project_id or None,
                 "suggestion_reason": _suggestion_reason(
                     group["proof_type"],
                     proof_title,
@@ -500,9 +614,12 @@ def build_attachment_suggestions(
                 ),
                 "evidence_basis_chips": list(best["chips"]),
                 "confidence_label": best["label"],
-            }
+            },
+            group,
+            project_ref or "",
         )
 
+    suggestions = [merged[key] for key in order]
     suggestions.sort(
         key=lambda s: (
             _LABEL_RANK.get(s["confidence_label"], 9),

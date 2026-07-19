@@ -203,6 +203,8 @@ def get_project_defense_analysis(
     Retrieve the most recently stored project defense analysis result.
     Returns 404 if no analysis has been run yet for this session.
     """
+    _verify_session(user_id, session_id, db)
+
     service = ProjectDefenseAnalysisService(db)
     row = service.get_analysis(user_id, session_id)
 

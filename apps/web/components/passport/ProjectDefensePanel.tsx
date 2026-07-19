@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import {
@@ -10,13 +10,17 @@ import {
   type ProjectDefenseDraft,
 } from "./project-defense-draft"
 import {
+  attachProjectDefenseProofs,
+  createNewDefenseSession,
   createProjectDefense,
   generateDefenseQuestions,
+  getProjectDefenseContext,
   getVBRSession,
   getVBRSessionRecordingReadiness,
   submitDefenseAnswers,
   syncProjectDefenseToSkillGraph,
   type DefenseAnalysisResponse,
+  type ProjectDefenseContextResponse,
   type ProjectDefenseCreateResponse,
   type SubmitDefenseAnswersResponse,
   type VBRRecordingReadinessResponse,
@@ -28,6 +32,7 @@ import {
   listGitHubProofs,
   listWebsiteProofs,
   recommendWebsiteProofs,
+  uploadDocumentProof,
   type DocumentProofResponse,
   type GitHubProofResponse,
   type RecommendedWebsiteProofResponse,
@@ -176,12 +181,14 @@ function AnalysisResults({
   videoEvidenceChips,
   syncStatus,
   syncSkills,
+  syncError,
   onSync,
 }: {
   analysis: DefenseAnalysisResponse
   videoEvidenceChips: VideoEvidenceChip[]
   syncStatus: "idle" | "syncing" | "saved" | "error"
   syncSkills: string[]
+  syncError: string | null
   onSync: () => void
 }) {
   return (
@@ -282,7 +289,7 @@ function AnalysisResults({
           )}
           {syncStatus === "error" && (
             <Mono style={{ fontSize: 11, color: TOKEN.rose, display: "block", marginTop: 6 }}>
-              Couldn&apos;t save to Skill Graph. Try again.
+              {syncError || "Couldn't save to Skill Graph. Try again."}
             </Mono>
           )}
         </div>
@@ -909,16 +916,111 @@ function DocumentProofRow({
   )
 }
 
+// Inline Document Proof uploader — used inside the Project Defense workspace so
+// a student can add a new document without navigating away to the standalone
+// Document Proof manager. It creates a normal Document Proof through the
+// existing upload API and hands the created proof back to the parent, which
+// attaches it to the selected project.
+function InlineDocumentUploader({
+  onUploaded,
+}: {
+  onUploaded: (doc: DocumentProofResponse) => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const [file, setFile] = useState<File | null>(null)
+  const [title, setTitle] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleUpload = async () => {
+    if (!file) {
+      setError("Choose a document file to upload.")
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const doc = await uploadDocumentProof(file, title.trim() ? { title: title.trim() } : undefined)
+      await onUploaded(doc)
+      setOpen(false)
+      setFile(null)
+      setTitle("")
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to upload document.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
+        No relevant document proof?{" "}
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          style={{ background: "none", border: "none", padding: 0, color: TOKEN.indigo, fontWeight: 600, cursor: "pointer", fontSize: 12 }}
+        >
+          Upload new document
+        </button>
+      </p>
+    )
+  }
+
+  return (
+    <div
+      data-testid="inline-document-uploader"
+      style={{ marginTop: 10, border: `1px solid ${TOKEN.line}`, borderRadius: 8, padding: "10px 12px", background: TOKEN.bg }}
+    >
+      <label style={labelStyle} htmlFor="inline-document-title">Document title (optional)</label>
+      <input
+        id="inline-document-title"
+        type="text"
+        placeholder="e.g. Final Year Project Report"
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        style={{ ...inputStyle, marginBottom: 8 }}
+      />
+      <label style={labelStyle} htmlFor="inline-document-file">Document file</label>
+      <input
+        id="inline-document-file"
+        aria-label="Document file"
+        type="file"
+        accept=".pdf,.doc,.docx,.txt,.md"
+        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+        style={{ fontSize: 12, marginBottom: 8 }}
+      />
+      {error && (
+        <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "6px 8px", borderRadius: 6, margin: "0 0 8px" }}>
+          {error}
+        </p>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <Btn variant="primary" size="sm" onClick={handleUpload} disabled={busy}>
+          {busy ? "Uploading…" : "Upload document"}
+        </Btn>
+        <Btn variant="secondary" size="sm" onClick={() => { setOpen(false); setError(null) }} disabled={busy}>
+          Cancel
+        </Btn>
+      </div>
+    </div>
+  )
+}
+
 function DocumentProofSelector({
   docs,
   selectedIds,
   onToggle,
   context,
+  enableInlineUpload = false,
+  onUploaded,
 }: {
   docs: DocumentProofResponse[]
   selectedIds: string[]
   onToggle: (id: string) => void
   context: WebsiteProofMatchContext
+  enableInlineUpload?: boolean
+  onUploaded?: (doc: DocumentProofResponse) => void | Promise<void>
 }) {
   const ranked = useMemo(() => rankDocumentProofs(docs, context), [docs, context])
   const recommended = ranked.filter((r) => r.tier === "recommended")
@@ -1012,21 +1114,40 @@ function DocumentProofSelector({
         </details>
       )}
 
-      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
-        No relevant document proof?{" "}
-        <Link
-          href={addHref}
-          style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}
-        >
-          Add a new Document Proof
-        </Link>
-      </p>
+      {enableInlineUpload && onUploaded ? (
+        <InlineDocumentUploader onUploaded={onUploaded} />
+      ) : (
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: "10px 0 0" }}>
+          No relevant document proof?{" "}
+          <Link
+            href={addHref}
+            style={{ color: TOKEN.indigo, textDecoration: "none", fontWeight: 600 }}
+          >
+            Add a new Document Proof
+          </Link>
+        </p>
+      )}
     </div>
   )
 }
 
-export function ProjectDefensePanel() {
+export type ProjectDefensePanelProps = {
+  /**
+   * When present, the panel opens as the workspace for an *existing* project —
+   * pre-loaded with that project's context (identity, attached evidence, and any
+   * in-progress defense session) instead of the blank "create a project defense"
+   * form. Omit it for the legacy create-first flow.
+   */
+  initialContext?: ProjectDefenseContextResponse
+  /** Back to the "choose a project to defend" selection view. */
+  onBack?: () => void
+}
+
+export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePanelProps = {}) {
   const router = useRouter()
+
+  // Workspace mode — the panel is defending a project that already exists.
+  const workspaceMode = !!initialContext
 
   // Step A/B — project identity + attached proofs
   const [title, setTitle] = useState("")
@@ -1051,11 +1172,23 @@ export function ProjectDefensePanel() {
 
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
-  const [created, setCreated] = useState<ProjectDefenseCreateResponse | null>(null)
+  const [created, setCreated] = useState<ProjectDefenseCreateResponse | null>(
+    initialContext ? { project: initialContext.project, metadata: initialContext.metadata } : null,
+  )
 
-  // Step C — generated questions
-  const [questions, setQuestions] = useState<VBRSessionQuestionResponse[] | null>(null)
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  // Inline "add or update evidence" (workspace mode only). The <details> section
+  // is controlled so the completion panel's "Add or update evidence" next-step
+  // button can expand it and scroll it into view.
+  const [attaching, setAttaching] = useState(false)
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const [evidenceOpen, setEvidenceOpen] = useState(false)
+  const evidenceRef = useRef<HTMLDetailsElement | null>(null)
+
+  // Step C — generated questions (resumed from the context session when present)
+  const [questions, setQuestions] = useState<VBRSessionQuestionResponse[] | null>(
+    initialContext && initialContext.questions.length > 0 ? initialContext.questions : null,
+  )
+  const [sessionId, setSessionId] = useState<string | null>(initialContext?.session_id ?? null)
   const [generating, setGenerating] = useState(false)
   const [generateError, setGenerateError] = useState<string | null>(null)
 
@@ -1069,9 +1202,18 @@ export function ProjectDefensePanel() {
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [result, setResult] = useState<SubmitDefenseAnswersResponse | null>(null)
 
-  // Step F — sync
-  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "saved" | "error">("idle")
+  // Step F — sync. A resumed workspace starts from the backend's honest
+  // saved/not-saved state so a refresh never shows "Not saved" after a
+  // successful save.
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "saved" | "error">(
+    initialContext?.skill_graph_synced ? "saved" : "idle",
+  )
   const [syncSkills, setSyncSkills] = useState<string[]>([])
+  const [syncError, setSyncError] = useState<string | null>(null)
+
+  // "Record another defense" — creates a fresh recording session (new attempt).
+  const [recordAnotherLoading, setRecordAnotherLoading] = useState(false)
+  const [recordAnotherError, setRecordAnotherError] = useState<string | null>(null)
 
   // Project Evidence Package — Video Defense recording status
   const [recordingReadiness, setRecordingReadiness] = useState<VBRRecordingReadinessResponse | null>(null)
@@ -1106,6 +1248,53 @@ export function ProjectDefensePanel() {
         setWebsiteProofs(websites)
       })
       .catch((e: Error) => setLoadError(e.message))
+  }, [])
+
+  // Resume an existing workspace when returning from the recorder page.
+  // The recorder links back with ?projectId=&sessionId= so this page shows the
+  // same saved Project Defense (title, questions, recording/analysis steps)
+  // instead of a blank Step A form. Browser-only; no-op when the params are
+  // absent, so the normal "create a new defense" flow is unchanged.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const params = new URLSearchParams(window.location.search)
+    const projectId = params.get("projectId")
+    const resumeSessionId = params.get("sessionId")
+    if (!projectId) return
+
+    let active = true
+    ;(async () => {
+      try {
+        // Use the sanitized Project Defense context — never raw project
+        // metadata. The context endpoint returns an allowlisted `metadata`
+        // (no storage paths, signed URLs, provider JSON, private IDs, raw
+        // text, or numeric scores) and a `project` whose metadata is the same
+        // safe projection, so nothing unsafe from `metadata.attached_proofs`
+        // can reach the workspace UI.
+        const context = await getProjectDefenseContext(projectId)
+        if (!active || !context) return
+        setCreated({ project: context.project, metadata: context.metadata })
+        if (context.skill_graph_synced) setSyncStatus("saved")
+        // The resumed defense already exists — drop any stale working draft.
+        clearProjectDefenseDraft()
+
+        if (resumeSessionId) {
+          const session = await getVBRSession(resumeSessionId)
+          if (active && session) {
+            setSessionId(session.id)
+            setQuestions(session.questions)
+          }
+        } else if (context.session_id) {
+          setSessionId(context.session_id)
+          setQuestions(context.questions)
+        }
+      } catch {
+        // Fall back to the normal (blank) create flow if the resume fails.
+      }
+    })()
+    return () => {
+      active = false
+    }
   }, [])
 
   // Restore a saved draft once on mount (browser-only). Selected proof IDs are
@@ -1240,6 +1429,53 @@ export function ProjectDefensePanel() {
     }
   }
 
+  // Workspace mode — attach existing owned proofs to this already-created project.
+  // Reuses the same proof selectors as the create form, but posts to the attach
+  // endpoint and refreshes the evidence package from the server's safe summary.
+  const handleAttachToProject = async () => {
+    if (!created) return
+    setAttaching(true)
+    setAttachError(null)
+    try {
+      const res = await attachProjectDefenseProofs(created.project.id, {
+        github_proof_id: selectedGithubProofId || null,
+        document_evidence_ids: selectedDocumentIds,
+        website_proof_session_ids: selectedWebsiteProofIds,
+      })
+      setCreated({ project: res.project, metadata: res.metadata })
+      setSelectedGithubProofId("")
+      setSelectedDocumentIds([])
+      setSelectedWebsiteProofIds([])
+    } catch (e: unknown) {
+      setAttachError(e instanceof Error ? e.message : "Failed to attach proof to this project.")
+    } finally {
+      setAttaching(false)
+    }
+  }
+
+  // Workspace mode — a document uploaded inline (no navigation away) becomes a
+  // normal Document Proof, is added to the local list, and is attached to this
+  // project so the Documents status updates without leaving the workspace.
+  const handleDocumentUploaded = async (doc: DocumentProofResponse) => {
+    setDocumentProofs((prev) => (prev ? [doc, ...prev.filter((d) => d.id !== doc.id)] : [doc]))
+    if (workspaceMode && created) {
+      setAttaching(true)
+      setAttachError(null)
+      try {
+        const res = await attachProjectDefenseProofs(created.project.id, {
+          document_evidence_ids: [doc.id],
+        })
+        setCreated({ project: res.project, metadata: res.metadata })
+      } catch (e: unknown) {
+        setAttachError(e instanceof Error ? e.message : "Failed to attach the uploaded document.")
+      } finally {
+        setAttaching(false)
+      }
+    } else {
+      setSelectedDocumentIds((prev) => (prev.includes(doc.id) ? prev : [...prev, doc.id]))
+    }
+  }
+
   const handleSubmitAnswers = async () => {
     if (!sessionId) return
     setSubmitting(true)
@@ -1265,17 +1501,58 @@ export function ProjectDefensePanel() {
   const handleSync = async () => {
     if (!sessionId) return
     setSyncStatus("syncing")
+    setSyncError(null)
     try {
       const response = await syncProjectDefenseToSkillGraph(sessionId)
       if (response.ok && response.errors.length === 0) {
         setSyncSkills(response.skills_synced)
         setSyncStatus("saved")
       } else {
+        // Surface the backend's own reason (e.g. "No skills to save yet…")
+        // instead of a generic retry message that hides the real cause.
+        setSyncError(response.errors[0] ?? null)
         setSyncStatus("error")
       }
-    } catch {
+    } catch (e: unknown) {
+      setSyncError(e instanceof Error ? e.message : null)
       setSyncStatus("error")
     }
+  }
+
+  // Completion / next-steps panel actions.
+  // "Back to Project Defense home" clears the selected project/session query
+  // state by delegating to the workspace's onBack (which resets selection and
+  // navigates to the bare /student/proofs/project-defense route); the legacy
+  // create-first flow (no onBack) falls back to a direct navigation.
+  const handleBackHome = () => {
+    if (onBack) onBack()
+    else router.push("/student/proofs/project-defense")
+  }
+
+  // "Record another defense" — a completed/processed session is non-retryable
+  // (the recorder only starts from a "created" session), so this creates a NEW
+  // session attempt for the same project and routes to that new session's record
+  // URL rather than reopening the finished one.
+  const handleRecordAnother = async () => {
+    if (!created) return
+    setRecordAnotherLoading(true)
+    setRecordAnotherError(null)
+    try {
+      const response = await createNewDefenseSession(created.project.id)
+      router.push(`/student/proofs/project-defense/record/${response.session_id}`)
+    } catch (e: unknown) {
+      setRecordAnotherError(
+        e instanceof Error ? e.message : "Failed to start a new defense session."
+      )
+    } finally {
+      setRecordAnotherLoading(false)
+    }
+  }
+
+  // "Add or update evidence" expands the existing inline attach section.
+  const handleAddEvidence = () => {
+    setEvidenceOpen(true)
+    evidenceRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" })
   }
 
   const attachedSummary = created?.metadata.attached_proofs ?? {}
@@ -1298,7 +1575,10 @@ export function ProjectDefensePanel() {
   const githubProofAttached = !!githubAttached?.repo_url
   const documentsCount = documentsAttached?.length ?? 0
   const websiteProofsCount = websiteProofsAttached?.length ?? 0
-  const analysisCompleted = !!result
+  // Reflect a live analysis result OR a persisted completed defense context so
+  // the status card/analysis text stays consistent with the backend. This is
+  // display-only and never resurfaces the (now removed) report CTA.
+  const analysisCompleted = !!result || initialContext?.defense_status === "completed"
   const skillGraphSaved = syncStatus === "saved"
 
   const videoDefenseStatus: VideoDefenseStatus = !sessionId
@@ -1311,10 +1591,108 @@ export function ProjectDefensePanel() {
           ? "ready"
           : "storage_not_configured"
 
+  // Safe project context for the inline proof selectors in workspace mode.
+  const workspaceContext: WebsiteProofMatchContext = {
+    title: created?.project.title ?? "",
+    description: created?.metadata.description ?? "",
+    repoUrl: created?.project.repo_url ?? "",
+    studentRole: created?.metadata.student_role ?? "",
+    claimedSkills: created?.metadata.claimed_skills ?? [],
+  }
+  const hasEvidenceSelection =
+    !!selectedGithubProofId || selectedDocumentIds.length > 0 || selectedWebsiteProofIds.length > 0
+
+  // The defense questions + manual answer form. Shared between the primary
+  // (pre-analysis) step and the optional "Answer again manually" collapse that
+  // is offered once analysis has completed, so a completed defense never
+  // presents another blank answer box as the next required step.
+  const answerCardBody = questions && (
+    <>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+        {questions.map((q) => (
+          <QuestionCard key={q.id} question={q} />
+        ))}
+      </div>
+
+      <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 16px" }}>
+        Optionally record yourself answering these questions using the Record defense action in the
+        Project Evidence Package above, or paste your explanation below.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <Btn size="sm" variant={answerMode === "combined" ? "primary" : "secondary"} onClick={() => setAnswerMode("combined")}>
+          Paste one explanation
+        </Btn>
+        <Btn size="sm" variant={answerMode === "per_question" ? "primary" : "secondary"} onClick={() => setAnswerMode("per_question")}>
+          Answer each question
+        </Btn>
+      </div>
+
+      {answerMode === "combined" ? (
+        <div>
+          <label style={labelStyle}>Your explanation</label>
+          <textarea
+            placeholder="Explain your project, your role, the architecture, and any challenges or improvements in your own words…"
+            value={combinedText}
+            onChange={(e) => setCombinedText(e.target.value)}
+            rows={8}
+            style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
+          />
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {questions.map((q) => (
+            <div key={q.id}>
+              <label style={labelStyle}>{q.question_text}</label>
+              <textarea
+                value={perQuestionAnswers[q.id] || ""}
+                onChange={(e) => setPerQuestionAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                rows={3}
+                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {submitError && (
+        <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6, marginTop: 12 }}>
+          {submitError}
+        </p>
+      )}
+
+      <div style={{ marginTop: 12 }}>
+        <Btn variant="primary" onClick={handleSubmitAnswers} disabled={submitting}>
+          {submitting ? "Analyzing…" : "Analyze my answers"}
+        </Btn>
+      </div>
+    </>
+  )
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          style={{
+            alignSelf: "flex-start",
+            background: "none",
+            border: "none",
+            padding: 0,
+            fontSize: 13,
+            color: TOKEN.indigo,
+            cursor: "pointer",
+          }}
+        >
+          ← Back to project selection
+        </button>
+      )}
+
       <div>
-        <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Project Defense</h2>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+          {workspaceMode && created ? `Defend: ${created.project.title}` : "Project Defense"}
+        </h2>
         <p style={{ fontSize: 13, color: TOKEN.muted, margin: "4px 0 0" }}>
           Explain your individual contribution to a project in your own words. VeriBridge generates
           deterministic defense questions from your attached proof, and the answers become supporting
@@ -1323,6 +1701,44 @@ export function ProjectDefensePanel() {
       </div>
 
       {loadError && <ErrorState message={loadError} />}
+
+      {/*
+        Completion / next-steps panel. Once the defense has been analyzed (a live
+        result this session, or a persisted completed defense context on reload),
+        the primary path is choosing a next step — not another blank manual
+        answer box. Deliberately no report navigation here: no "View Project
+        Report", no "View VBR report preview". */}
+      {created && analysisCompleted && (
+        <Card>
+          <CardHeader title="Project Defense analyzed" eyebrow="Next steps" icon="✅" />
+          <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: "0 0 14px", lineHeight: 1.5 }}>
+            Your explanation has been added as supporting evidence for this project. You can strengthen
+            this project further, record another defense, or return to your Project Defense home.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Btn variant="primary" onClick={handleBackHome}>
+              Back to Project Defense home
+            </Btn>
+            <Btn variant="secondary" onClick={handleRecordAnother} disabled={recordAnotherLoading}>
+              {recordAnotherLoading ? "Starting new session…" : "Record another defense"}
+            </Btn>
+            {workspaceMode && (
+              <Btn variant="secondary" onClick={handleAddEvidence}>
+                Add or update evidence
+              </Btn>
+            )}
+          </div>
+          {recordAnotherError && (
+            <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6, marginTop: 10 }}>
+              {recordAnotherError}
+            </p>
+          )}
+          <p style={{ fontSize: 11, color: TOKEN.muted, margin: "12px 0 0", lineHeight: 1.5 }}>
+            Project Defense is supporting explanation evidence — it does not replace your GitHub,
+            document, or website proof.
+          </p>
+        </Card>
+      )}
 
       {/* Step A/B — Project identity + attached proofs */}
       {!created && (
@@ -1489,6 +1905,11 @@ export function ProjectDefensePanel() {
         <Card>
           <CardHeader title={created.project.title} eyebrow="Project identity" icon="🧩" />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {created.metadata.description && (
+              <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+                {created.metadata.description}
+              </p>
+            )}
             {created.project.repo_full_name && (
               <Mono style={{ fontSize: 12, color: TOKEN.muted }}>{created.project.repo_full_name}</Mono>
             )}
@@ -1539,19 +1960,18 @@ export function ProjectDefensePanel() {
       {/* Project Evidence Package — unified checklist + attached evidence summary */}
       {created && (
         <Card>
+          {/*
+            Intentionally no "View Project Report" CTA here. The Project Defense
+            workspace stays focused on selected-project evidence context and the
+            defense flow (questions, recording/manual defense, analysis/skill
+            graph sync). Report navigation lives elsewhere — Project Report pages,
+            Passport project pages, and the Work Passport project list — even when
+            the backend reports report_ready / defense_status completed.
+          */}
           <CardHeader
             title="Project Evidence Package"
             eyebrow="Evidence workspace"
             icon="🗂️"
-            action={
-              <Btn
-                size="sm"
-                variant="secondary"
-                onClick={() => router.push(`/student/vbr/projects/${created.project.id}/report`)}
-              >
-                View VBR report preview
-              </Btn>
-            }
           />
 
           <div
@@ -1656,6 +2076,96 @@ export function ProjectDefensePanel() {
         </Card>
       )}
 
+      {/* Workspace mode — inline attach/update evidence for the selected project.
+          Missing evidence types can be strengthened without leaving Project
+          Defense: the same recommended-proof selectors as the create flow,
+          wired to the attach endpoint. Existing inline upload/attach behavior is
+          preserved (the "Add a new …" links inside each selector still work). */}
+      {workspaceMode && created && (
+        <details
+          ref={evidenceRef}
+          open={evidenceOpen}
+          onToggle={(e) => setEvidenceOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
+          <summary
+            style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo, cursor: "pointer" }}
+          >
+            Add or update evidence for this project
+          </summary>
+          <Card style={{ marginTop: 10 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+                Attach existing GitHub, document, or website proof to strengthen this project. Only
+                proof you already own can be attached — nothing is re-verified here.
+              </p>
+
+              {githubProofs !== null && githubProofs.length > 0 && (
+                <div>
+                  <label style={labelStyle} htmlFor="workspace-github-proof">
+                    Attach a GitHub proof
+                  </label>
+                  <select
+                    id="workspace-github-proof"
+                    value={selectedGithubProofId}
+                    onChange={(e) => setSelectedGithubProofId(e.target.value)}
+                    style={inputStyle}
+                  >
+                    <option value="">— None —</option>
+                    {githubProofs.map((p) => {
+                      const repoLabel = p.repo_owner ? `${p.repo_owner}/${p.repo_name}` : p.repo_url
+                      const statusLabel = p.evidence_strength
+                        ? `${p.status} · ${p.evidence_strength}`
+                        : p.status
+                      return (
+                        <option key={p.id} value={p.id}>
+                          {repoLabel} — {statusLabel}
+                        </option>
+                      )
+                    })}
+                  </select>
+                </div>
+              )}
+
+              {documentProofs !== null && (
+                <DocumentProofSelector
+                  docs={documentProofs}
+                  selectedIds={selectedDocumentIds}
+                  onToggle={toggleDocument}
+                  context={workspaceContext}
+                  enableInlineUpload
+                  onUploaded={handleDocumentUploaded}
+                />
+              )}
+
+              {websiteProofs !== null && (
+                <WebsiteProofSelector
+                  proofs={websiteProofs}
+                  selectedIds={selectedWebsiteProofIds}
+                  onToggle={toggleWebsiteProof}
+                  context={workspaceContext}
+                />
+              )}
+
+              {attachError && (
+                <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6 }}>
+                  {attachError}
+                </p>
+              )}
+
+              <div>
+                <Btn
+                  variant="primary"
+                  onClick={handleAttachToProject}
+                  disabled={attaching || !hasEvidenceSelection}
+                >
+                  {attaching ? "Attaching…" : "Attach to this project"}
+                </Btn>
+              </div>
+            </div>
+          </Card>
+        </details>
+      )}
+
       {/* Step C — Generate questions */}
       {created && !questions && (
         <Card>
@@ -1675,69 +2185,30 @@ export function ProjectDefensePanel() {
         </Card>
       )}
 
-      {/* Step C results + Step D — answers */}
-      {questions && !result && (
+      {/* Step C results + Step D — answers (primary path, pre-analysis only) */}
+      {questions && !analysisCompleted && (
         <Card>
           <CardHeader title="Defense questions" eyebrow="Step C · Answer in your own words" icon="❓" />
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
-            {questions.map((q) => (
-              <QuestionCard key={q.id} question={q} />
-            ))}
-          </div>
-
-          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 16px" }}>
-            Optionally record yourself answering these questions using the Record defense action in the
-            Project Evidence Package above, or paste your explanation below.
-          </p>
-
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <Btn size="sm" variant={answerMode === "combined" ? "primary" : "secondary"} onClick={() => setAnswerMode("combined")}>
-              Paste one explanation
-            </Btn>
-            <Btn size="sm" variant={answerMode === "per_question" ? "primary" : "secondary"} onClick={() => setAnswerMode("per_question")}>
-              Answer each question
-            </Btn>
-          </div>
-
-          {answerMode === "combined" ? (
-            <div>
-              <label style={labelStyle}>Your explanation</label>
-              <textarea
-                placeholder="Explain your project, your role, the architecture, and any challenges or improvements in your own words…"
-                value={combinedText}
-                onChange={(e) => setCombinedText(e.target.value)}
-                rows={8}
-                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
-              />
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              {questions.map((q) => (
-                <div key={q.id}>
-                  <label style={labelStyle}>{q.question_text}</label>
-                  <textarea
-                    value={perQuestionAnswers[q.id] || ""}
-                    onChange={(e) => setPerQuestionAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                    rows={3}
-                    style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {submitError && (
-            <p style={{ fontSize: 12, color: TOKEN.rose, background: TOKEN.roseSoft, padding: "8px 10px", borderRadius: 6, marginTop: 12 }}>
-              {submitError}
-            </p>
-          )}
-
-          <div style={{ marginTop: 12 }}>
-            <Btn variant="primary" onClick={handleSubmitAnswers} disabled={submitting}>
-              {submitting ? "Analyzing…" : "Analyze my answers"}
-            </Btn>
-          </div>
+          {answerCardBody}
         </Card>
+      )}
+
+      {/* Once analysis has completed, the manual answer box is no longer the
+          next required step — it collapses into an optional "answer again"
+          affordance below the completion panel / analysis results. */}
+      {questions && analysisCompleted && (
+        <details>
+          <summary style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo, cursor: "pointer" }}>
+            Answer again manually — revise your explanation
+          </summary>
+          <Card style={{ marginTop: 10 }}>
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 12px" }}>
+              Optional — your defense is already analyzed. Re-answer only if you want to update your
+              explanation, then analyze again.
+            </p>
+            {answerCardBody}
+          </Card>
+        </details>
       )}
 
       {/* Step E/F — analysis + save to Skill Graph */}
@@ -1747,6 +2218,7 @@ export function ProjectDefensePanel() {
           videoEvidenceChips={result.video_evidence_chips}
           syncStatus={syncStatus}
           syncSkills={syncSkills}
+          syncError={syncError}
           onSync={handleSync}
         />
       )}

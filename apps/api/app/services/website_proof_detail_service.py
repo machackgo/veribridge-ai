@@ -79,6 +79,62 @@ def _safe_steps(observed: dict[str, Any], demonstrated_actions: Any, domain: str
     return out
 
 
+def _format_offset(value: Any, *, milliseconds: bool = False) -> str | None:
+    try:
+        seconds = float(value) / (1000.0 if milliseconds else 1.0)
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0 or seconds > 24 * 60 * 60:
+        return None
+    whole = int(seconds)
+    return f"{whole // 60:02d}:{whole % 60:02d}"
+
+
+def _safe_timeline(observed: dict[str, Any], domain: str) -> list[dict[str, str | None]]:
+    """Timestamped, bounded workflow events when the analyzer stored offsets.
+
+    No offset is estimated. A label-only step remains useful timeline context
+    with ``timestamp_label=None`` but cannot become a video-moment citation.
+    """
+    steps = observed.get("steps") if isinstance(observed, dict) else None
+    out: list[dict[str, str | None]] = []
+    seen: set[tuple[str | None, str]] = set()
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+        raw_label = step.get("label") or step.get("action") or step.get("description")
+        clean, quality = _sanitize_text_segments(str(raw_label or ""), domain)
+        clean = _truncate(clean, 160).strip()
+        if not clean or quality == "noisy":
+            continue
+        timestamp = None
+        for key in ("timestamp_label", "time_label"):
+            value = str(step.get(key) or "").strip()
+            if re.fullmatch(r"\d{1,2}:\d{2}(?::\d{2})?", value):
+                timestamp = value
+                break
+        if timestamp is None:
+            for key in ("timestamp_ms", "offset_ms", "ts_ms"):
+                if step.get(key) is not None:
+                    timestamp = _format_offset(step.get(key), milliseconds=True)
+                    if timestamp:
+                        break
+        if timestamp is None:
+            for key in ("timestamp_s", "offset_s", "time_s"):
+                if step.get(key) is not None:
+                    timestamp = _format_offset(step.get(key))
+                    if timestamp:
+                        break
+        identity = (timestamp, clean.lower())
+        if identity in seen:
+            continue
+        seen.add(identity)
+        out.append({"timestamp_label": timestamp, "description": clean})
+        if len(out) >= 10:
+            break
+    return out
+
+
 def _safe_ocr_summary(wf: dict[str, Any], domain: str) -> str | None:
     ocr = _coerce_dict(wf.get("frame_ocr_evidence_summary"))
     if not ocr.get("has_ocr_evidence"):
@@ -148,6 +204,62 @@ def _safe_visual_summary(wf: dict[str, Any], domain: str) -> str | None:
     return None
 
 
+# Closed OCR page-context enum values that are safe to surface as a page-context
+# signal for the read-time purpose classifier (the raw enum, no free text).
+_ALLOWED_PAGE_CONTEXTS = frozenset(
+    {
+        "homepage_marketing",
+        "training_ui",
+        "prediction_output",
+        "demo_content",
+        "unknown",
+        "filtered_non_target_frame",
+    }
+)
+
+
+def _safe_page_context(wf: dict[str, Any]) -> str | None:
+    """The pipeline's own closed OCR page-context classification (safe enum only)."""
+    ocr = _coerce_dict(wf.get("frame_ocr_evidence_summary"))
+    ctx = str(ocr.get("detected_page_context") or "").strip().lower()
+    return ctx if ctx in _ALLOWED_PAGE_CONTEXTS else None
+
+
+def _safe_extra_signals(wf: dict[str, Any], domain: str) -> list[str]:
+    """Additional already-safe signal phrases for the purpose classifier.
+
+    Surfaces two richer-but-safe workflow-analysis fields that the fixed
+    ``ocr_summary`` / ``visual_summary`` projections do not: the OCR stage's
+    ``observed_summary`` narrative and the visual-reasoning ``supported_signals``.
+    Both are noise-filtered/sanitized here so only clean, target-app text reaches
+    the classifier — never raw OCR/provider payloads. Bounded and deduped.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: Any) -> None:
+        text = str(raw or "").strip()
+        if not text:
+            return
+        clean, quality = _sanitize_text_segments(text, domain)
+        clean = _truncate(clean, 200).strip()
+        key = clean.lower()
+        if clean and quality != "noisy" and key not in seen:
+            seen.add(key)
+            out.append(clean)
+
+    ocr = _coerce_dict(wf.get("frame_ocr_evidence_summary"))
+    if ocr.get("has_ocr_evidence"):
+        _add(ocr.get("observed_summary"))
+
+    vrs = _coerce_dict(wf.get("visual_reasoning_summary"))
+    if vrs.get("status") == "analyzed":
+        for sig in (vrs.get("supported_signals") or [])[:8]:
+            _add(sig)
+
+    return out[:10]
+
+
 def _live_check(db: Any, user_id: str, proof_session_id: str) -> dict[str, Any] | None:
     row: dict[str, Any] | None = None
     try:
@@ -211,6 +323,43 @@ def _load_workflow(db: Any, user_id: str, proof_session_id: str) -> dict[str, An
         return None
 
 
+def _retained_artifacts(db: Any, user_id: str, proof_session_id: str) -> dict[str, Any]:
+    """Safe retained Website artifact descriptor for one owned proof.
+
+    Only inert artifact ids and owner-gated application routes leave this
+    function. Storage buckets/paths and signed URLs never do. Historical proofs
+    with no artifact row return an honest not-retained descriptor.
+    """
+    try:
+        from app.services import proof_artifact_service
+
+        rows = [
+            row
+            for row in proof_artifact_service.list_artifacts_for_proof(
+                db, proof_type="website", proof_id=proof_session_id
+            )
+            if str(row.get("owner_user_id") or "") == str(user_id)
+            and row.get("retained")
+        ]
+    except Exception:  # pragma: no cover - artifact hydration is additive
+        rows = []
+    replays = [r for r in rows if r.get("artifact_type") == "website_replay_video"]
+    frames = [r for r in rows if r.get("artifact_type") == "website_frame"]
+    replay = replays[-1] if replays else None
+    return {
+        "recording_available": replay is not None,
+        "availability": "retained" if replay is not None else "not_retained",
+        "artifact_id": str(replay.get("id")) if replay else None,
+        "replay_path": (
+            f"/api/v1/proofs/website/{proof_session_id}/replay" if replay else None
+        ),
+        "duration_seconds": replay.get("duration_seconds") if replay else None,
+        "mime_type": replay.get("mime_type") if replay else None,
+        "frame_count": len(frames),
+        "analysis_path": f"/student/proofs/website?session={proof_session_id}",
+    }
+
+
 def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> dict[str, Any] | None:
     """Return safe rich Website Proof summaries for one session, or ``None``.
 
@@ -244,17 +393,27 @@ def get_website_proof_detail(db: Any, user_id: str, proof_session_id: str) -> di
     # Date precision only — a full timestamp is provenance metadata the report
     # does not need.
     observed_at = str(wf.get("created_at") or "").strip()[:10] or None
+    observed = _coerce_dict(wf.get("observed_demonstration"))
 
     return {
         "workflow_summary": workflow_summary,
         "observed_at": observed_at,
         "workflow_steps": _safe_steps(
-            _coerce_dict(wf.get("observed_demonstration")),
+            observed,
             wf.get("demonstrated_actions"),
             domain,
         ),
+        "workflow_timeline": _safe_timeline(observed, domain),
         "dom_summary": _safe_dom_summary(wf, domain) if wf else None,
         "ocr_summary": _safe_ocr_summary(wf, domain) if wf else None,
         "visual_summary": _safe_visual_summary(wf, domain) if wf else None,
+        # The pipeline's own closed OCR page-context classification + additional
+        # already-safe signal phrases (OCR observed-summary, visual supported
+        # signals). Feed the read-time purpose classifier so a genuinely strong
+        # prediction/training/API/data capture maps precisely even when the fixed
+        # summary projections above were too noisy to surface it.
+        "page_context": _safe_page_context(wf) if wf else None,
+        "extra_signals": _safe_extra_signals(wf, domain) if wf else [],
         "live_check": live,
+        "retained_artifacts": _retained_artifacts(db, user_id, str(proof_session_id)),
     }

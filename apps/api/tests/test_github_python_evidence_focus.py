@@ -1069,6 +1069,7 @@ from app.services.github_python_evidence_focus import (  # noqa: E402
     PURPOSE_PIPELINE_DOCUMENTATION,
     PURPOSE_PREDICTION_INFERENCE,
     PURPOSE_PREPROCESSING_FEATURES,
+    PURPOSE_INSUFFICIENT_CONTEXT,
     PURPOSE_REPOSITORY_CONTEXT,
     PURPOSE_RETRAINING_DOCUMENTATION,
     PURPOSE_TEST_VALIDATION,
@@ -1878,52 +1879,34 @@ def test_skill_code_relevance_excludes_positive_other_skill_contexts() -> None:
         assert is_skill_code_relevance(key), key
 
 
-def test_ml_grade_time_signal_resolves_unknown_purpose_relevance() -> None:
-    """A canonical implementation body whose snippet is not re-exposed (purpose
-    unknown) but whose grade-time verdict proved executable ML is direct for an
-    ML-family skill, supporting for its subfamilies — and NOTHING else: the signal
-    never upgrades other purposes, weaker grades, or non-ML families."""
-    assert (
-        classify_skill_relevance(
-            PURPOSE_UNKNOWN_NEEDS_REVIEW,
-            skill="Machine Learning",
-            grade=GRADE_IMPLEMENTATION_BODY,
-            ml_signal=True,
-        )
-        == RELEVANCE_DIRECT_IMPLEMENTATION
-    )
-    assert (
-        classify_skill_relevance(
-            PURPOSE_UNKNOWN_NEEDS_REVIEW,
-            skill="NLP",
-            grade=GRADE_IMPLEMENTATION_BODY,
-            ml_signal=True,
-        )
-        == RELEVANCE_SUPPORTING_IMPLEMENTATION
-    )
-    # Non-ML family, weaker grade, resolved purpose, or no verdict → unchanged.
-    assert (
-        classify_skill_relevance(
-            PURPOSE_UNKNOWN_NEEDS_REVIEW, skill="React",
-            grade=GRADE_IMPLEMENTATION_BODY, ml_signal=True,
-        )
-        == RELEVANCE_CONTEXT_ONLY
-    )
-    assert (
-        classify_skill_relevance(
-            PURPOSE_UNKNOWN_NEEDS_REVIEW, skill="Machine Learning",
-            grade=GRADE_SUPPORTING_LOGIC, ml_signal=True,
-        )
-        == RELEVANCE_CONTEXT_ONLY
-    )
-    assert (
-        classify_skill_relevance(
-            PURPOSE_UNKNOWN_NEEDS_REVIEW, skill="Machine Learning",
-            grade=GRADE_IMPLEMENTATION_BODY, ml_signal=None,
-        )
-        == RELEVANCE_CONTEXT_ONLY
-    )
-    # A resolved cross-skill purpose is never overridden by the signal.
+def test_unresolved_purpose_is_always_context_only_even_with_ml_signal() -> None:
+    """COUNTABILITY CONTRACT: an unresolved purpose (unknown / insufficient
+    context / repository-level) is ALWAYS context-only relevance — the
+    grade-time ``ml_signal`` verdict, a strong grade, or an ML skill family can
+    never upgrade it into implementation relevance. "Purpose unknown + counted"
+    must be impossible."""
+    for skill in ("Machine Learning", "NLP", "React"):
+        for grade in (GRADE_IMPLEMENTATION_BODY, GRADE_SUPPORTING_LOGIC):
+            for signal in (True, False, None):
+                assert (
+                    classify_skill_relevance(
+                        PURPOSE_UNKNOWN_NEEDS_REVIEW,
+                        skill=skill,
+                        grade=grade,
+                        ml_signal=signal,
+                    )
+                    == RELEVANCE_CONTEXT_ONLY
+                ), (skill, grade, signal)
+                assert (
+                    classify_skill_relevance(
+                        PURPOSE_INSUFFICIENT_CONTEXT,
+                        skill=skill,
+                        grade=grade,
+                        ml_signal=signal,
+                    )
+                    == RELEVANCE_CONTEXT_ONLY
+                ), (skill, grade, signal)
+    # A resolved cross-skill purpose is likewise never upgraded by the signal.
     assert (
         classify_skill_relevance(
             PURPOSE_API_ROUTE_SHELL, skill="Machine Learning",

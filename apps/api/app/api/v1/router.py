@@ -2,6 +2,8 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     ai_domain_review,
+    apple_wallet_pass,
+    beam_links,
     skill_evidence_pipelines,
     admin_quality_review,
     admin_notifications,
@@ -26,7 +28,9 @@ from app.api.v1.endpoints import (
     permissions,
     project_defense_analysis,
     project_defense_artifact_sync,
+    proof_artifacts,
     proof_versioning,
+    video_proofs,
     admin_user_roles,
     recruiter_candidate_comparisons,
     public_work_passport,
@@ -105,6 +109,21 @@ api_router.include_router(
     vbr_work_passport.public_router,
     prefix="/public",
     tags=["vbr-work-passport"],
+)
+api_router.include_router(
+    beam_links.student_router,
+    prefix="/student/vbr/beam",
+    tags=["beam-links"],
+)
+api_router.include_router(
+    beam_links.public_router,
+    prefix="/public/beam",
+    tags=["beam-links-public"],
+)
+api_router.include_router(
+    apple_wallet_pass.router,
+    prefix="/student/vbr/wallet/apple",
+    tags=["apple-wallet-pass"],
 )
 api_router.include_router(
     vbr_public_report.router,
@@ -355,4 +374,14 @@ api_router.include_router(
     debug.router,
     prefix="/debug",
     tags=["debug"],
+)
+api_router.include_router(
+    proof_artifacts.router,
+    prefix="/proofs",
+    tags=["proof-artifacts"],
+)
+api_router.include_router(
+    video_proofs.router,
+    prefix="/proofs/video",
+    tags=["video-proofs"],
 )

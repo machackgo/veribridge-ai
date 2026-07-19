@@ -19,7 +19,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.defense_answer_evidence import DefenseAnswerEvidenceCard
+from app.schemas.canonical_evidence import ClaimEvidenceMap
+from app.schemas.defense_answer_evidence import (
+    DefenseAnswerEvidenceCard,
+    ProjectDefenseInspectionCard,
+)
 from app.schemas.vbr_sessions import VideoEvidenceChipResponse
 
 
@@ -35,10 +39,40 @@ class VBRReportGitHubProofSummary(BaseModel):
     repo_is_public: bool = False
 
 
+class VBRReportDocumentOriginalAccess(BaseModel):
+    """Owner-only access descriptor for the RETAINED original document file.
+
+    Present ONLY on the private student report — the public builder strips it,
+    so recruiters keep safe excerpts/locators and never see a download action.
+    Carries the opaque artifact id plus the access-gated view/download API
+    routes; those routes re-check ownership on every request, so the descriptor
+    is inert for anyone but the owner. Never a storage path, bucket, or signed
+    URL. ``available=False`` is the honest not-retained state (older uploads,
+    or retention storage unavailable), explained by ``note``.
+    """
+
+    available: bool = False
+    artifact_id: str | None = None
+    file_name: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    page_count: int | None = None
+    # Access-gated API routes (bytes stream after a per-request ownership
+    # check) — never a storage path or signed URL.
+    open_path: str | None = None
+    download_path: str | None = None
+    note: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class VBRReportDocumentSummary(BaseModel):
     title: str
     source_type: str | None = None
     status: str | None = None
+    # Owner-only retained-original access (private report only; the public
+    # projection strips it).
+    original_document: VBRReportDocumentOriginalAccess | None = None
 
 
 class VBRReportWebsiteProofSummary(BaseModel):
@@ -48,10 +82,139 @@ class VBRReportWebsiteProofSummary(BaseModel):
     supported_skills: list[str] = Field(default_factory=list)
 
 
+class WebsiteProofSkillRelevance(BaseModel):
+    """How ONE attached Website Proof's observed behaviour relates to ONE of the
+    project's claimed skills — recomputed per report against the skill, never
+    trusted from storage.
+
+    Every field is a CLOSED-vocabulary label / already-safe helper sentence from
+    ``website_skill_proof_focus`` — never a numeric score, never proof strength,
+    never raw DOM/OCR/visual/provider text. Implementation-heavy skills (ML /
+    GenAI / DevOps) can only ever read as *product behaviour / availability
+    context* here (``is_direct_evidence`` stays False), so a demo UI can never
+    overclaim source-code authorship or model/CI-CD internals."""
+
+    skill_name: str
+    relevance_key: str
+    relevance_label: str
+    relevance_summary: str
+    limitation: str
+    is_direct_evidence: bool = False
+    # How this skill was mapped: "extracted" (named by the proof's stored
+    # supported_skills) or "derived" (conservatively inferred from the safe
+    # observed-behaviour classification). Honest provenance, never a score.
+    mapping_basis: str = "extracted"
+
+    model_config = {"extra": "forbid"}
+
+
+class WebsiteProofSkillEvidence(BaseModel):
+    """Skill-specific Website Behavior Evidence for ONE attached Website Proof —
+    OWNER/PRIVATE project report only (kept off ``VBRReportWebsiteProofSummary``
+    so it can never ride onto the public projection).
+
+    ``behavior_claim`` / ``website_purpose_*`` classify WHAT the recorded page
+    demonstrably showed, from a closed vocabulary derived only from the
+    already-safe Website Proof summaries. ``skills`` carries an honest per-skill
+    relevance ONLY for the project's claimed skills that the saved proof's
+    EXTRACTED ``supported_skills`` name OR the observed behaviour genuinely
+    demonstrates (conservative derivation — a generic/availability-only page maps
+    nothing). Each row's ``mapping_basis`` records which. Empty ``skills`` with
+    ``skill_mapping_available == False`` means the proof is captured but not
+    mapped to a specific skill — the gap is stated honestly, never faked."""
+
+    target_website: str = ""
+    # Owner-only durable Website Proof navigation. Routes are access-gated; no
+    # storage path or signed URL is serialized.
+    website_replay_available: bool = False
+    website_replay_path: str | None = None
+    website_artifact_id: str | None = None
+    website_analysis_path: str | None = None
+    website_timeline: list[dict[str, Any]] = Field(default_factory=list)
+    project_relationship_state: str = "legacy_unresolved"
+    project_identity_state: str = "possible_match_review"
+    project_identity_reasons: list[str] = Field(default_factory=list)
+    counted_for_project: bool = False
+    behavior_claim: str = ""
+    website_purpose_key: str = ""
+    website_purpose_label: str = ""
+    website_purpose_summary: str = ""
+    # ── Website Runtime Inspection (recruiter-facing deep inspection) ─────────
+    # Section 1 skill-specific runtime claim (keyed by the PRIMARY mapped skill's
+    # relevance; empty when nothing mapped). Section 2 target site / app / page
+    # context + observed user action / visible output (closed per-purpose
+    # sentences). Section 4 recruiter verification mode + checklist. All derived
+    # from closed vocabularies + already-safe summaries — never raw payloads.
+    runtime_claim_observed: str = ""
+    target_domain: str = ""
+    app_context: str = ""
+    page_context_label: str = ""
+    user_action_observed: str = ""
+    output_observed: str = ""
+    verification_mode: str = "recorded_replay_only"
+    verification_mode_label: str = "Recorded replay only"
+    recruiter_checklist: list[str] = Field(default_factory=list)
+    # Which safe pipeline summaries backed this proof (closed labels only —
+    # "Website DOM" / "Website OCR" / "Website visual analysis" / "Website NLP" /
+    # "Website runtime behavior"). Never the raw text of any of them.
+    evidence_source_types: list[str] = Field(default_factory=list)
+    skills: list[WebsiteProofSkillRelevance] = Field(default_factory=list)
+    skill_mapping_available: bool = False
+    # Project-level-only explanation, populated ONLY when ``skill_mapping_available``
+    # is False: a safe closed-vocabulary reason the observed behaviour did not map
+    # to a specific skill, plus the concrete action to strengthen it. These make
+    # the honest gap legible without ever faking a skill mapping. Empty when the
+    # proof DID map a skill.
+    unmapped_reason: str = ""
+    strengthen_action: str = ""
+
+    model_config = {"extra": "forbid"}
+
+
+
+class RealUnmappedProofContext(BaseModel):
+    """One REAL, analyzed, project-attached proof source that no exact claimed
+    skill row consumed — PRIVATE surfaces only (owner report + owner passport).
+
+    The honesty layer between exact skill evidence and hiding proof entirely:
+    exact skill-mapped evidence stays exact; real analyzed-but-unmapped proof is
+    shown separately with an honest reason. Strictly context — it is NEVER skill
+    evidence, never counted in proof filter counts / capability aggregates /
+    graph nodes, and never present on any public payload. Only closed labels and
+    already-safe summaries: no proof/session/evidence ids, storage paths, signed
+    URLs, raw transcripts/docs/DOM/OCR/provider text, or numeric scores. Fake
+    metadata (a repo URL, a website URL, a filename, an unanswered question
+    plan) can never produce an entry."""
+
+    # Canonical proof-type label: "GitHub Proof" / "Website Proof" /
+    # "Document Proof" / "Project Defense".
+    proof_type: str
+    project_id: str
+    project_title: str = ""
+    # Owner-only private route to this project's report preview.
+    report_url: str | None = None
+    # Honest closed reason the proof did not map to an exact skill row.
+    reason: str = ""
+    # One safe, bounded sentence describing the real analyzed proof.
+    safe_summary: str = ""
+    # Short label for the kind of analyzed evidence ("Analyzed source evidence",
+    # a website observed-behaviour label, …).
+    evidence_label: str | None = None
+    observed_at: str | None = None
+    # Count of analyzed evidence items backing this entry (never a score).
+    source_count: int | None = None
+    # In-page anchor of the matching proof section on the project report
+    # ("github-proof" / "website-proof" / "documents" / "project-defense").
+    inspection_anchor: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class VBRReportEvidencePackageSummary(BaseModel):
     github_proof_attached: bool = False
     documents_count: int = 0
     website_proofs_count: int = 0
+    website_proofs_excluded_count: int = 0
     project_defense_completed: bool = False
     video_defense_recorded: bool = False
     video_evidence_chip_count: int = 0
@@ -111,6 +274,19 @@ class VBREvidenceTrace(BaseModel):
     snippet: str | None = None
     # Safe document citation (matched section heading). Kept on public surfaces.
     citation: str | None = None
+    # ── Source-native document BLOCK locator (block-aware extraction) ─────────
+    # The exact typed block the skill evidence came from (table / chart /
+    # architecture_diagram / code_block / metric_result / …), its block index,
+    # bounded table cells, an honest visual description, and the nearby caption.
+    # ``has_exact_locator`` is the single counting gate: a document trace with
+    # no exact locator is "text mentions skill" and stays context-only.
+    block_type: str | None = None
+    block_index: int | None = None
+    table_cells: list[list[str]] = Field(default_factory=list)
+    visual_description: str | None = None
+    nearby_caption: str | None = None
+    figure_reference: str | None = None
+    has_exact_locator: bool = False
     # Safe repository-relative file path, for file/line-level GitHub traces.
     file_path: str | None = None
     # Line range for line-level GitHub code evidence, when the analyzer recorded
@@ -132,6 +308,18 @@ class VBREvidenceTrace(BaseModel):
     timestamp: str | None = None
     # Human timestamp label for video traces (e.g. "02:14").
     timestamp_label: str | None = None
+    # Website Proof owner-only retained replay/analysis descriptors. Never a
+    # storage path or signed URL; routes re-check ownership at access time.
+    website_replay_available: bool = False
+    website_replay_path: str | None = None
+    website_artifact_id: str | None = None
+    website_replay_duration_seconds: float | None = None
+    website_replay_mime_type: str | None = None
+    website_analysis_path: str | None = None
+    website_timeline: list[dict[str, Any]] = Field(default_factory=list)
+    # Document Proof owner-only retained-original access descriptor (private
+    # report only — the public trace projection blanks it).
+    document_original: VBRReportDocumentOriginalAccess | None = None
     limitation: str = ""
     is_publicly_openable: bool = False
     # Generic note shown when the source is not publicly openable.
@@ -205,10 +393,27 @@ class VaultProofItem(BaseModel):
     # Grade-time ML verdict from the trusted provenance body (plain tri-state bool /
     # None — never the raw snippet). Drives read-time ML semantic validation.
     ml_executable_signal: bool | None = None
+    # Symbol identity + the ANALYZED context window from trusted provenance
+    # (safe names/line numbers only). ``context_*`` may be wider than the cited
+    # target lines; the citation itself is never rewritten to hide that.
+    symbol_type: str | None = None
+    context_start_line: int | None = None
+    context_end_line: int | None = None
+    analysis_version: str | None = None
     evidence_kind: str | None = None
     has_precise_line_evidence: bool | None = None
     github_line_url: str | None = None
     repo_url: str | None = None
+    # Website-only canonical project/replay descriptors. Paths are owner-gated
+    # application routes, never storage paths or signed URLs.
+    project_hint: str | None = None
+    project_relationship_state: str | None = None
+    website_replay_available: bool | None = None
+    website_replay_path: str | None = None
+    website_artifact_id: str | None = None
+    website_replay_duration_seconds: float | None = None
+    website_replay_mime_type: str | None = None
+    website_analysis_path: str | None = None
     # Canonical (old GitHub Profile & Proof engine) fields — precise
     # ``selection_reason`` + optional subskill / system-graph node.
     selection_reason: str | None = None
@@ -221,6 +426,18 @@ class VaultProofItem(BaseModel):
     # opt-in (documents only; ``None`` for every other proof type). Never a path.
     figure_reference: str | None = None
     full_document_available: bool | None = None
+    # Source-native document BLOCK locator (block-aware extraction; documents
+    # only, ``None`` elsewhere): the typed block, its index, bounded table
+    # cells, an honest visual description, and the nearby caption.
+    block_type: str | None = None
+    block_index: int | None = None
+    table_cells: list[list[str]] | None = None
+    visual_description: str | None = None
+    nearby_caption: str | None = None
+    # Extra bounded, already-safe skill-related snippets/reasons for THIS skill
+    # (documents only; ``None`` otherwise). Owner-only raw material the Document
+    # Proof inspection card mines for deeper detail — never raw/full document text.
+    detail_snippets: list[str] | None = None
     question_text: str | None = None
     answer_excerpt: str | None = None
     timestamp_label: str | None = None
@@ -276,6 +493,20 @@ class VaultSkillSummary(BaseModel):
     project_ids: list[str] = Field(default_factory=list)
     project_titles: list[str] = Field(default_factory=list)
     project_count: int = 0
+    # Grouped, on-passport project relationship (the honest connected-project set).
+    # ``project_ids`` above are RAW ``vbr_projects`` rows — one per Project Defense
+    # attempt — so their count is inflated by duplicate attempts of the same real
+    # project. These resolve those raw ids to the deduplicated representative
+    # projects that actually appear on this passport, so the Skills Evidence Map can
+    # show a truthful connected-project count and link to a real project card.
+    connected_project_ids: list[str] = Field(default_factory=list)
+    connected_project_titles: list[str] = Field(default_factory=list)
+    # True when at least one retained, first-class proof source (GitHub / Document /
+    # Website / Project Defense / Video) backs this skill — i.e. NOT only a derived
+    # Skill-Graph/AI signal. A skill with ``has_retained_proof == False`` is a bare
+    # suggestion: it must never render as "Evidence observed" and is kept out of the
+    # default evidence map.
+    has_retained_proof: bool = False
     proof_source_counts: dict[str, int] = Field(default_factory=dict)
     proof_count: int = 0
     attached_count: int = 0
@@ -320,18 +551,58 @@ class WebsiteEvidenceCard(BaseModel):
     # first line the card renders: what live behaviour was demonstrably shown,
     # phrased as a checkable statement.
     behavior_claim: str = ""
+    # ── Website Runtime Inspection (recruiter-facing deep inspection) ─────────
+    # Section 1 — a concise SKILL-SPECIFIC claim about the recorded runtime
+    # behaviour (closed template keyed by the conservative website→skill
+    # relevance; ML/GenAI/DevOps can never overclaim).
+    runtime_claim_observed: str = ""
+    # Section 2 — target site / app context. ``target_url_safe`` survives only
+    # when it passed the safe-public-url gate; ``target_domain`` is derived from a
+    # safe URL only (a local/private capture leaves both None). ``app_context`` is
+    # a recognised hosted-app name / page title / domain. ``page_context_label``
+    # is a safe label for the pipeline's own closed OCR page-context enum.
+    target_url_safe: str | None = None
+    target_domain: str | None = None
+    app_context: str | None = None
+    page_context_label: str | None = None
+    is_public_live_url: bool = False
+    is_local_or_private_url: bool = False
+    # Section 2 — the exact observed user action and visible output/result
+    # (closed per-purpose sentences; None when the purpose demonstrates neither).
+    # ``visible_text_observed`` is the SAFE OCR-derived closed sentence — never
+    # raw OCR text; ``visited_pages_count`` stays None until a page count is
+    # actually captured (the card never invents one).
+    user_action_observed: str | None = None
+    output_observed: str | None = None
+    visible_text_observed: str | None = None
+    visited_pages_count: int | None = None
     website_purpose_key: str
     website_purpose_label: str
     website_purpose_summary: str
     skill_relevance_key: str
     skill_relevance_label: str
     skill_relevance_summary: str
+    # Section 4 — the recruiter verification checklist (open-and-reproduce for a
+    # live proof; recorded-package/deploy guidance for a recorded-only proof).
+    recruiter_checklist: list[str] = Field(default_factory=list)
+    # Section 5/6 — honest note naming the missing runtime evidence + next step.
+    missing_evidence_note: str | None = None
     observed_behavior_summary: str | None = None
     visual_evidence_summary: str | None = None
     ocr_evidence_summary_safe: str | None = None
     dom_evidence_summary_safe: str | None = None
     evidence_basis_chips: list[str] = Field(default_factory=list)
     limitation: str
+    # Recruiter verification mode (GitHub-Proof-style inspection split).
+    # "directly_verifiable_live" when a public safe live URL is available (the
+    # recruiter can open the current site); "recorded_replay_only" when the proof
+    # was captured from a local/private/preview host so only VeriBridge's recorded
+    # replay is available. ``verification_mode_label`` / ``verification_note`` are
+    # closed recruiter copy; ``deployment_recommended`` flags the replay-only case.
+    verification_mode: str = "recorded_replay_only"
+    verification_mode_label: str = "Recorded replay only"
+    verification_note: str = ""
+    deployment_recommended: bool = False
     open_website_url: str | None = None
     screenshot_available: bool = False
     # "private_candidate_permission_required" | "unavailable" (closed enum).
@@ -412,10 +683,26 @@ class SkillReportEvidenceItem(BaseModel):
     # bool / None — never the raw snippet). Drives read-time ML semantic validation
     # so a deployment-only body can never present as ML primary implementation proof.
     ml_executable_signal: bool | None = None
+    # Symbol identity + the ANALYZED context window from trusted provenance
+    # (safe names/line numbers only). ``context_start/end_line`` may be wider
+    # than the cited target lines — shown as "Analyzed context" so the target
+    # citation is never rewritten to pretend the wider window was the target.
+    symbol_type: str | None = None
+    context_start_line: int | None = None
+    context_end_line: int | None = None
+    analysis_version: str | None = None
     evidence_kind: str | None = None
     has_precise_line_evidence: bool | None = None
     github_line_url: str | None = None
     repo_url: str | None = None
+    project_hint: str | None = None
+    project_relationship_state: str | None = None
+    website_replay_available: bool = False
+    website_replay_path: str | None = None
+    website_artifact_id: str | None = None
+    website_replay_duration_seconds: float | None = None
+    website_replay_mime_type: str | None = None
+    website_analysis_path: str | None = None
     # Canonical (old GitHub Profile & Proof engine) fields — the precise
     # ``selection_reason`` ("API endpoint decorator") + optional subskill /
     # system-graph node the PortfolioScanner stored on ``skill_evidence``.
@@ -431,6 +718,14 @@ class SkillReportEvidenceItem(BaseModel):
     # recruiter-share opt-in — a plain bool, never a storage path or signed URL.
     figure_reference: str | None = None
     full_document_available: bool = False
+    # Source-native document BLOCK locator (block-aware extraction; documents
+    # only): typed block, block index, bounded table cells, visual description,
+    # nearby caption. Never raw file bytes or storage paths.
+    block_type: str | None = None
+    block_index: int | None = None
+    table_cells: list[list[str]] = Field(default_factory=list)
+    visual_description: str | None = None
+    nearby_caption: str | None = None
     # Defense / video locators
     question_text: str | None = None
     answer_excerpt: str | None = None
@@ -438,6 +733,7 @@ class SkillReportEvidenceItem(BaseModel):
     # Website-only hydrated safe summaries
     workflow_summary: str | None = None
     workflow_steps: list[str] = Field(default_factory=list)
+    workflow_timeline: list[dict[str, Any]] = Field(default_factory=list)
     dom_summary: str | None = None
     ocr_summary: str | None = None
     visual_summary: str | None = None
@@ -465,6 +761,100 @@ class SkillReportEvidenceItem(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class DocumentProofInspectionCard(BaseModel):
+    """Skill-specific, recruiter-facing *inspection* view of one Document Proof.
+
+    The Document-Proof analogue of the GitHub / Website "inspection" card: it shows
+    a recruiter exactly WHAT the document says (a bounded safe snippet), WHERE it
+    says it (page / section / citation / figure-table locator), and WHY that
+    supports the SELECTED skill — never a whole-document dump. It is deliberately
+    a closed set of safe fields: it NEVER carries raw document text, OCR/provider
+    JSON, storage/bucket paths, signed URLs, or internal document ids. The only
+    URLs it may carry are ``document_download_url`` / ``document_open_url``, and
+    only when :attr:`can_download_document` is true and the URL is an intentionally
+    authorized/safe link (a public projection forces both to ``None``).
+
+    ``safe_snippet`` is shown to the owner but is stripped on a public projection
+    unless :attr:`is_public_safe` is explicitly true — recruiters otherwise see
+    only the locator + why-supported, never the excerpt."""
+
+    title: str = ""
+    source_type: str | None = None
+    status: str | None = None
+    # The selected skill this card was built for, and the project it is attached to.
+    matched_skill: str | None = None
+    project_title: str | None = None
+    # "Supporting evidence" (default) / "Corroborating document" (attached chain).
+    evidence_role: str = "Supporting evidence"
+    # Safe locators (never a storage path / raw text): page, section, citation.
+    page_number: int | None = None
+    section_label: str | None = None
+    citation_label: str | None = None
+    # Bounded, skill-related excerpt only — never the raw/full document. Stripped
+    # on a public projection unless ``is_public_safe`` is explicitly true.
+    safe_snippet: str | None = None
+    # Safe figure/table/diagram REFERENCE labels (e.g. "Figure 3", "Table 1") —
+    # never the raw image/text — plus a short safe caption/summary when available.
+    figure_reference: str | None = None
+    table_reference: str | None = None
+    diagram_reference: str | None = None
+    visual_or_table_summary: str | None = None
+    # Why this document supports the selected skill (safe reason, deterministic
+    # fallback), the stronger evidence it corroborates, and the limitation copy.
+    why_supported: str = ""
+    corroborates: str | None = None
+    limitation: str = ""
+    # ── Skill-specific detail lists (bounded, normalized, already-safe strings) ──
+    # Deeper-than-one-sentence evidence for the SELECTED skill, mined ONLY from the
+    # analyzer's own bounded safe snippets/reasons for THIS skill — never raw/full
+    # document text, and never invented. Each list is deduped and capped. When the
+    # document only supports the skill at the claim level, the technical lists stay
+    # empty and ``missing_detail_note`` explains exactly what was not extracted.
+    #
+    # ``skill_specific_claims``  — claim-level statements about the skill.
+    # ``technical_details``      — concrete mechanism statements (deeper than a claim).
+    # ``api_endpoints``          — endpoint/route/REST mentions (API skills only).
+    # ``request_response_details`` — request/response/schema mentions (API skills).
+    # ``architecture_details``   — backend/service/architecture/integration mentions.
+    # ``implementation_hints``   — other bounded implementation-flavored detail.
+    skill_specific_claims: list[str] = Field(default_factory=list)
+    technical_details: list[str] = Field(default_factory=list)
+    api_endpoints: list[str] = Field(default_factory=list)
+    request_response_details: list[str] = Field(default_factory=list)
+    architecture_details: list[str] = Field(default_factory=list)
+    implementation_hints: list[str] = Field(default_factory=list)
+    # Safe "what is still missing" note when exact (e.g. endpoint-level) detail was
+    # not extracted — points the recruiter at GitHub Proof / Project Defense.
+    missing_detail_note: str | None = None
+    # Whether ANY skill-specific detail (claim or technical) was found for the skill.
+    has_skill_specific_details: bool = False
+    # Safe, human download/open gating note — never a path or signed URL. The legacy
+    # ``access_note`` is kept for back-compat; ``document_access_note`` carries the
+    # fuller, honest explanation and ``document_access_label`` the button label.
+    access_note: str = ""
+    document_access_label: str | None = None
+    document_access_note: str = ""
+    # Download/open is gated on explicit student consent AND a safe endpoint. When
+    # no safe URL exists both URLs stay ``None`` and the UI shows a disabled state.
+    can_download_document: bool = False
+    document_download_url: str | None = None
+    document_open_url: str | None = None
+    # Whether the safe_snippet is explicitly public-safe, and whether the document
+    # is attached to a VBR project.
+    is_public_safe: bool = False
+    is_attached_to_project: bool = False
+    # ── Artifact retention (migration 056) ────────────────────────────────────
+    # Whether the ORIGINAL uploaded file is retained as a gated proof artifact.
+    # ``document_artifact_id`` is the opaque artifact id for the authorized
+    # view/download routes (/api/v1/proofs/artifacts/{id}/…) — NEVER a storage
+    # path or signed URL; access is still enforced server-side per request, so
+    # a non-owner holding the id of a private artifact gets an indistinct 404.
+    document_retained: bool = False
+    document_artifact_id: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportDocumentCorrelation(BaseModel):
     """A document shown as *corroboration*, connected to stronger artifact evidence.
 
@@ -480,6 +870,14 @@ class SkillReportDocumentCorrelation(BaseModel):
     # Safe figure/diagram/table reference label (e.g. "Figure 3") — never the raw
     # figure/image/text.
     figure_reference: str | None = None
+    # Source-native document BLOCK locator (block-aware extraction; ``None`` on
+    # pre-block documents): typed block, block index, bounded table cells,
+    # honest visual description, nearby caption. Never file bytes or paths.
+    block_type: str | None = None
+    block_index: int | None = None
+    table_cells: list[list[str]] = Field(default_factory=list)
+    visual_description: str | None = None
+    nearby_caption: str | None = None
     safe_snippet: str | None = None
     # What stronger evidence this doc corroborates: "GitHub implementation" /
     # "Website workflow behavior" / "Skill explanation" / "Project architecture".
@@ -499,6 +897,13 @@ class SkillReportDocumentCorrelation(BaseModel):
     full_document_available: bool = False
     document_access_note: str = ""
     limitation: str = ""
+    # Skill-specific inspection view of this document (what it says, where, and why
+    # it supports the SELECTED skill) — the recruiter-facing Document Proof
+    # inspection card. ``None`` on legacy payloads built before this field existed.
+    inspection_card: DocumentProofInspectionCard | None = None
+    # Whether the ORIGINAL uploaded file is retained as a gated proof artifact
+    # (see DocumentProofInspectionCard.document_retained for the access detail).
+    document_retained: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -595,6 +1000,58 @@ class GitHubEvidenceAssessment(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class SkillReportVideoProofSkillSupport(BaseModel):
+    """One claimed skill on a Video Proof and its honest evidential basis.
+
+    ``basis`` is a closed set: ``mentioned_in_narration`` (the skill name
+    literally appears in the transcript) or ``claimed_only``. ``verified`` is
+    ALWAYS false — a demo video never verifies a skill by itself."""
+
+    skill: str = ""
+    basis: str = "claimed_only"
+    verified: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
+class SkillReportVideoProofCard(BaseModel):
+    """One first-class Video Proof (uploaded/recorded demo video) in a Skill Report.
+
+    A safe projection of a ``video_proofs`` row (migration 057): availability
+    flags + the deterministic analysis summary. It never carries storage paths,
+    signed URLs, raw transcript text, or frame bytes — playback/transcript/frames
+    load lazily through the gated artifact / video-proof routes using the opaque
+    ids here (access re-checked server-side per request).
+
+    Epistemics: ``proof_strength_label`` and ``limitations`` state verbatim what
+    a demo video can and cannot prove; ``needs_review`` defaults true and
+    ``skills_supported`` entries are never verified."""
+
+    proof_id: str = ""
+    title: str = ""
+    source_kind: str = "uploaded_demo"
+    source_kind_label: str = "Demo video"
+    duration_label: str | None = None
+    # Availability flags — derived ONLY from genuinely retained/extracted data.
+    replay_available: bool = False
+    transcript_available: bool = False
+    frames_available: bool = False
+    segment_count: int = 0
+    frame_count: int = 0
+    # Opaque artifact id for gated playback (never a path / signed URL).
+    original_artifact_id: str | None = None
+    # Deterministic analysis (facts only — see video_proof_service).
+    demo_summary: str = ""
+    proof_strength_label: str = ""
+    skills_supported: list[SkillReportVideoProofSkillSupport] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    corroborates_with: list[str] = Field(default_factory=list)
+    needs_review: bool = True
+    public_safe: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillReportProjectChain(BaseModel):
     """One project's connected proof chain for a skill — artifacts + corroboration.
 
@@ -620,10 +1077,20 @@ class SkillReportProjectChain(BaseModel):
     document_more_count: int = 0
     defense_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
     video_evidence: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # First-class Video Proofs (uploaded/recorded demo videos, migration 057)
+    # attached to this chain's project(s) and claiming this report's skill.
+    # Distinct from ``video_evidence`` (timestamped moments inside a Project
+    # Defense recording) — these are standalone demo videos with their own
+    # retention + honest deterministic analysis.
+    video_proofs: list[SkillReportVideoProofCard] = Field(default_factory=list)
     # Project Defense + Video evidence collapsed into ONE grouped section so the
     # chain never renders many repeated "the candidate explained their work"
     # cards. ``None`` when the chain has no defense/video evidence.
     defense_group: SkillReportDefenseGroup | None = None
+    # First-class Project Defense inspection cards for THIS chain, scoped to the
+    # report's skill (owner view). Explanation / corroboration evidence only;
+    # untargeted transcript moments never appear here.
+    project_defense_inspection: list[ProjectDefenseInspectionCard] = Field(default_factory=list)
     # One safe sentence explaining how this chain's Website Proof corroborates
     # its other sources ("the website demonstrates the product behaviour, GitHub
     # code shows the implementation, the Project Defense shows the candidate's
@@ -748,6 +1215,9 @@ class SkillReportStandaloneEvidence(BaseModel):
     document_more_count: int = 0
     defense: list[SkillReportEvidenceItem] = Field(default_factory=list)
     video: list[SkillReportEvidenceItem] = Field(default_factory=list)
+    # First-class Video Proofs claiming this skill that are not attached to any
+    # chain project (or whose project has no chain in this report).
+    video_proofs: list[SkillReportVideoProofCard] = Field(default_factory=list)
     skill_graph: list[SkillReportEvidenceItem] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -850,6 +1320,10 @@ class SkillReportResponse(BaseModel):
     skill_graph: list[SkillReportEvidenceItem] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     generated_at: str = ""
+    # Canonical claim→evidence map (deterministic; shared contract with the
+    # Project Report — see ``app.schemas.canonical_evidence``). ``None`` on
+    # legacy payloads built before this field existed.
+    claim_evidence_map: ClaimEvidenceMap | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -901,6 +1375,38 @@ class VBRReportProjectDefenseAnalysis(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ProofAttachmentEntry(BaseModel):
+    """One deduplicated proof entry from the attachment intelligence helper
+    (owner-only surfaces: private passport overview, report "suggested
+    evidence to attach").
+
+    Safe display fields only: no source ids/tables, storage paths, signed URLs,
+    raw text, or provider payloads. ``entry_id_safe`` is a one-way digest.
+    ``relation_strength`` is a closed label ("deterministic" / "likely" /
+    "weak" / "none") — never a numeric confidence. Only deterministic entries
+    are ever counted as attached; suggested evidence is explicitly labelled
+    "not counted until attached".
+    """
+
+    entry_id_safe: str = ""
+    proof_type: str = ""
+    display_title: str = ""
+    source_label: str = ""
+    attachment_state: str = ""
+    relation_reason: str = ""
+    relation_strength: str = ""
+    reason_label: str = ""
+    status_label: str = ""
+    project_titles: list[str] = Field(default_factory=list)
+    # Owner-only project-report routes (never on a public projection).
+    project_refs_safe: list[str] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list)
+    # How many duplicate vault rows collapsed into this one entry.
+    duplicate_count: int = 1
+
+    model_config = {"extra": "forbid"}
+
+
 class VBRStudentProjectReportResponse(BaseModel):
     project_id: str
     project_title: str
@@ -920,16 +1426,30 @@ class VBRStudentProjectReportResponse(BaseModel):
     github_proof: VBRReportGitHubProofSummary | None = None
     documents: list[VBRReportDocumentSummary] = Field(default_factory=list)
     website_proofs: list[VBRReportWebsiteProofSummary] = Field(default_factory=list)
+    # Skill-specific Website Behavior Evidence (owner/private view only). One entry
+    # per attached Website Proof: what the recorded page demonstrably showed plus,
+    # for each claimed skill the saved proof's extracted supported-skills actually
+    # name, an honest per-skill relevance + limitation. Never on the public
+    # projection (the public builder whitelists fields and omits this one).
+    website_skill_evidence: list[WebsiteProofSkillEvidence] = Field(default_factory=list)
 
     project_defense_analysis: VBRReportProjectDefenseAnalysis | None = None
     defense_questions: list[VBRReportQuestionSummary] = Field(default_factory=list)
     # Claim-level, question-grounded Defense Answer Evidence cards (owner view).
     defense_answer_evidence: list[DefenseAnswerEvidenceCard] = Field(default_factory=list)
+    # First-class Project Defense inspection cards (owner view) — the defense
+    # parallel to GitHub / Website / Document inspection.
+    project_defense_inspection: list[ProjectDefenseInspectionCard] = Field(default_factory=list)
     video_evidence_chips: list[VideoEvidenceChipResponse] = Field(default_factory=list)
 
     skill_evidence: list[VBRReportSkillEvidenceRow] = Field(default_factory=list)
     # Flat list of every claim→evidence trace referenced by the skill matrix.
     evidence_traces: list[VBREvidenceTrace] = Field(default_factory=list)
+
+    # REAL analyzed, project-attached proof that no exact skill row consumed —
+    # "Attached proof not yet skill-mapped". Context only (never skill evidence,
+    # never counted, never public); private student preview surface only.
+    real_unmapped_proof_context: list[RealUnmappedProofContext] = Field(default_factory=list)
 
     # "Other student proofs for related skills" — safe student-vault proofs that
     # match this report's claimed skills but are NOT attached to this project.
@@ -937,8 +1457,19 @@ class VBRStudentProjectReportResponse(BaseModel):
     # attached-proof skill matrix above, so the report stays project-honest.
     other_student_proofs: list[VaultSkillGroup] = Field(default_factory=list)
 
+    # "Suggested evidence to attach" (owner-only): unattached vault proofs whose
+    # safe metadata points at this project. Clearly labelled "not counted until
+    # attached" — never part of the attached evidence package above, and never
+    # on the public report projection.
+    suggested_evidence: list[ProofAttachmentEntry] = Field(default_factory=list)
+
     limitations: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
+
+    # Canonical claim→evidence map (deterministic; shared contract with the
+    # Skill Report — see ``app.schemas.canonical_evidence``). ``None`` when the
+    # builder skipped it (multi-project passport path) or on legacy payloads.
+    claim_evidence_map: ClaimEvidenceMap | None = None
 
     preview_only: bool = True
     public_recruiter_sharing_enabled: bool = False
@@ -953,8 +1484,12 @@ class VBRStudentProjectReportResponse(BaseModel):
 
 __all__ = [
     "VBRReportGitHubProofSummary",
+    "VBRReportDocumentOriginalAccess",
     "VBRReportDocumentSummary",
     "VBRReportWebsiteProofSummary",
+    "WebsiteProofSkillRelevance",
+    "WebsiteProofSkillEvidence",
+    "RealUnmappedProofContext",
     "VBRReportEvidencePackageSummary",
     "VBRReportQuestionSummary",
     "VBREvidenceTrace",
@@ -964,15 +1499,19 @@ __all__ = [
     "VaultSkillSummary",
     "SkillReportEvidenceItem",
     "SkillReportProjectUsage",
+    "DocumentProofInspectionCard",
     "SkillReportDocumentCorrelation",
     "SkillProofSynthesisStatement",
     "SkillProofSynthesisUnlinkedItem",
     "SkillProofSynthesisUnlinked",
+    "SkillReportVideoProofSkillSupport",
+    "SkillReportVideoProofCard",
     "SkillReportProjectChain",
     "SkillReportStandaloneEvidence",
     "SkillReportOverview",
     "SkillReportResponse",
     "VBRReportSkillEvidenceRow",
     "VBRReportProjectDefenseAnalysis",
+    "ProofAttachmentEntry",
     "VBRStudentProjectReportResponse",
 ]

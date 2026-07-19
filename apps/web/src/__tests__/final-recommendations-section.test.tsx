@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 // Individual tests override these with mockResolvedValueOnce / mockRejectedValueOnce.
 vi.mock("@/lib/api", () => ({
   getReviewStatus: vi.fn().mockResolvedValue(null),
+  initializeWebsiteProofRecorder: vi.fn(),
+  openWebsiteProofTarget: vi.fn(),
+  refreshWebsiteProofRecorderSessionAuth: vi.fn().mockResolvedValue(true),
   submitForAiReview: vi.fn().mockResolvedValue({
     id: "mock-review-id",
     proof_session_id: "s1",
@@ -370,7 +373,8 @@ describe("Final report consistency", () => {
     )
     expect(screen.getByText("Live Website Check — Complete")).toBeInTheDocument()
     expect(screen.getByText("Site is publicly reachable")).toBeInTheDocument()
-    expect(screen.getByText("Live Website Score: 90/100")).toBeInTheDocument()
+    // Qualitative evidence labels only — numeric scores are not recruiter-facing.
+    expect(screen.getByText("Live Website Score: strong evidence")).toBeInTheDocument()
   })
 
   it("renders local private live website check as a neutral not-applicable card", () => {
@@ -484,7 +488,8 @@ describe("Final report consistency", () => {
       />,
     )
 
-    expect(screen.getByText("Project Defense Score: 73/100")).toBeInTheDocument()
+    // Qualitative evidence labels only — numeric scores are not recruiter-facing.
+    expect(screen.getByText("Project Defense Score: strong evidence")).toBeInTheDocument()
     expect(screen.queryByText("Defense Score")).not.toBeInTheDocument()
     expect(screen.queryByText("40/100")).not.toBeInTheDocument()
   })

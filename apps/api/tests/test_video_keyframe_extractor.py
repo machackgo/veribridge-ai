@@ -393,6 +393,7 @@ def test_video_upload_endpoint_returns_video_analysis_status():
     """The /workflow/video endpoint returns video_analysis_status in the response."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.api.deps import get_current_user_id, get_db
 
     client = TestClient(app)
 
@@ -408,13 +409,27 @@ def test_video_upload_endpoint_returns_video_analysis_status():
         _extracted_frames=[(0, b"j1"), (500, b"j2")],
     )
 
-    mock_db = {}
+    owner_id = "00000000-0000-0000-0000-000000000001"
+    mock_db = {
+        "extension_proof_sessions": {
+            "test-session": {
+                "id": "test-session",
+                "user_id": owner_id,
+                "status": "recording",
+            }
+        }
+    }
 
     def _fake_get_db():
         return mock_db
 
     def _fake_get_user():
-        return "00000000-0000-0000-0000-000000000001"
+        return owner_id
+
+    # Authenticate explicitly instead of relying on the (now gated) dev
+    # no-token fallback: register the identity/db overrides this test defines.
+    app.dependency_overrides[get_current_user_id] = _fake_get_user
+    app.dependency_overrides[get_db] = _fake_get_db
 
     # Patch extractor and visual analysis to avoid real cv2/DB calls
     with (
@@ -441,12 +456,26 @@ def test_video_upload_endpoint_returns_video_analysis_status():
             "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
             files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
         )
+        duplicate_response = client.post(
+            "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
+            files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
+        )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 202, response.text
     body = response.json()
     assert "video_analysis_status" in body
     assert body["video_analysis_status"] == VIDEO_STATUS_ANALYZED
     assert "keyframe_count" in body
+    assert body["replay_retained"] is True
+    assert duplicate_response.status_code == 202
+    assert duplicate_response.json()["replay_artifact_id"] == body["replay_artifact_id"]
+    artifacts = list(mock_db["proof_artifacts"].values())
+    assert len(artifacts) == 1
+    assert artifacts[0]["artifact_type"] == "website_replay_video"
+    assert artifacts[0]["owner_user_id"] == owner_id
+    assert list(mock_db["_proof_artifact_objects"].values()) == [b"fake_video"]
     # Private fields must not appear in the response
     assert "_extracted_frames" not in body
     assert "frame_storage_path" not in body
@@ -458,13 +487,126 @@ def test_video_upload_endpoint_rejects_unsupported_content_type():
     """Endpoint returns 415 for content types that are not video formats."""
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.api.deps import get_current_user_id, get_db
 
     client = TestClient(app)
+    # Authenticate explicitly so we exercise the media-type check, not auth.
+    owner_id = "00000000-0000-0000-0000-000000000001"
+    app.dependency_overrides[get_current_user_id] = lambda: owner_id
+    app.dependency_overrides[get_db] = lambda: {
+        "extension_proof_sessions": {
+            "test-session": {
+                "id": "test-session",
+                "user_id": owner_id,
+                "status": "recording",
+            }
+        }
+    }
 
-    response = client.post(
-        "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
-        files={"video": ("clip.txt", io.BytesIO(b"not a video"), "text/plain")},
-    )
+    try:
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions/test-session/workflow/video",
+            files={"video": ("clip.txt", io.BytesIO(b"not a video"), "text/plain")},
+        )
+    finally:
+        app.dependency_overrides.clear()
 
     # 415 Unsupported Media Type
     assert response.status_code == 415, response.text
+
+
+# ── Test 16 ────────────────────────────────────────────────────────────────────
+
+def test_video_upload_duplicate_delivery_is_idempotent_no_new_frames():
+    """A retried upload (same session) must not duplicate keyframes or re-extract.
+
+    The extension retries a failed/ack-lost upload with the same session and a
+    stable idempotency key. Once a retained replay exists, the endpoint must
+    short-circuit: no second extraction, no additional stored frames, and an
+    acknowledgment with replay_retained=True so the recorder can settle.
+    """
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.api.deps import get_current_user_id, get_db
+
+    client = TestClient(app)
+
+    fake_extractor_result = VideoKeyframeResult(
+        video_analysis_status=VIDEO_STATUS_ANALYZED,
+        keyframe_count=2,
+        selected_frame_timestamps_ms=[0, 500],
+        extraction_method="cv2_interval",
+        duration_ms=1000,
+        frame_width=640,
+        frame_height=360,
+        limitations=[],
+        _extracted_frames=[(0, b"j1"), (500, b"j2")],
+    )
+
+    owner_id = "00000000-0000-0000-0000-000000000001"
+    mock_db = {
+        "extension_proof_sessions": {
+            "idem-session": {
+                "id": "idem-session",
+                "user_id": owner_id,
+                "status": "recording",
+            }
+        }
+    }
+
+    app.dependency_overrides[get_current_user_id] = lambda: owner_id
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    with (
+        patch(
+            "app.api.v1.endpoints.workflow_visual_frames.VideoKeyframeExtractorService"
+        ) as MockExtractor,
+        patch(
+            "app.api.v1.endpoints.workflow_visual_frames.WorkflowVisualAnalysisService"
+        ) as MockVA,
+    ):
+        mock_extractor_inst = MagicMock()
+        mock_extractor_inst.extract_keyframes.return_value = fake_extractor_result
+        MockExtractor.return_value = mock_extractor_inst
+
+        mock_va_inst = MagicMock()
+        mock_va_inst.store_visual_frame.return_value = "frame-id-1"
+        mock_va_inst.get_provider_status.return_value = {
+            "provider_configured": False,
+            "visual_analysis_provider": "none",
+        }
+        MockVA.return_value = mock_va_inst
+
+        first = client.post(
+            "/api/v1/student/extension-proof/sessions/idem-session/workflow/video",
+            files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
+        )
+        frames_stored_after_first = mock_va_inst.store_visual_frame.call_count
+        extractions_after_first = mock_extractor_inst.extract_keyframes.call_count
+
+        duplicate = client.post(
+            "/api/v1/student/extension-proof/sessions/idem-session/workflow/video",
+            files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert first.status_code == 202, first.text
+    assert first.json()["replay_retained"] is True
+    assert duplicate.status_code == 202, duplicate.text
+    dup_body = duplicate.json()
+    assert dup_body["replay_retained"] is True
+    assert dup_body["replay_artifact_id"] == first.json()["replay_artifact_id"]
+    assert dup_body["frames_stored"] == 0
+    assert "idempotent" in dup_body["message"]
+
+    # The duplicate performed NO second extraction and stored NO new frames.
+    assert mock_extractor_inst.extract_keyframes.call_count == extractions_after_first
+    assert mock_va_inst.store_visual_frame.call_count == frames_stored_after_first
+
+    # Exactly one retained replay artifact exists for the session.
+    artifacts = [
+        a for a in mock_db["proof_artifacts"].values()
+        if a["artifact_type"] == "website_replay_video"
+    ]
+    assert len(artifacts) == 1

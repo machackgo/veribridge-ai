@@ -189,9 +189,11 @@ def test_build_statements_downgrades_ml_body_backed_only_by_stale_labels() -> No
     assert len(supporting) == 1
 
 
-def test_build_statements_keeps_ml_body_with_grade_time_signal() -> None:
-    """A canonical row whose raw snippet is not re-exposed at read time stays primary
-    when the trusted grade-time ML verdict (``ml_executable_signal``) is True."""
+def test_build_statements_requires_concrete_purpose_for_primary() -> None:
+    """COUNTABILITY CONTRACT: a canonical row whose purpose cannot be resolved
+    (no snippet, no stored purpose key) is never synthesized as primary — the
+    grade-time ML verdict alone no longer stands in for a concrete purpose. The
+    same row WITH its adapter-stored concrete purpose stays primary."""
     row = {
         "source_id": "p1",
         "display_mode": "code_line",
@@ -204,6 +206,13 @@ def test_build_statements_keeps_ml_body_with_grade_time_signal() -> None:
         "ml_executable_signal": True,
     }
     statements = _build_statements("Machine Learning", {"github_evidence": [row]}, {"p1"})
+    assert not any(
+        s["text"].startswith("Primary GitHub implementation") for s in statements
+    )
+    row_with_purpose = {**row, "code_block_purpose_key": "model_training"}
+    statements = _build_statements(
+        "Machine Learning", {"github_evidence": [row_with_purpose]}, {"p1"}
+    )
     primary = [s for s in statements if s["text"].startswith("Primary GitHub implementation")]
     assert len(primary) == 1
 

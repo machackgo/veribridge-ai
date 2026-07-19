@@ -34,3 +34,18 @@ class DocumentProofResponse(BaseModel):
     analysis_json: dict[str, Any] = Field(default_factory=dict)
     evidence_objects: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str | None = None
+    # ── Artifact retention (migration 056) ────────────────────────────────────
+    # Whether the ORIGINAL uploaded file was retained as a gated proof artifact,
+    # and its opaque artifact id for the authorized view/download routes —
+    # never a storage path or signed URL. False/None when retention storage is
+    # not configured (verified-excerpts-only remains the honest state).
+    original_retained: bool = False
+    original_artifact_id: str | None = None
+    # ── Canonical project relationship (migration 058 + attach metadata) ──────
+    # The document's REAL relationship state — the same canonical rows the
+    # Passport and reports read. The UI must render attachment status from
+    # these fields only, never from a display title, so "shown under a project"
+    # and "attached to a project" can never diverge again.
+    project_id: str | None = None
+    project_title: str | None = None
+    project_relationship_state: str = "vault_only"

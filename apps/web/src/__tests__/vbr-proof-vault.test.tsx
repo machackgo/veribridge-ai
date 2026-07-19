@@ -8,10 +8,10 @@
  * absence of any private vault structure on the recruiter-facing public passport.
  */
 
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, within } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
-import { PrivatePassportView } from "../app/student/vbr/passport/PrivatePassportView"
+import { ProofVaultView } from "../app/student/vbr/passport/vault/ProofVaultView"
 import { ProjectReportView } from "../app/student/vbr/projects/[projectId]/report/ProjectReportView"
 import { PublicPassportView } from "../app/p/[slug]/PublicPassportView"
 import { SkillReportPageView } from "../app/student/vbr/passport/skills/[skillSlug]/SkillReportView"
@@ -263,13 +263,15 @@ beforeEach(() => {
 
 // ── Private Work Passport vault section ────────────────────────────────────────
 
-describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () => {
+// The Skill Intelligence dashboard moved OUT of the main Passport into the
+// private Proof Vault page, so it is exercised against ProofVaultView now.
+describe("ProofVaultView — Skill Intelligence (compact dashboard)", () => {
   it("renders compact skill summary cards under category headings, not raw proof cards", async () => {
     const p = makePassport()
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     expect(await screen.findByTestId("vault-skill-dashboard")).toBeInTheDocument()
     const card = screen.getByTestId("vault-skill-summary")
@@ -286,7 +288,7 @@ describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     expect(await screen.findByTestId("vault-summary-unattached")).toHaveTextContent("not attached")
     expect(screen.getByTestId("vault-unattached-summary")).toHaveTextContent("1 unattached proof item")
@@ -297,7 +299,7 @@ describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
+    render(<ProofVaultView />)
 
     await screen.findByTestId("vault-skill-dashboard")
     const link = screen.getByTestId("view-skill-report")
@@ -315,8 +317,8 @@ describe("PrivatePassportView — Skill Intelligence (compact dashboard)", () =>
     vi.mocked(getPrivateWorkPassport).mockResolvedValue(p)
     vi.mocked(getWorkPassportStatus).mockResolvedValue(statusFrom(p))
 
-    render(<PrivatePassportView />)
-    await screen.findByTestId("passport-header")
+    render(<ProofVaultView />)
+    await screen.findByTestId("vault-overview")
     expect(screen.queryByTestId("vault-skill-dashboard")).not.toBeInTheDocument()
   })
 })
@@ -479,6 +481,11 @@ describe("Skill Report page (separate route)", () => {
       evidence_basis_chips: ["Route observed", "Visual frame", "Workflow navigation", "Output / result visible"],
       limitation:
         "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+      verification_mode: "directly_verifiable_live",
+      verification_mode_label: "Directly verifiable live",
+      verification_note:
+        "A public live URL is available, so a recruiter can open the site and inspect the current runtime/product behaviour directly. The recorded evidence below shows what VeriBridge observed during the proof session.",
+      deployment_recommended: false,
       open_website_url: "https://demo.example.com",
       screenshot_available: true,
       screenshot_access_label: "private_candidate_permission_required",
@@ -534,20 +541,217 @@ describe("Skill Report page (separate route)", () => {
     // Evidence basis chips render from the closed vocabulary.
     const chips = screen.getAllByTestId("website-evidence-chip").map((c) => c.textContent)
     expect(chips).toEqual(["Route observed", "Visual frame", "Workflow navigation", "Output / result visible"])
-    // Frames exist but are private → permission-gated status, never a link.
-    expect(screen.getByTestId("website-screenshot-status")).toHaveTextContent(
-      "available with candidate permission",
-    )
+    // Frames exist and this is the OWNER surface → the captured-frames access
+    // button renders (frames stream through the authorized proxy on demand);
+    // never a raw frame link, never a storage URL.
+    expect(screen.getByTestId("website-frames-view-button")).toHaveTextContent("View captured frames")
+    expect(screen.queryByTestId("website-screenshot-status")).not.toBeInTheDocument()
     // The open-website link renders only the safe public URL.
     expect(screen.getByTestId("evidence-public-link")).toHaveAttribute("href", "https://demo.example.com")
-    expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open website →")
-    // Limitation renders via the item row.
-    expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
+    expect(screen.getByTestId("evidence-public-link")).toHaveTextContent("Open live website →")
+    // GitHub-style inspection header: a public URL → directly verifiable live.
+    expect(screen.getByTestId("website-inspection-title")).toHaveTextContent("Website Runtime Inspection")
+    expect(screen.getByTestId("website-verification-mode")).toHaveTextContent("Directly verifiable live")
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "live")
+    expect(screen.getByTestId("website-open-live")).toBeInTheDocument()
+    // Live-verifiable proof does not nag for a deployment.
+    expect(screen.queryByTestId("website-deployment-recommended")).not.toBeInTheDocument()
+    // Limitation renders in the card's Section 6 (its own testid).
+    expect(screen.getByTestId("website-card-limitation")).toHaveTextContent(
+      /does not, by itself, prove model training/,
+    )
     // Raw hydrated payloads never render when the card is present.
     expect(screen.queryByTestId("website-ocr")).not.toBeInTheDocument()
     expect(screen.queryByTestId("website-dom")).not.toBeInTheDocument()
     expect(screen.queryByTestId("website-visual")).not.toBeInTheDocument()
     expect(screen.queryByText(/RAW-OCR-TEXT|RAW-DOM-TEXT|RAW-VISUAL-TEXT/)).not.toBeInTheDocument()
+  })
+
+  it("renders the deep Website Runtime Inspection: claim, target site, action, output, live checklist", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                runtime_claim_observed:
+                  "Recorded website behavior shows a browser-based Machine Learning workflow where user input leads to a visible prediction/result output.",
+                target_url_safe: "https://demo.example.com",
+                target_domain: "demo.example.com",
+                app_context: "Crash Risk Predictor",
+                page_context_label: "Prediction / output page",
+                is_public_live_url: true,
+                is_local_or_private_url: false,
+                user_action_observed: "Input was provided to run a prediction/inference.",
+                output_observed: "A prediction/result was displayed after the input.",
+                recruiter_checklist: [
+                  "Open the live website.",
+                  "Navigate to the same workflow/page shown in this proof.",
+                  "Provide similar input — input was provided to run a prediction/inference.",
+                  "Confirm the same output/result appears — a prediction/result was displayed after the input.",
+                  "Compare what you see with the recorded evidence below.",
+                ],
+                missing_evidence_note: null,
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-inspection-title")).toHaveTextContent(
+      "Website Runtime Inspection",
+    )
+    // Section 1 — the skill-specific runtime claim.
+    expect(screen.getByTestId("website-runtime-claim")).toHaveTextContent(
+      "browser-based Machine Learning workflow",
+    )
+    // Section 2 — concrete observed facts: target site / app context / page context.
+    expect(screen.getByTestId("website-target-site")).toHaveTextContent("demo.example.com")
+    expect(screen.getByTestId("website-app-context")).toHaveTextContent("Crash Risk Predictor")
+    expect(screen.getByTestId("website-page-context")).toHaveTextContent("Prediction / output page")
+    expect(screen.getByTestId("website-user-action")).toHaveTextContent(
+      "Input was provided to run a prediction/inference.",
+    )
+    expect(screen.getByTestId("website-output-observed")).toHaveTextContent(
+      "A prediction/result was displayed after the input.",
+    )
+    // Section 4 — a live recruiter checklist that reproduces the workflow.
+    const steps = screen.getAllByTestId("website-checklist-item").map((s) => s.textContent)
+    expect(steps[0]).toContain("Open the live website.")
+    expect(steps.some((s) => s?.includes("Provide similar input"))).toBe(true)
+    expect(steps.some((s) => s?.includes("Confirm the same output"))).toBe(true)
+    // A rich, live-verifiable capture shows no missing-evidence nag.
+    expect(screen.queryByTestId("website-missing-evidence")).not.toBeInTheDocument()
+    // Never leaks a raw DOM/OCR payload id or storage path.
+    expect(screen.queryByText(/X-Amz-Signature|storage\.internal/)).not.toBeInTheDocument()
+  })
+
+  it("renders a recorded-replay Website Runtime Inspection with a cannot-open checklist and missing-evidence note", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              public_url: null,
+              website_evidence_card: websiteEvidenceCard({
+                verification_mode: "recorded_replay_only",
+                verification_mode_label: "Recorded replay only",
+                deployment_recommended: true,
+                open_website_url: null,
+                target_url_safe: null,
+                target_domain: null,
+                is_public_live_url: false,
+                is_local_or_private_url: true,
+                recruiter_checklist: [
+                  "This proof was recorded from a local/private runtime — a recruiter cannot open it directly.",
+                  "Review the recorded evidence package below (observed workflow, visual/OCR/DOM summaries).",
+                  "Corroborate with the GitHub / Document / Project Defense evidence for this project.",
+                  "Ask the candidate to deploy the site to a public URL for direct verification.",
+                ],
+                missing_evidence_note:
+                  "This proof is missing a public deployment URL. Record a stronger Website Proof showing runtime behavior such as a model prediction, API response, dashboard interaction, route recommendation, or workflow completion.",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "recorded")
+    // Recorded-only proof: the recruiter cannot open localhost — no open-live CTA.
+    expect(screen.queryByTestId("website-open-live")).not.toBeInTheDocument()
+    const steps = screen.getAllByTestId("website-checklist-item").map((s) => s.textContent)
+    expect(steps.some((s) => s?.includes("cannot open it directly"))).toBe(true)
+    expect(steps.some((s) => s?.includes("deploy the site to a public URL"))).toBe(true)
+    // Missing-evidence note recommends a public deployment.
+    expect(screen.getByTestId("website-missing-evidence")).toHaveTextContent(
+      "missing a public deployment URL",
+    )
+    // No private target domain leaks into the header.
+    expect(screen.queryByTestId("website-target-site")).not.toBeInTheDocument()
+  })
+
+  it("marks a local-only Website Proof as recorded replay only with no open-live CTA", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              // Local/private capture — the backend already stripped the URL,
+              // so no safe open URL survives and the card is replay-only.
+              public_url: null,
+              website_evidence_card: websiteEvidenceCard({
+                verification_mode: "recorded_replay_only",
+                verification_mode_label: "Recorded replay only",
+                verification_note:
+                  "This proof was captured from a local or non-public website, so a recruiter cannot open the original runtime URL directly. VeriBridge shows a recruiter-safe replay of the recorded website behaviour instead. Deploying the site to a public URL would allow direct recruiter verification.",
+                deployment_recommended: true,
+                open_website_url: null,
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
+    expect(screen.getByTestId("website-verification-mode")).toHaveTextContent("Recorded replay only")
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "recorded")
+    expect(screen.getByTestId("website-verification-note")).toHaveTextContent(/local or non-public website/)
+    // No live URL → the recruiter cannot open localhost; no open-live CTA.
+    expect(screen.queryByTestId("website-open-live")).not.toBeInTheDocument()
+    // Deployment is recommended so a recruiter could verify directly.
+    expect(screen.getByTestId("website-deployment-recommended")).toHaveTextContent(
+      "Deployment recommended for direct recruiter verification",
+    )
+    // Frames still exist → the OWNER gets real captured-frames access (the
+    // honest recorded-workflow evidence for a local/private runtime).
+    expect(screen.getByTestId("website-frames-view-button")).toHaveTextContent("View captured frames")
+  })
+
+  it("groups safe visual/OCR/DOM findings under a Visual and page analysis heading", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(
+      skillReport({
+        github: [],
+        standalone_evidence: {
+          ...emptyStandalone(),
+          website: [
+            websiteSemanticItem({
+              website_evidence_card: websiteEvidenceCard({
+                visual_evidence_summary:
+                  "Visual frame analysis of the recorded session is consistent with: Prediction / result display.",
+                ocr_evidence_summary_safe:
+                  "Safe OCR summary indicates on-screen text consistent with: Prediction / result display.",
+                dom_evidence_summary_safe:
+                  "Safe DOM summary indicates page structure consistent with: Prediction / result display.",
+              }),
+            }),
+          ],
+        },
+      }),
+    )
+
+    render(<SkillReportPageView skillSlug="machine-learning" />)
+
+    const analysis = await screen.findByTestId("website-visual-page-analysis")
+    expect(analysis).toHaveTextContent("Visual and page analysis")
+    expect(screen.getByTestId("website-card-visual")).toHaveTextContent("Visual frame analysis")
+    expect(screen.getByTestId("website-card-ocr")).toHaveTextContent("on-screen text consistent with")
+    expect(screen.getByTestId("website-card-dom")).toHaveTextContent("page structure consistent with")
   })
 
   it("renders the evidence-frame link ONLY for a safe preview URL", async () => {
@@ -601,11 +805,13 @@ describe("Skill Report page (separate route)", () => {
     render(<SkillReportPageView skillSlug="machine-learning" />)
 
     expect(await screen.findByTestId("website-evidence-card")).toBeInTheDocument()
-    // Unsafe preview URL → falls back to the permission-gated status; unsafe
-    // open URL → no link at all.
-    expect(screen.getByTestId("website-screenshot-status")).toBeInTheDocument()
+    // Unsafe preview URL → never rendered as a link (the owner keeps only the
+    // proxied captured-frames access); unsafe open URL → no link at all.
+    expect(screen.getByTestId("website-frames-view-button")).toBeInTheDocument()
     expect(screen.queryByText("View evidence frame →")).not.toBeInTheDocument()
     expect(screen.queryByTestId("evidence-public-link")).not.toBeInTheDocument()
+    expect(document.body.innerHTML).not.toContain("storage.internal")
+    expect(document.body.innerHTML).not.toContain("SECRET")
   })
 
   it("shows direct Frontend evidence on the card for a React report", async () => {
@@ -792,6 +998,201 @@ describe("SkillReportView — connected proof chains & document corroboration", 
     expect(screen.getByTestId("document-access-note")).toHaveTextContent(
       "Full document available only with candidate permission.",
     )
+  })
+})
+
+// ── Project Defense inspection cards inside a proof chain ──────────────────────
+
+describe("SkillReportView — Project Defense inspection", () => {
+  function inspectionChainReport(inspectionOverrides = {}): SkillReport {
+    return skillReport({
+      github: [],
+      standalone_evidence: emptyStandalone(),
+      projects: [
+        {
+          project_id: "proj-1",
+          project_title: "Boston Housing",
+          attached: true,
+          attached_status: "Attached to a VBR project",
+          sources: ["Project Defense"],
+          evidence_chain_summary: "Python is supported by the candidate's own defense explanation.",
+          github_evidence: [],
+          website_evidence: [],
+          document_correlations: [],
+          document_more_count: 0,
+          defense_evidence: [],
+          video_evidence: [],
+          project_defense_inspection: [
+            {
+              evidence_id_safe: "defense-inspection-1",
+              question_text: "How does your model make predictions?",
+              question_kind: "skill_explanation",
+              project_title: "Boston Housing",
+              mapped_skill: "Python",
+              claim_type: "skill_understanding",
+              answer_purpose: "skill_explanation",
+              evidence_role: "candidate_explanation",
+              qualitative_status: "Explained with evidence",
+              safe_answer_summary: "I trained a regression model and use it for inference on features.",
+              evidence_basis_chips: ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+              timestamp_label: "Video 03:12",
+              clip_start_seconds: 192.0,
+              clip_end_seconds: 205.0,
+              clip_available: true,
+              corroborates_github: true,
+              corroborates_website: false,
+              corroborates_document: false,
+              corroboration_summary: "Corroborating defense evidence: GitHub Proof (implementation) for the same project.",
+              what_this_demonstrates: "The student explained this Python claim in their own words.",
+              limitation: "Project Defense is explanation evidence. It should be read with GitHub Proof for implementation.",
+              public_safe: true,
+              withheld_reason: null,
+              ...inspectionOverrides,
+            },
+          ],
+          limitations: [],
+        },
+      ],
+    })
+  }
+
+  it("renders the private inspection card with question, answer, skill, chips, timestamp, limitation", () => {
+    render(<SkillReportView report={inspectionChainReport()} />)
+
+    const card = screen.getByTestId("project-defense-inspection-card")
+    expect(card).toBeInTheDocument()
+    expect(screen.getByTestId("pdi-question")).toHaveTextContent("How does your model make predictions?")
+    expect(screen.getByTestId("pdi-answer-summary")).toHaveTextContent("regression model")
+    expect(screen.getByTestId("pdi-skill")).toHaveTextContent("Python")
+    expect(screen.getByTestId("pdi-basis-chips")).toHaveTextContent("Targeted question")
+    // The timestamp/clip locator renders only its safe label.
+    expect(screen.getByTestId("pdi-timestamp")).toHaveTextContent("Video 03:12")
+    // Corroboration chips + honest limitation framing.
+    expect(screen.getByTestId("pdi-corroborates")).toHaveTextContent("GitHub")
+    expect(screen.getByTestId("pdi-limitation")).toHaveTextContent("explanation evidence")
+  })
+
+  it("never renders raw transcript segments, storage paths, signed URLs, or internal ids", () => {
+    // A safe, bounded transcript excerpt is allowed; the raw segments array,
+    // storage paths, signed URLs, and internal ids are not.
+    const { container } = render(
+      <SkillReportView
+        report={inspectionChainReport({
+          transcript_excerpt_available: true,
+          safe_transcript_excerpt: "I trained a regression model and validated features first.",
+        })}
+      />,
+    )
+    const html = container.innerHTML
+    for (const unsafe of [
+      "transcript_segments",
+      "storage_path",
+      "signed_url",
+      "vbr/sessions",
+      "question_id",
+      "evidence_id_safe",
+    ]) {
+      expect(html).not.toContain(unsafe)
+    }
+    // Clip seconds are a locator, not raw media — no media path/URL is emitted.
+    expect(html).not.toContain("https://storage")
+  })
+
+  it("renders the Recording / clip section with a video element only for a safe playback URL", () => {
+    const { rerender } = render(
+      <SkillReportView
+        report={inspectionChainReport({
+          video_available: true,
+          video_playback_url: "https://signed.example/full.webm?token=xyz",
+          recording_access_note: "Your defense recording is available to play here.",
+        })}
+      />,
+    )
+    // The Recording / clip section is present with a real <video> player.
+    expect(screen.getByTestId("pdi-recording")).toBeInTheDocument()
+    const video = screen.getByTestId("pdi-video") as HTMLVideoElement
+    expect(video.tagName).toBe("VIDEO")
+    expect(video).toHaveAttribute("src", "https://signed.example/full.webm?token=xyz")
+    expect(screen.queryByTestId("pdi-recording-note")).toBeNull()
+
+    // No safe playback URL → no <video>, just the access note.
+    rerender(
+      <SkillReportView
+        report={inspectionChainReport({
+          video_available: true,
+          video_playback_url: null,
+          recording_access_note: "A defense recording exists, but a safe playback link is not available from this view yet.",
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.getByTestId("pdi-recording-note")).toHaveTextContent("not available from this view yet")
+  })
+
+  it("renders a bounded transcript excerpt when provided, else the access note", () => {
+    const { rerender } = render(
+      <SkillReportView
+        report={inspectionChainReport({
+          transcript_excerpt_available: true,
+          safe_transcript_excerpt: "I trained a regression model and validated the features before inference.",
+          transcript_excerpt_start_label: "03:10",
+          transcript_excerpt_end_label: "03:25",
+        })}
+      />,
+    )
+    expect(screen.getByTestId("pdi-transcript-excerpt")).toHaveTextContent("regression model")
+    expect(screen.getByTestId("pdi-transcript")).toHaveTextContent("03:10 – 03:25")
+
+    // No excerpt → the safe access note is shown instead.
+    rerender(
+      <SkillReportView
+        report={inspectionChainReport({
+          transcript_excerpt_available: false,
+          safe_transcript_excerpt: null,
+          transcript_access_note: "No transcript excerpt is available for this answer.",
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("pdi-transcript-excerpt")).toBeNull()
+    expect(screen.getByTestId("pdi-transcript-note")).toHaveTextContent("No transcript excerpt is available")
+  })
+
+  it("never injects a non-http playback URL into the video element", () => {
+    render(
+      <SkillReportView
+        report={inspectionChainReport({
+          video_available: true,
+          // A bare storage key / unsafe scheme must never become a media src.
+          video_playback_url: "vbr/sessions/s1/processed/full.webm",
+          recording_access_note: "A defense recording exists, but a safe playback link is not available from this view yet.",
+        })}
+      />,
+    )
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.getByTestId("pdi-recording-note")).toBeInTheDocument()
+  })
+
+  it("shows a withheld placeholder and no answer content for a not-public-safe card", () => {
+    const report = inspectionChainReport({
+      question_text: null,
+      safe_answer_summary: "Defense answer details are withheld because this session is not public-safe.",
+      what_this_demonstrates: "",
+      corroboration_summary: "",
+      corroborates_github: false,
+      clip_available: false,
+      timestamp_label: null,
+      public_safe: false,
+      withheld_reason: "Defense answer details are withheld because this session is not public-safe.",
+    })
+    render(<SkillReportView report={report} />)
+
+    expect(screen.getByTestId("pdi-withheld")).toHaveTextContent("withheld because this session is not public-safe")
+    // No answer summary / question / timestamp when withheld.
+    expect(screen.queryByTestId("pdi-question")).toBeNull()
+    expect(screen.queryByTestId("pdi-answer-summary")).toBeNull()
+    expect(screen.queryByTestId("pdi-timestamp")).toBeNull()
+    // The honest limitation framing is still shown.
+    expect(screen.getByTestId("pdi-limitation")).toBeInTheDocument()
   })
 })
 
@@ -2530,6 +2931,17 @@ describe("PublicPassportView — no private vault", () => {
     expect(screen.queryByTestId("vault-proof")).not.toBeInTheDocument()
     expect(screen.queryByTestId("vault-unattached-badge")).not.toBeInTheDocument()
   })
+
+  it("never renders the attachment overview or suggestion sections (Step 4)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+    render(<PublicPassportView slug="abc" />)
+    expect(await screen.findByText("Jordan Rivera")).toBeInTheDocument()
+    // Suggested evidence is owner-only — it must never read as public proof.
+    expect(screen.queryByTestId("attachment-overview")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-entry")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("attachment-suggested-section")).not.toBeInTheDocument()
+    expect(screen.queryByText(/Suggested — not counted until attached/)).not.toBeInTheDocument()
+  })
 })
 
 // ── Skill relevance helpers (closed backend templates, never proof strength) ───
@@ -2868,5 +3280,652 @@ describe("PROOF_SOURCE_RELATIONSHIP — neutral, evidence-strength-safe labels",
     for (const label of Object.values(PROOF_SOURCE_RELATIONSHIP)) {
       expect(label).not.toMatch(/%|\bscore\b/i)
     }
+  })
+})
+
+// ── Document Proof inspection card ────────────────────────────────────────────
+
+function inspectionCard(
+  overrides: Partial<import("@/lib/vbr-api").DocumentProofInspectionCard> = {},
+): import("@/lib/vbr-api").DocumentProofInspectionCard {
+  return {
+    title: "Final Year Project Report",
+    source_type: "Document Proof",
+    status: "Supporting evidence",
+    matched_skill: "Machine Learning",
+    project_title: "Housing Price Predictor",
+    evidence_role: "Corroborating document",
+    page_number: 4,
+    section_label: "Model Architecture",
+    citation_label: "Model Architecture",
+    safe_snippet: "We trained a gradient-boosted model on the housing dataset.",
+    figure_reference: "Figure 2",
+    table_reference: null,
+    diagram_reference: null,
+    visual_or_table_summary: null,
+    why_supported: "Describes the ML model workflow and dataset used.",
+    corroborates: "GitHub implementation",
+    limitation:
+      "Document Proof supports or corroborates the skill/project claim, but it does not independently prove code implementation, runtime behavior, or authorship. GitHub Proof, Website Proof, and Project Defense provide stronger implementation/runtime evidence.",
+    access_note: "Original document download is not available from this view yet.",
+    can_download_document: false,
+    document_download_url: null,
+    document_open_url: null,
+    is_public_safe: false,
+    is_attached_to_project: true,
+    ...overrides,
+  }
+}
+
+function docCorrelation(
+  card: import("@/lib/vbr-api").DocumentProofInspectionCard | null,
+): import("@/lib/vbr-api").SkillReportDocumentCorrelation {
+  return {
+    source_id: "doc-1",
+    document_title: "Final Year Project Report",
+    page_number: 4,
+    section_label: "Model Architecture",
+    citation: "Model Architecture",
+    figure_reference: "Figure 2",
+    safe_snippet: "We trained a gradient-boosted model on the housing dataset.",
+    corroborates: "GitHub implementation",
+    correlation_confidence: "weak/standalone",
+    support_label: "Supporting evidence",
+    reason: "Describes the ML model workflow.",
+    why_supported: "Describes the ML model workflow and dataset used.",
+    full_document_available: false,
+    document_access_note: "Full document available only with candidate permission.",
+    limitation: "Document supports the claim but does not independently prove implementation.",
+    inspection_card: card,
+  }
+}
+
+function reportWithDocInspection(
+  card: import("@/lib/vbr-api").DocumentProofInspectionCard | null,
+): SkillReport {
+  return skillReport({
+    standalone_evidence: {
+      ...emptyStandalone(),
+      documents: [docCorrelation(card)],
+    },
+  })
+}
+
+describe("Document Proof inspection card", () => {
+  it("M. renders the Document Proof inspection card when present", () => {
+    render(<SkillReportView report={reportWithDocInspection(inspectionCard())} />)
+    expect(screen.getByTestId("document-inspection-card")).toBeInTheDocument()
+  })
+
+  it("N. shows title, page/section/citation locator, why_supported, and limitation", () => {
+    render(<SkillReportView report={reportWithDocInspection(inspectionCard())} />)
+    expect(screen.getByTestId("document-inspection-title")).toHaveTextContent(
+      "Final Year Project Report",
+    )
+    expect(screen.getByTestId("document-inspection-locator")).toHaveTextContent("Page 4")
+    expect(screen.getByTestId("document-inspection-locator")).toHaveTextContent("Model Architecture")
+    expect(screen.getByTestId("document-inspection-why")).toHaveTextContent(
+      "Describes the ML model workflow",
+    )
+    expect(screen.getByTestId("document-inspection-limitation")).toHaveTextContent(
+      "does not independently prove",
+    )
+  })
+
+  it("O. shows related figure/table/graph reference when provided", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({ figure_reference: null, table_reference: "Table 1" }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-visuals")).toHaveTextContent("Table 1")
+  })
+
+  it("O. shows the no-figure/table note when none was extracted", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            figure_reference: null,
+            visual_or_table_summary:
+              "No skill-specific figure/table evidence was extracted from this document.",
+          }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-no-visual")).toHaveTextContent(
+      "No skill-specific figure/table evidence",
+    )
+  })
+
+  it("P. shows the download/open button only when can_download_document is true AND a safe URL exists", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            can_download_document: true,
+            document_open_url: "https://example.com/shared/report.pdf",
+          }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-open")).toBeInTheDocument()
+    expect(screen.queryByTestId("document-inspection-access-note")).not.toBeInTheDocument()
+  })
+
+  it("Q. shows the disabled/private access note when download is not available", () => {
+    render(<SkillReportView report={reportWithDocInspection(inspectionCard())} />)
+    expect(screen.queryByTestId("document-inspection-download")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("document-inspection-open")).not.toBeInTheDocument()
+    expect(screen.getByTestId("document-inspection-access-note")).toHaveTextContent(
+      "not available",
+    )
+  })
+
+  it("P. never renders an unsafe (signed/storage) download URL even with consent", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            can_download_document: true,
+            document_download_url:
+              "https://proj.supabase.co/storage/v1/object/sign/vbr/x.pdf?token=SECRET",
+          }),
+        )}
+      />,
+    )
+    expect(screen.queryByTestId("document-inspection-download")).not.toBeInTheDocument()
+    expect(screen.getByTestId("document-inspection-access-note")).toBeInTheDocument()
+  })
+
+  it("R. never renders raw text, storage path, signed URL, internal id, or provider JSON", () => {
+    const { container } = render(
+      <SkillReportView report={reportWithDocInspection(inspectionCard())} />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("uploads/")
+    expect(html).not.toContain("supabase.co/storage")
+    expect(html).not.toContain("?token=")
+    expect(html).not.toContain("doc-1") // internal source_id never rendered
+    expect(html).not.toContain("raw_text")
+  })
+
+  const apiCard = (overrides = {}) =>
+    inspectionCard({
+      matched_skill: "API Development",
+      why_supported:
+        "This document supports API Development because it describes exposing the workflow through backend/API endpoints.",
+      skill_specific_claims: [
+        "API development is demonstrated through exposing the workflow as a backend service.",
+      ],
+      technical_details: [
+        "API development is demonstrated through exposing the workflow as a backend service.",
+        "Document mentions API endpoints and cloud deployment as part of the routing workflow.",
+      ],
+      api_endpoints: [
+        "Document mentions API endpoints and cloud deployment as part of the routing workflow.",
+      ],
+      request_response_details: ["The request payload carries coordinates and the response returns a ranked route list."],
+      architecture_details: ["Exposing the workflow as a backend service."],
+      has_skill_specific_details: true,
+      missing_detail_note: null,
+      ...overrides,
+    })
+
+  it("S. renders the 'Skill-specific technical details' section with API/backend/endpoint bullets", () => {
+    render(<SkillReportView report={reportWithDocInspection(apiCard())} />)
+    expect(screen.getByText("Skill-specific technical details")).toBeInTheDocument()
+    expect(screen.getByTestId("document-inspection-technical")).toHaveTextContent(
+      "backend service",
+    )
+    expect(screen.getByTestId("document-inspection-endpoints")).toHaveTextContent(
+      "API endpoints",
+    )
+    expect(screen.getByTestId("document-inspection-reqresp")).toHaveTextContent(
+      "request payload",
+    )
+    expect(screen.getByTestId("document-inspection-architecture")).toHaveTextContent(
+      "backend service",
+    )
+  })
+
+  it("T. renders the missing-detail note when exact endpoint details are absent", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          apiCard({
+            technical_details: [
+              "This project involved API development for the workflow.",
+            ],
+            api_endpoints: [],
+            request_response_details: [],
+            architecture_details: [],
+            has_skill_specific_details: true,
+            missing_detail_note:
+              "No endpoint route names, request schema, or response schema were extracted from this document. This document supports API Development at the claim level; use GitHub Proof or Project Defense to inspect implementation details.",
+          }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-missing")).toHaveTextContent(
+      "No endpoint route names",
+    )
+    // Endpoint/request-response sub-lists are absent when empty.
+    expect(screen.queryByTestId("document-inspection-endpoints")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("document-inspection-reqresp")).not.toBeInTheDocument()
+  })
+
+  it("T. shows the no-technical note when no skill-specific detail was extracted", () => {
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          inspectionCard({
+            skill_specific_claims: [],
+            technical_details: [],
+            api_endpoints: [],
+            request_response_details: [],
+            architecture_details: [],
+            implementation_hints: [],
+            has_skill_specific_details: false,
+            missing_detail_note: null,
+          }),
+        )}
+      />,
+    )
+    expect(screen.getByTestId("document-inspection-no-technical")).toBeInTheDocument()
+  })
+
+  it("U. renders the Download button only when can_download_document is true with a safe URL", () => {
+    // Consent but NO safe URL → still no button, private note shown.
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          apiCard({
+            can_download_document: true,
+            document_download_url: null,
+            document_open_url: null,
+            document_access_note:
+              "The candidate marked this document shareable, but the original file is not retained after analysis — only verified excerpts and locators are stored, so there is no file to download.",
+          }),
+        )}
+      />,
+    )
+    expect(screen.queryByTestId("document-inspection-download")).not.toBeInTheDocument()
+    expect(screen.getByTestId("document-inspection-access-note")).toHaveTextContent(
+      "not retained",
+    )
+  })
+
+  it("V. public-projected card: no Download button, but shows locator + technical details + limitation", () => {
+    // Shape a card the way the backend public projection emits it: download
+    // disabled, raw snippet stripped, but safe technical details/locator kept.
+    render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          apiCard({
+            safe_snippet: null,
+            is_public_safe: false,
+            can_download_document: false,
+            document_download_url: null,
+            document_open_url: null,
+            document_access_note:
+              "Original document is private. Recruiters see verified excerpts and locators only.",
+          }),
+        )}
+      />,
+    )
+    // No download/open link in the public view.
+    expect(screen.queryByTestId("document-inspection-download")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("document-inspection-open")).not.toBeInTheDocument()
+    // Private access note is shown instead.
+    expect(screen.getByTestId("document-inspection-access-note")).toHaveTextContent(
+      "Recruiters see verified excerpts and locators only",
+    )
+    // Safe locator, technical details, and limitation remain visible.
+    expect(screen.getByTestId("document-inspection-locator")).toHaveTextContent("Page 4")
+    expect(screen.getByTestId("document-inspection-technical")).toHaveTextContent(
+      "backend service",
+    )
+    expect(screen.getByTestId("document-inspection-limitation")).toHaveTextContent(
+      "does not independently prove",
+    )
+    // The raw excerpt is not rendered when stripped.
+    expect(screen.queryByTestId("document-inspection-snippet")).not.toBeInTheDocument()
+  })
+
+  it("U. never renders detail bullets that carry a storage path or signed URL", () => {
+    const { container } = render(
+      <SkillReportView
+        report={reportWithDocInspection(
+          apiCard({
+            // A hostile detail string should never render as-is; the backend
+            // scrubs these, but the UI must also never surface such fragments.
+            technical_details: ["Exposing the workflow as a backend service."],
+          }),
+        )}
+      />,
+    )
+    const html = container.innerHTML
+    expect(html).not.toContain("supabase.co/storage")
+    expect(html).not.toContain("?token=")
+    expect(html).not.toContain("uploads/")
+  })
+})
+
+// ── Skill Report intelligence — the proof-backed skill argument ────────────────
+//
+// The Skill Report is structured as an evidence ARGUMENT with the passport's
+// four-tier proof vocabulary: Direct skill evidence (counted) / Project proof
+// (context only) / Attached-not-skill-mapped / Vault-only-suggested (all
+// honestly "Not counted yet"), plus a proof coverage matrix, a standing
+// "what this report does not claim" block and deduplicated inspect actions.
+
+import { buildSkillReportIntelligenceContext } from "../../components/passport/SkillReportIntelligence"
+import type { PassportProjectSummary, SkillReportProjectChain as IntelChain } from "@/lib/vbr-api"
+
+function intelChain(overrides: Partial<IntelChain> = {}): IntelChain {
+  return {
+    project_id: "proj-1",
+    project_title: "Boston Smart Accident Risk Rerouting",
+    attached: true,
+    attached_status: "Attached to a VBR project",
+    sources: ["GitHub Proof", "Project Defense"],
+    evidence_chain_summary: "GitHub code and the defense explanation corroborate the same claim.",
+    github_evidence: [{ ...GITHUB_ITEM, is_attached_to_project: true, attached_project_ids: ["proj-1"] }],
+    website_evidence: [],
+    document_correlations: [],
+    document_more_count: 0,
+    defense_evidence: [],
+    video_evidence: [],
+    limitations: [],
+    ...overrides,
+  }
+}
+
+function intelProject(overrides: Partial<PassportProjectSummary> = {}): PassportProjectSummary {
+  return {
+    project_id: "proj-1",
+    project_title: "Boston Smart Accident Risk Rerouting",
+    project_summary: "Reroutes traffic around predicted accident risk.",
+    repo_full_name: "octocat/Hello-World",
+    claimed_skills: ["Python"],
+    // GitHub + Defense are direct for Python (the chain's sources); Website is
+    // attached but supports other skills (project context); Document is
+    // attached but not mapped to ANY skill (real unmapped entry below).
+    evidence_sources: ["GitHub Proof", "Project Defense", "Website Proof", "Document Proof"],
+    evidence_package: {
+      github_proof_attached: true,
+      documents_count: 1,
+      website_proofs_count: 1,
+      project_defense_completed: true,
+      video_defense_recorded: false,
+      video_evidence_chip_count: 0,
+    },
+    attempt_count: 1,
+    report: { is_public: false, public_token: null, public_path: null, published_at: null },
+    ...overrides,
+  }
+}
+
+function intelPassport(): PrivateWorkPassport {
+  return makePassport({
+    projects: [intelProject()],
+    real_unmapped_proof_context: [
+      {
+        proof_type: "Document Proof",
+        project_id: "proj-1",
+        project_title: "Boston Smart Accident Risk Rerouting",
+        report_url: "/student/vbr/projects/proj-1/report",
+        reason: "Analyzed document evidence not mapped to a specific skill yet.",
+        safe_summary: "Final report document was analyzed.",
+        evidence_label: "Analyzed source evidence",
+        inspection_anchor: "documents",
+      },
+    ],
+    attachment_overview: {
+      attached: [],
+      suggested: [
+        {
+          entry_id_safe: "sugg-1",
+          proof_type: "Website Proof",
+          display_title: "https://demo.example.com",
+          source_label: "Website Proof",
+          attachment_state: "suggested",
+          relation_reason: "skill_overlap_suggestion",
+          relation_strength: "likely",
+          reason_label: "Skill overlap with this project",
+          status_label: "Suggested — not counted until attached",
+          project_titles: ["Boston Smart Accident Risk Rerouting"],
+          project_refs_safe: [],
+          skill_names: ["Python"],
+          duplicate_count: 1,
+        },
+      ],
+      unattached: [],
+      attached_count: 0,
+      suggested_count: 1,
+      unattached_count: 0,
+      note: "Suggested evidence is never counted until attached.",
+    },
+  })
+}
+
+function intelReport(overrides: Partial<SkillReport> = {}): SkillReport {
+  return skillReport({
+    proof_chains: [intelChain()],
+    projects: [],
+    // One vault-only standalone GitHub proof (not attached to any project).
+    standalone_evidence: { ...emptyStandalone(), github: [{ ...GITHUB_ITEM }] },
+    ...overrides,
+  })
+}
+
+function intelContext() {
+  return buildSkillReportIntelligenceContext(intelPassport(), intelReport())
+}
+
+describe("Skill Report intelligence — evidence thesis and direct tier", () => {
+  it("renders a derived evidence thesis with the only-direct-counts rule", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const thesis = screen.getByTestId("skill-report-thesis")
+    expect(thesis).toHaveTextContent("supported by 1 connected project")
+    expect(thesis).toHaveTextContent("GitHub Proof, Project Defense")
+    expect(thesis).toHaveTextContent("Only direct, skill-mapped evidence counts")
+  })
+
+  it("renders connected chains under the Direct skill evidence tier", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const direct = screen.getByTestId("skill-report-direct")
+    expect(direct).toHaveAttribute("data-tier", "skill")
+    expect(within(direct).getByTestId("skill-report-chain")).toHaveAttribute("data-project", "proj-1")
+    // The section is titled with the shared tier vocabulary and states the
+    // only-counted-tier rule.
+    const chains = screen.getByTestId("skill-report-chains")
+    expect(chains).toHaveTextContent("Direct skill evidence")
+    expect(chains).toHaveTextContent("the only evidence counted for this claim")
+  })
+
+  it("renders a status-derived one-line claim when there is no synthesis summary", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    expect(screen.getByTestId("skill-report-claim")).toHaveTextContent(
+      "The connected evidence below demonstrates this skill.",
+    )
+  })
+
+  it("moves an UNATTACHED proof chain into the vault tier, never the direct tier", () => {
+    const report = intelReport({
+      proof_chains: [
+        intelChain(),
+        intelChain({
+          project_id: null,
+          project_title: "Standalone vault proofs",
+          attached: false,
+          attached_status: "Not attached to a VBR project",
+        }),
+      ],
+    })
+    render(<SkillReportView report={report} context={intelContext()} />)
+    const direct = screen.getByTestId("skill-report-direct")
+    expect(within(direct).getAllByTestId("skill-report-chain")).toHaveLength(1)
+    const vault = screen.getByTestId("skill-report-vault-only")
+    expect(within(vault).getByTestId("skill-report-chain")).toHaveAttribute("data-attached", "false")
+  })
+})
+
+describe("Skill Report intelligence — project context / unmapped / vault tiers", () => {
+  it("shows project-level proof separately as context chips, never counted", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const section = screen.getByTestId("skill-report-project-context")
+    // Website Proof is attached to the project but not mapped to this skill.
+    const chips = within(section).getAllByTestId("project-context-chip")
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toHaveAttribute("data-source", "Website Proof")
+    // Direct sources never leak into the context tier.
+    expect(within(section).queryByText("GitHub Proof")).not.toBeInTheDocument()
+    expect(section).toHaveTextContent("not counted as direct skill evidence")
+    expect(within(section).getByTestId("evidence-relationship-badge")).toHaveAttribute("data-kind", "project")
+  })
+
+  it("shows attached-but-not-skill-mapped proof in its own not-counted section", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const section = screen.getByTestId("skill-report-unmapped")
+    const entry = within(section).getByTestId("skill-report-unmapped-entry")
+    expect(entry).toHaveAttribute("data-proof-type", "Document Proof")
+    expect(entry).toHaveTextContent("Final report document was analyzed.")
+    expect(within(section).getByTestId("not-counted-badge")).toBeInTheDocument()
+    expect(within(section).getByTestId("unmapped-inspect-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/projects/proj-1/report#documents",
+    )
+  })
+
+  it("labels the vault tier 'Not counted yet' and nests standalone proofs inside it", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const vault = screen.getByTestId("skill-report-vault-only")
+    expect(within(vault).getByTestId("vault-only-not-counted")).toHaveTextContent("Not counted yet")
+    expect(within(vault).getByTestId("skill-report-standalone")).toBeInTheDocument()
+  })
+
+  it("lists vault suggestions naming this skill as suggested, not counted", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const entry = screen.getByTestId("skill-report-suggested-entry")
+    expect(entry).toHaveAttribute("data-proof-type", "Website Proof")
+    expect(entry).toHaveTextContent("https://demo.example.com")
+    expect(within(entry).getByTestId("not-counted-badge")).toBeInTheDocument()
+  })
+
+  it("fails closed: without passport context the context tiers render nothing", () => {
+    render(<SkillReportView report={intelReport()} />)
+    expect(screen.getByTestId("skill-report-chain")).toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-project-context")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-unmapped")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-suggested")).not.toBeInTheDocument()
+  })
+
+  it("suggestions for OTHER skills never appear on this skill's report", () => {
+    const passport = intelPassport()
+    passport.attachment_overview!.suggested[0].skill_names = ["React"]
+    const context = buildSkillReportIntelligenceContext(passport, intelReport())
+    render(<SkillReportView report={intelReport()} context={context} />)
+    expect(screen.queryByTestId("skill-report-suggested")).not.toBeInTheDocument()
+  })
+})
+
+describe("Skill Report intelligence — proof coverage matrix", () => {
+  it("classifies each cell by tier: direct / context / not mapped / vault / absent", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const row = screen.getByTestId("matrix-project-row")
+    const cell = (source: string) =>
+      within(row)
+        .getAllByTestId("matrix-cell")
+        .find((c) => c.getAttribute("data-source") === source)!
+    expect(cell("GitHub Proof")).toHaveAttribute("data-state", "direct")
+    expect(cell("Project Defense")).toHaveAttribute("data-state", "direct")
+    expect(cell("Website Proof")).toHaveAttribute("data-state", "context")
+    expect(cell("Document Proof")).toHaveAttribute("data-state", "unmapped")
+    expect(cell("Video Evidence")).toHaveAttribute("data-state", "absent")
+
+    const vaultRow = screen.getByTestId("matrix-vault-row")
+    const vaultCell = (source: string) =>
+      within(vaultRow)
+        .getAllByTestId("matrix-cell")
+        .find((c) => c.getAttribute("data-source") === source)!
+    // Standalone GitHub proof + the suggested Website proof are vault-only.
+    expect(vaultCell("GitHub Proof")).toHaveAttribute("data-state", "vault")
+    expect(vaultCell("Website Proof")).toHaveAttribute("data-state", "vault")
+    expect(vaultCell("Project Defense")).toHaveAttribute("data-state", "absent")
+  })
+
+  it("fails closed without context: unknown cells render absent, never guessed", () => {
+    render(<SkillReportView report={intelReport()} />)
+    const row = screen.getByTestId("matrix-project-row")
+    const cell = (source: string) =>
+      within(row)
+        .getAllByTestId("matrix-cell")
+        .find((c) => c.getAttribute("data-source") === source)!
+    expect(cell("GitHub Proof")).toHaveAttribute("data-state", "direct")
+    expect(cell("Website Proof")).toHaveAttribute("data-state", "absent")
+    expect(cell("Document Proof")).toHaveAttribute("data-state", "absent")
+  })
+})
+
+describe("Skill Report intelligence — limitations and inspect actions", () => {
+  it("always renders the honest 'what this report does not claim' block", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const block = screen.getByTestId("skill-report-disclaimers")
+    expect(block).toHaveTextContent("does not certify professional employment experience")
+    expect(block).toHaveTextContent("not every subtopic of Python")
+    expect(block).toHaveTextContent("not counted until skill-mapped")
+  })
+
+  it("renders ONE deduplicated project-report action per project plus the vault", () => {
+    const report = intelReport({
+      proof_chains: [intelChain(), intelChain({ project_title: "Boston (attempt 2)" })],
+    })
+    render(<SkillReportView report={report} context={intelContext()} />)
+    const actions = screen.getByTestId("skill-report-actions")
+    const projectLinks = within(actions).getAllByTestId("skill-report-project-report-link")
+    expect(projectLinks).toHaveLength(1)
+    expect(projectLinks[0]).toHaveAttribute("href", "/student/vbr/projects/proj-1/report")
+    expect(within(actions).getByTestId("skill-report-vault-link")).toHaveAttribute(
+      "href",
+      "/student/vbr/passport/vault",
+    )
+  })
+
+  it("hides owner-only tiers and actions on a public-safe surface", () => {
+    render(<SkillReportView report={intelReport()} context={intelContext()} publicSafe />)
+    expect(screen.queryByTestId("skill-report-actions")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-project-context")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-unmapped")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-suggested")).not.toBeInTheDocument()
+  })
+
+  it("never renders raw/private evidence fields in the intelligence sections", () => {
+    const { container } = render(<SkillReportView report={intelReport()} context={intelContext()} />)
+    const html = container.innerHTML
+    for (const forbidden of ["raw_payload", "signed_url", "?token=", "supabase.co/storage", "ev_raw"]) {
+      expect(html).not.toContain(forbidden)
+    }
+  })
+})
+
+describe("Skill Report page — passport context is enhancement-only", () => {
+  it("still renders the report when the passport fetch fails", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(intelReport())
+    vi.mocked(getPrivateWorkPassport).mockRejectedValue(new Error("passport down"))
+    render(<SkillReportPageView skillSlug="python" />)
+    expect(await screen.findByTestId("skill-report")).toBeInTheDocument()
+    expect(screen.queryByTestId("skill-report-project-context")).not.toBeInTheDocument()
+  })
+
+  it("derives the context tiers when the passport loads", async () => {
+    vi.mocked(getSkillReport).mockResolvedValue(intelReport())
+    vi.mocked(getPrivateWorkPassport).mockResolvedValue(intelPassport())
+    render(<SkillReportPageView skillSlug="python" />)
+    expect(await screen.findByTestId("skill-report-project-context")).toBeInTheDocument()
+    expect(screen.getByTestId("skill-report-unmapped")).toBeInTheDocument()
   })
 })

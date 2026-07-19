@@ -8,7 +8,7 @@
  */
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react"
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { ProjectReportView } from "../app/student/vbr/projects/[projectId]/report/ProjectReportView"
 import type { VBRStudentProjectReportResponse } from "@/lib/vbr-api"
 
@@ -160,7 +160,11 @@ describe("ProjectReportView", () => {
     expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute("href", "https://github.com/octocat/Hello-World")
     expect(screen.getByTestId("evidence-trace-private-note").textContent).toContain("evidence vault")
     expect(screen.getByTestId("skill-why").textContent).toContain("Demonstrated")
-    expect(screen.getByTestId("skill-trace-links")).toBeInTheDocument()
+    // The skill card groups its evidence by proof source (GitHub + Document).
+    const groups = screen.getAllByTestId("skill-evidence-group")
+    expect(groups.map((g) => g.getAttribute("data-source-type"))).toEqual(
+      expect.arrayContaining(["GitHub Proof", "Document Proof"]),
+    )
   })
 
   it("Document Proof: matrix sources and the trace agree on the matched skill only", async () => {
@@ -325,11 +329,11 @@ describe("ProjectReportView", () => {
     const hrefs = Array.from(nav.querySelectorAll("a")).map((a) => a.getAttribute("href"))
     expect(hrefs).toEqual(
       expect.arrayContaining([
+        "#skills-demonstrated",
         "#github-proof",
         "#documents",
         "#website-proof",
         "#project-defense",
-        "#skill-evidence",
         "#limitations",
       ]),
     )
@@ -358,7 +362,7 @@ describe("ProjectReportView", () => {
 
     render(<ProjectReportView projectId="proj-1" />)
 
-    expect(await screen.findByText("Evidence Package Summary")).toBeInTheDocument()
+    expect(await screen.findByText("Project Evidence Summary")).toBeInTheDocument()
     expect(screen.getAllByText("GitHub Proof").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Documents").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Website Proof").length).toBeGreaterThan(0)
@@ -366,7 +370,7 @@ describe("ProjectReportView", () => {
     expect(screen.getAllByText("Video Defense").length).toBeGreaterThan(0)
   })
 
-  it("renders the skill evidence table with qualitative labels, never numeric scores", async () => {
+  it("renders skill evidence cards with qualitative labels, never numeric scores", async () => {
     vi.mocked(getVBRProjectReport).mockResolvedValue(
       makeReport({
         skill_evidence: [
@@ -378,17 +382,20 @@ describe("ProjectReportView", () => {
 
     render(<ProjectReportView projectId="proj-1" />)
 
-    const rows = await screen.findAllByTestId("skill-evidence-row")
-    expect(rows).toHaveLength(2)
+    const cards = await screen.findAllByTestId("skill-evidence-card")
+    expect(cards).toHaveLength(2)
     expect(screen.getByText("Demonstrated")).toBeInTheDocument()
     expect(screen.getByText("Partially demonstrated")).toBeInTheDocument()
+
+    // The report is no longer a spreadsheet: no evidence table renders.
+    expect(document.querySelector("table")).toBeNull()
 
     const raw = document.body.textContent ?? ""
     expect(raw).not.toMatch(/confidence_score/i)
     expect(raw).not.toMatch(/trust score/i)
   })
 
-  it("links each skill matrix row to its full Skill Report (Phase 2)", async () => {
+  it("links each skill card to its full Skill Report (Phase 2)", async () => {
     vi.mocked(getVBRProjectReport).mockResolvedValue(
       makeReport({
         skill_evidence: [
@@ -400,7 +407,7 @@ describe("ProjectReportView", () => {
 
     render(<ProjectReportView projectId="proj-1" />)
 
-    const links = await screen.findAllByTestId("matrix-skill-report-link")
+    const links = await screen.findAllByTestId("skill-report-cta")
     expect(links).toHaveLength(2)
     expect(links[0]).toHaveAttribute("href", "/student/vbr/passport/skills/python")
     expect(links[1]).toHaveAttribute("href", "/student/vbr/passport/skills/machine-learning")
@@ -539,6 +546,186 @@ describe("ProjectReportView", () => {
     expect(screen.getAllByText("Needs review").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Evidence observed").length).toBeGreaterThan(0)
   })
+
+  // ── Skill-specific Website Behavior Evidence (owner/private view) ────────────
+
+  it("Website Behavior Evidence: renders the behaviour claim + per-skill relevance under the correct skill only", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "User input produces a prediction/result display.",
+            website_purpose_key: "prediction_result_display",
+            website_purpose_label: "Prediction / result display",
+            website_purpose_summary: "An input → prediction/result flow was shown.",
+            skill_mapping_available: true,
+            skills: [
+              {
+                skill_name: "React",
+                relevance_key: "direct_frontend_evidence",
+                relevance_label: "Direct React evidence — interactive product UI demonstrated",
+                relevance_summary: "The recorded interactive UI behaviour is itself the subject of React.",
+                limitation:
+                  "Confirms observed behaviour at inspection time, not source-code authorship or ongoing uptime.",
+                is_direct_evidence: true,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByTestId("website-skill-evidence")).toBeInTheDocument()
+    expect(screen.getByTestId("website-behavior-claim")).toHaveTextContent(
+      "User input produces a prediction/result display.",
+    )
+    expect(screen.getByText("Prediction / result display")).toBeInTheDocument()
+
+    const rows = screen.getAllByTestId("website-skill-relevance")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toHaveAttribute("data-skill", "React")
+    expect(rows[0]).toHaveTextContent("Direct React evidence")
+    // A frontend UI reads as DIRECT evidence.
+    expect(rows[0]).toHaveTextContent("Direct")
+  })
+
+  it("Website Runtime Inspection: renders the runtime claim, target site, observed action/output and recruiter checklist", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        claimed_skills: ["Machine Learning"],
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "User input produces a prediction/result display.",
+            website_purpose_key: "prediction_result_display",
+            website_purpose_label: "Prediction / result display",
+            website_purpose_summary: "An input → prediction/result flow was shown.",
+            runtime_claim_observed:
+              "Recorded website behavior shows a browser-based Machine Learning workflow where user input leads to a visible prediction/result output.",
+            target_domain: "demo.example.com",
+            app_context: "Crash Risk Predictor",
+            page_context_label: "Prediction / output page",
+            user_action_observed: "Input was provided to run a prediction/inference.",
+            output_observed: "A prediction/result was displayed after the input.",
+            verification_mode: "directly_verifiable_live",
+            verification_mode_label: "Directly verifiable live",
+            recruiter_checklist: [
+              "Open the live website.",
+              "Navigate to the same workflow/page shown in this proof.",
+              "Provide similar input — input was provided to run a prediction/inference.",
+              "Confirm the same output/result appears — a prediction/result was displayed after the input.",
+              "Compare what you see with the recorded evidence below.",
+            ],
+            skill_mapping_available: true,
+            skills: [
+              {
+                skill_name: "Machine Learning",
+                relevance_key: "ml_product_context",
+                relevance_label:
+                  "Machine Learning product behaviour context — not Machine Learning implementation proof",
+                relevance_summary: "The website shows model-powered product behaviour.",
+                limitation:
+                  "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+                is_direct_evidence: false,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByTestId("website-runtime-claim")).toHaveTextContent(
+      "browser-based Machine Learning workflow",
+    )
+    expect(screen.getByTestId("website-target-site")).toHaveTextContent("demo.example.com")
+    expect(screen.getByTestId("website-target-site")).toHaveTextContent("Crash Risk Predictor")
+    expect(screen.getByTestId("website-user-action")).toHaveTextContent(
+      "Input was provided to run a prediction/inference.",
+    )
+    expect(screen.getByTestId("website-output-observed")).toHaveTextContent(
+      "A prediction/result was displayed after the input.",
+    )
+    expect(screen.getByTestId("website-verification-mode")).toHaveAttribute("data-mode", "live")
+    const steps = screen.getAllByTestId("website-checklist-item").map((s) => s.textContent)
+    expect(steps[0]).toContain("Open the live website.")
+    expect(steps.some((s) => s?.includes("Provide similar input"))).toBe(true)
+  })
+
+  it("Website Behavior Evidence: a Machine Learning skill reads as supporting context, never direct implementation proof", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        claimed_skills: ["Machine Learning"],
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "User input produces a prediction/result display.",
+            website_purpose_key: "prediction_result_display",
+            website_purpose_label: "Prediction / result display",
+            website_purpose_summary: "An input → prediction/result flow was shown.",
+            skill_mapping_available: true,
+            skills: [
+              {
+                skill_name: "Machine Learning",
+                relevance_key: "ml_product_context",
+                relevance_label:
+                  "Machine Learning product behaviour context — not Machine Learning implementation proof",
+                relevance_summary: "The website shows model-powered product behaviour.",
+                limitation:
+                  "Website prediction/output demonstrates product behaviour at inspection time; it does not, by itself, prove model training or ML implementation.",
+                is_direct_evidence: false,
+              },
+            ],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    const row = screen.getByTestId("website-skill-relevance")
+    expect(row).toHaveTextContent("not Machine Learning implementation proof")
+    expect(row).toHaveTextContent("Supporting context")
+    expect(row).not.toHaveTextContent("Direct React")
+    expect(screen.getByText(/does not, by itself, prove model training/)).toBeInTheDocument()
+  })
+
+  it("Website Behavior Evidence: states the gap honestly when no claimed skill maps, and never leaks raw fields", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(
+      makeReport({
+        website_skill_evidence: [
+          {
+            target_website: "https://demo.example.com",
+            behavior_claim: "The deployed application was live and reachable at inspection time.",
+            website_purpose_key: "deployed_availability",
+            website_purpose_label: "Deployed application availability",
+            website_purpose_summary: "A live deployment was reachable.",
+            skill_mapping_available: false,
+            skills: [],
+          },
+        ],
+      }),
+    )
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.getByTestId("website-skill-mapping-empty")).toHaveTextContent(
+      "skill-specific mapping not available yet",
+    )
+    expect(screen.queryByTestId("website-skill-relevance")).not.toBeInTheDocument()
+
+    // No raw DOM/OCR/visual/provider/storage-shaped fields ever render.
+    const raw = document.body.textContent ?? ""
+    expect(raw).not.toMatch(/screenshot|storage|signed|s3:\/\/|\.jpg|raw_/i)
+  })
 })
 
 describe("ProjectReportView — recruiter-safe publish controls", () => {
@@ -640,14 +827,16 @@ describe("ProjectReportView — proof-native matrix links + precise anchors", ()
     const { container } = render(<ProjectReportView projectId="proj-1" />)
     await screen.findByText("Skill Evidence Tracker")
 
-    // Proof-native short labels, not bare source names.
-    const links = screen.getByTestId("skill-trace-links")
-    expect(links.textContent).toContain("GitHub: repo-level")
-    expect(links.textContent).toContain("Defense Q1")
-    expect(links.textContent).not.toContain("Project Defense →")
+    // Proof-native short labels on the grouped evidence jump links, not bare
+    // source names.
+    const cards = screen.getByTestId("skill-evidence-cards")
+    expect(cards.textContent).toContain("GitHub: repo-level")
+    expect(cards.textContent).toContain("Defense Q1")
+    expect(cards.textContent).not.toContain("Project Defense →")
 
-    // Every matrix link resolves to a rendered trace *card* (not a section header).
-    const anchors = Array.from(links.querySelectorAll("a")) as HTMLAnchorElement[]
+    // Every grouped-evidence jump link resolves to a rendered trace *card* (not a
+    // section header).
+    const anchors = screen.getAllByTestId("skill-evidence-jump") as HTMLAnchorElement[]
     expect(anchors).toHaveLength(2)
     for (const a of anchors) {
       const id = (a.getAttribute("href") || "").slice(1)
@@ -742,8 +931,8 @@ describe("ProjectReportView — proof-native matrix links + precise anchors", ()
     render(<ProjectReportView projectId="proj-1" />)
     await screen.findByText("Skill Evidence Tracker")
 
-    // Proof-native matrix labels for the deeper sources.
-    const links = screen.getByTestId("skill-trace-links")
+    // Proof-native labels for the deeper sources, on the grouped evidence links.
+    const links = screen.getByTestId("skill-evidence-cards")
     expect(links.textContent).toContain("GitHub: app/routes.py")
     expect(links.textContent).toContain("Doc: Page 2")
     expect(links.textContent).toContain("Defense Q1")
@@ -841,8 +1030,9 @@ describe("ProjectReportView — proof-native matrix links + precise anchors", ()
     render(<ProjectReportView projectId="proj-1" />)
     await screen.findByText("Skill Evidence Tracker")
 
-    // Proof-native matrix labels for the deepest GitHub/Website/Document sources.
-    const links = screen.getByTestId("skill-trace-links")
+    // Proof-native labels for the deepest GitHub/Website/Document sources, on
+    // the grouped evidence jump links.
+    const links = screen.getByTestId("skill-evidence-cards")
     expect(links.textContent).toContain("GitHub: function classify_image")
     expect(links.textContent).toContain("Website: OCR summary")
     expect(links.textContent).toContain("Doc: Citation")
@@ -864,5 +1054,446 @@ describe("ProjectReportView — proof-native matrix links + precise anchors", ()
 
     // The document citation renders (no raw download URL).
     expect(screen.getByTestId("evidence-trace-citation").textContent).toContain("System Design")
+  })
+})
+
+// Domain integration: copied/shared public project-report links must stay on the
+// canonical app origin (NEXT_PUBLIC_APP_URL) rather than a preview origin.
+describe("ProjectReportView — canonical public link origin", () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  function renderPublishedReport() {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+    vi.mocked(getVBRProjectReportPublishStatus).mockResolvedValue(publishedStatus("tok-xyz"))
+    render(<ProjectReportView projectId="proj-1" />)
+  }
+
+  it("uses NEXT_PUBLIC_APP_URL for the public report link when it is set", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com")
+    renderPublishedReport()
+
+    const url = await screen.findByTestId("public-link-url")
+    expect(url.textContent).toContain("https://veribridgeai.com/vbr/report/tok-xyz")
+    // In production the canonical origin must win — never a localhost link.
+    expect(url.textContent).not.toContain("localhost")
+  })
+
+  it("normalizes a trailing slash on NEXT_PUBLIC_APP_URL (no double slash)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com/")
+    renderPublishedReport()
+
+    const url = await screen.findByTestId("public-link-url")
+    expect(url.textContent).toContain("https://veribridgeai.com/vbr/report/tok-xyz")
+    expect(url.textContent).not.toContain("veribridgeai.com//vbr/")
+  })
+
+  it("falls back to window.location.origin when NEXT_PUBLIC_APP_URL is unset", async () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "")
+    renderPublishedReport()
+
+    const url = await screen.findByTestId("public-link-url")
+    expect(url.textContent).toContain(`${window.location.origin}/vbr/report/tok-xyz`)
+  })
+})
+
+// ── Skill-first Project Report (skill cards, not a spreadsheet) ───────────────
+//
+// The main body is now "Skills Demonstrated in This Project": one card per
+// claimed skill answering skill → this project → proof types → evidence
+// summaries → limitations. These tests assert the redesigned pattern.
+describe("ProjectReportView — skill-first evidence cards", () => {
+  // Python is well-evidenced (GitHub + Document + Website + Project Defense);
+  // React is Not assessed. A vault-only proof exists for a related skill.
+  function skillFirstReport() {
+    return makeReport({
+      claimed_skills: ["Python", "React"],
+      website_proofs: [
+        { target_website: "https://demo.example.com", evidence_strength: "Evidence observed", workflow_confidence: "high", supported_skills: ["Python"] },
+      ],
+      skill_evidence: [
+        {
+          skill: "Python",
+          status: "Partially demonstrated",
+          evidence_chip_count: 1,
+          notes: "Supported across GitHub, Website, and the Project Defense.",
+          supporting_sources: ["GitHub Proof", "Website Proof", "Document Proof", "Project Defense"],
+          limitations: ["Website behavior supports runtime output, not code authorship."],
+          why_this_status: "Marked 'Partially demonstrated' because supporting evidence was found in: GitHub Proof, Website Proof, Document Proof and Project Defense.",
+          recruiter_can_verify: "Open the evidence trace(s) below to see why this skill is supported.",
+          evidence_traces: ["gh-python", "web-python", "doc-python", "def-python"],
+        },
+        {
+          skill: "React",
+          status: "Not assessed",
+          evidence_chip_count: 0,
+          notes: "No evidence has been reviewed for this skill yet.",
+          supporting_sources: [],
+          limitations: ["Not yet strongly evidenced — treat as a claim pending more proof."],
+          why_this_status: "Marked 'Not assessed' because no evidence source has been reviewed for this skill yet.",
+          recruiter_can_verify: "No evidence is attached for this skill yet — there is nothing to verify.",
+          evidence_traces: [],
+        },
+      ],
+      evidence_traces: [
+        {
+          trace_id: "gh-python",
+          source_type: "GitHub Proof",
+          source_title: "octocat/Hello-World — app/routes.py",
+          skill_names: ["Python"],
+          qualitative_status: "Supporting evidence",
+          safe_summary: "API route/service files support backend endpoint implementation.",
+          safe_detail: "File-level GitHub evidence.",
+          evidence_anchor: "trace-gh-python",
+          location_type: "github_file",
+          location_label: "app/routes.py",
+          file_path: "app/routes.py",
+          public_url: "https://github.com/octocat/Hello-World/blob/main/app/routes.py",
+          public_url_label: "View file on GitHub",
+          is_publicly_openable: true,
+          limitation: "Identifies a relevant file, not sole authorship.",
+          private_evidence_note: null,
+        },
+        {
+          trace_id: "web-python",
+          source_type: "Website Proof",
+          source_title: "https://demo.example.com — behaviour",
+          skill_names: ["Python"],
+          qualitative_status: "Evidence observed",
+          safe_summary: "Runtime/demo behavior shows an input → prediction flow.",
+          safe_detail: "Safe website behaviour summary.",
+          evidence_anchor: "trace-web-python",
+          location_type: "website_url",
+          location_label: "Live URL",
+          is_publicly_openable: false,
+          limitation: "Website behavior supports runtime output, not code authorship.",
+          private_evidence_note: "Captured during the proof session; only a safe summary is shown.",
+        },
+        {
+          trace_id: "doc-python",
+          source_type: "Document Proof",
+          source_title: "Final Year Project Report",
+          skill_names: ["Python"],
+          qualitative_status: "Supporting evidence",
+          safe_summary: "Project report describes the API workflow.",
+          safe_detail: "Written context.",
+          evidence_anchor: "trace-doc-python",
+          location_type: "document_page",
+          location_label: "Page 2",
+          page_number: 2,
+          is_publicly_openable: false,
+          limitation: "Document evidence supports but does not prove authorship.",
+          private_evidence_note: "Private document retained in student evidence vault; only a safe summary is shown.",
+        },
+        {
+          trace_id: "def-python",
+          source_type: "Project Defense",
+          source_title: "Project Defense — Q1",
+          skill_names: ["Python"],
+          qualitative_status: "Supporting evidence",
+          safe_summary: "Candidate explained the API design in their own words.",
+          safe_detail: "Self-explanation evidence.",
+          evidence_anchor: "trace-def-python",
+          location_type: "defense_question",
+          location_label: "Q1",
+          question_text: "How did you design the API?",
+          is_publicly_openable: false,
+          limitation: "Self-explanation evidence; combine with artifact evidence.",
+          private_evidence_note: "Answer is summarized; the raw transcript is not exposed.",
+        },
+      ],
+      other_student_proofs: [
+        {
+          skill: "Node",
+          proofs: [
+            {
+              skill_name: "Node",
+              proof_type: "GitHub Proof",
+              source_id: "vault-1",
+              source_table: "github_proof_submissions",
+              project_id: null,
+              attached_project_ids: [],
+              title: "another-repo",
+              source_label: "GitHub",
+              safe_summary: "A repo from another project in your vault.",
+              public_safe: true,
+              visibility: "private",
+              limitation: "Not attached to this project.",
+              is_attached_to_project: false,
+            },
+          ],
+          proof_types: ["GitHub Proof"],
+          attached_count: 0,
+          unattached_count: 1,
+          has_unattached: true,
+        },
+      ],
+    })
+  }
+
+  it("renders the 'Skills Demonstrated in This Project' main section", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+
+    expect(await screen.findByText("Skills Demonstrated in This Project")).toBeInTheDocument()
+    // One card per claimed skill.
+    expect(screen.getAllByTestId("skill-evidence-card")).toHaveLength(2)
+  })
+
+  it("renders a skill card with its status and skill-specific proof chips", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    const python = screen.getAllByTestId("skill-evidence-card").find((c) => c.getAttribute("data-skill") === "Python")!
+    expect(python).toBeTruthy()
+    expect(python.getAttribute("data-status")).toBe("Partially demonstrated")
+
+    // The chips are the skill/project-specific supporting sources — not blindly
+    // every project proof type.
+    const chips = python.querySelector("[data-testid='skill-supporting-sources']")!
+    expect(chips.textContent).toContain("GitHub Proof")
+    expect(chips.textContent).toContain("Website Proof")
+    expect(chips.textContent).toContain("Project Defense")
+  })
+
+  it("groups a skill's evidence rows by proof source", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    const python = screen.getAllByTestId("skill-evidence-card").find((c) => c.getAttribute("data-skill") === "Python")!
+    const groups = Array.from(python.querySelectorAll("[data-testid='skill-evidence-group']"))
+    const sourceTypes = groups.map((g) => g.getAttribute("data-source-type"))
+    // Canonical order: GitHub → Document → Website → Project Defense.
+    expect(sourceTypes).toEqual(["GitHub Proof", "Document Proof", "Website Proof", "Project Defense"])
+
+    // Each group carries its safe evidence summary.
+    const github = groups.find((g) => g.getAttribute("data-source-type") === "GitHub Proof")!
+    expect(github.textContent).toContain("API route/service files")
+  })
+
+  it("marks an unevidenced skill 'Not assessed' and explains what is missing", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    const react = screen.getAllByTestId("skill-evidence-card").find((c) => c.getAttribute("data-skill") === "React")!
+    expect(react.getAttribute("data-status")).toBe("Not assessed")
+    // No proof chips and no evidence groups on the unevidenced skill.
+    expect(react.querySelector("[data-testid='skill-supporting-sources']")).toBeNull()
+    expect(react.querySelector("[data-testid='skill-evidence-group']")).toBeNull()
+    // It explains what is missing rather than implying silent support.
+    expect(react.querySelector("[data-testid='skill-not-assessed']")!.textContent).toMatch(/pending more evidence/i)
+  })
+
+  it("shows Website Proof under the relevant skill only", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    // Exactly one Website Proof evidence group in the whole skills section, and
+    // it lives on the Python card (the skill the website evidence supports).
+    const websiteGroups = screen
+      .getAllByTestId("skill-evidence-group")
+      .filter((g) => g.getAttribute("data-source-type") === "Website Proof")
+    expect(websiteGroups).toHaveLength(1)
+
+    const react = screen.getAllByTestId("skill-evidence-card").find((c) => c.getAttribute("data-skill") === "React")!
+    expect(react.querySelector("[data-source-type='Website Proof']")).toBeNull()
+  })
+
+  it("keeps wider-vault evidence in a separate section, not counted as project proof", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    // The vault-only proof is in its own clearly-labelled section.
+    const vault = screen.getByTestId("other-student-proofs")
+    expect(vault.textContent).toMatch(/not attached to this project/i)
+
+    // The vault skill ("Node") never appears as a project skill card.
+    const cardSkills = screen.getAllByTestId("skill-evidence-card").map((c) => c.getAttribute("data-skill"))
+    expect(cardSkills).not.toContain("Node")
+  })
+
+  it("no longer renders the old table-like Skill Evidence Matrix", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    expect(screen.queryByText("Skill Evidence Matrix")).not.toBeInTheDocument()
+    expect(document.querySelector("table")).toBeNull()
+  })
+
+  it("never renders raw/private fields on the skill cards", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(skillFirstReport())
+
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skills Demonstrated in This Project")
+
+    const raw = document.body.textContent ?? ""
+    for (const unsafe of ["storage_path", "signed_url", "access_token", "vbr/sessions", "full_text", ".webm", ".mp4", "Bearer ", "source_id", "vault-1"]) {
+      expect(raw).not.toContain(unsafe)
+    }
+    expect(raw).not.toMatch(/\/100/)
+    expect(raw).not.toMatch(/trust score/i)
+  })
+})
+
+describe("ProjectReportView — Project Defense inspection", () => {
+  function inspectionReport(): VBRStudentProjectReportResponse {
+    return makeReport({
+      evidence_package: {
+        github_proof_attached: true,
+        documents_count: 0,
+        website_proofs_count: 0,
+        project_defense_completed: true,
+        video_defense_recorded: true,
+        video_evidence_chip_count: 1,
+      },
+      project_defense_inspection: [
+        {
+          evidence_id_safe: "defense-inspection-1",
+          question_text: "How does your React dashboard update state?",
+          question_kind: "skill_explanation",
+          project_title: "Skill Evidence Tracker",
+          mapped_skill: "React",
+          claim_type: "skill_understanding",
+          answer_purpose: "skill_explanation",
+          evidence_role: "candidate_explanation",
+          qualitative_status: "Explained with evidence",
+          safe_answer_summary: "I used hooks and lifted shared state up to a context provider.",
+          evidence_basis_chips: ["Targeted question", "Candidate answer", "Privacy-safe summary"],
+          timestamp_label: "Video 01:40",
+          clip_start_seconds: 100.0,
+          clip_end_seconds: 120.0,
+          clip_available: true,
+          corroborates_github: true,
+          corroborates_website: false,
+          corroborates_document: false,
+          corroboration_summary: "Corroborating defense evidence: GitHub Proof (implementation) for the same project.",
+          what_this_demonstrates: "The student explained this React claim in their own words.",
+          limitation: "Project Defense is explanation evidence.",
+          public_safe: true,
+          withheld_reason: null,
+        },
+      ],
+    })
+  }
+
+  it("renders the Project Defense inspection section with a safe card", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(inspectionReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(await screen.findByTestId("report-project-defense-inspection")).toBeInTheDocument()
+    expect(screen.getByTestId("pdi-question")).toHaveTextContent("How does your React dashboard update state?")
+    expect(screen.getByTestId("pdi-answer-summary")).toHaveTextContent("hooks")
+    expect(screen.getByTestId("pdi-skill")).toHaveTextContent("React")
+    expect(screen.getByTestId("pdi-timestamp")).toHaveTextContent("Video 01:40")
+    expect(screen.getByTestId("pdi-limitation")).toHaveTextContent("explanation evidence")
+  })
+
+  it("does not leak raw transcript / ids / storage in the inspection section", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(inspectionReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByTestId("report-project-defense-inspection")
+
+    const raw = document.body.textContent ?? ""
+    for (const unsafe of ["question_id", "transcript_segments", "storage_path", "signed_url", "vbr/sessions"]) {
+      expect(raw).not.toContain(unsafe)
+    }
+  })
+})
+
+describe("ProjectReportView — Attached proof not yet skill-mapped strip", () => {
+  const realUnmappedReport = () =>
+    makeReport({
+      real_unmapped_proof_context: [
+        {
+          proof_type: "GitHub Proof",
+          project_id: "proj-1",
+          project_title: "Skill Evidence Tracker",
+          report_url: "/student/vbr/projects/proj-1/report",
+          reason: "Analyzed source evidence exists, but no exact skill row consumed it yet.",
+          safe_summary: "Analyzed GitHub source-code evidence is attached to this project.",
+          evidence_label: "Analyzed source evidence",
+          source_count: 2,
+          inspection_anchor: "github-proof",
+        },
+        {
+          proof_type: "Document Proof",
+          project_id: "proj-1",
+          project_title: "Skill Evidence Tracker",
+          report_url: "/student/vbr/projects/proj-1/report",
+          reason: "Analyzed document evidence exists, but it is not mapped to a specific skill yet.",
+          safe_summary: "Final Year Project Report was analyzed and is attached as project context.",
+          evidence_label: "Analyzed document evidence",
+          inspection_anchor: "documents",
+        },
+      ],
+    })
+
+  it("renders the strip with per-proof-type honest entries and section jump links", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(realUnmappedReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    const strip = await screen.findByTestId("report-real-unmapped-strip")
+    expect(strip).toHaveTextContent("Attached proof not yet skill-mapped")
+    expect(strip).toHaveTextContent(
+      "These proof sources are attached to this project but are not yet mapped to a specific skill claim",
+    )
+
+    const entries = screen.getAllByTestId("report-real-unmapped-entry")
+    expect(entries.map((e) => e.getAttribute("data-proof-type"))).toEqual([
+      "GitHub Proof",
+      "Document Proof",
+    ])
+    expect(entries[0]).toHaveTextContent(
+      "Analyzed source evidence exists, but no exact skill row consumed it yet.",
+    )
+    expect(entries[1]).toHaveTextContent(
+      "Analyzed document evidence exists, but it is not mapped to a specific skill yet.",
+    )
+
+    // Entries jump to the existing proof sections instead of duplicating cards.
+    const jumps = screen.getAllByTestId("report-real-unmapped-jump")
+    expect(jumps.map((j) => j.getAttribute("href"))).toEqual(["#github-proof", "#documents"])
+  })
+
+  it("keeps the strip separate from the skill evidence cards — exact rows stay exact", async () => {
+    vi.mocked(getVBRProjectReport).mockResolvedValue(realUnmappedReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByTestId("report-real-unmapped-strip")
+
+    // The skill cards still render exactly the claimed skills, unchanged and
+    // Not assessed — the unmapped context never promotes a skill claim.
+    const cards = screen.getAllByTestId("skill-evidence-card")
+    expect(cards.map((c) => c.getAttribute("data-skill"))).toEqual(["Python", "React"])
+    for (const card of cards) {
+      expect(card.getAttribute("data-status")).toBe("Not assessed")
+    }
+    // No unmapped entry renders inside a skill evidence card.
+    for (const card of cards) {
+      expect(card.textContent).not.toContain("not yet skill-mapped")
+    }
+  })
+
+  it("renders no strip when the report has no real-unmapped context (URL-only metadata is never proof)", async () => {
+    // repo_url is set on the report, but the backend qualified nothing.
+    vi.mocked(getVBRProjectReport).mockResolvedValue(makeReport())
+    render(<ProjectReportView projectId="proj-1" />)
+    await screen.findByText("Skill Evidence Tracker")
+
+    expect(screen.queryByTestId("report-real-unmapped-strip")).not.toBeInTheDocument()
+    expect(screen.queryByText("Attached proof not yet skill-mapped")).not.toBeInTheDocument()
   })
 })

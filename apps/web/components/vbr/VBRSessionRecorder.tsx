@@ -1,22 +1,29 @@
 "use client"
 
+import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState, type CSSProperties } from "react"
 import {
   cancelVBRSessionRecording,
   createVBRSessionConsent,
   finalizeVBRSession,
+  getProjectDefenseContext,
   getVBRProject,
   getVBRSession,
   getVBRSessionRecordingReadiness,
+  getVBRSessionTranscript,
   processVBRSession,
   requestVBRChunkUploadUrl,
   startVBRSession,
+  submitDefenseAnswers,
   transcribeVBRSession,
   updateVBRSessionTelemetry,
   uploadVBRChunkBytes,
   uploadVBRSessionChunk,
+  type ProjectDefenseContextResponse,
   type VBRProjectResponse,
   type VBRSessionDetailResponse,
+  type VBRSessionTranscriptResponse,
 } from "@/lib/vbr-api"
 
 type PreflightStatus = "idle" | "testing" | "granted" | "denied"
@@ -44,6 +51,8 @@ const TRANSCRIPT_STATUS_LABELS: Record<string, string> = {
   not_configured: "Provider not configured",
   transcribed: "Ready",
   failed: "Generation failed",
+  no_speech: "No clear speech detected",
+  low_quality: "Transcript quality too low",
 }
 
 // Preferred MediaRecorder mimeTypes, in order of preference. Browsers vary in
@@ -86,18 +95,6 @@ function describeTargetRef(targetRef: Record<string, unknown>): string | null {
   if (typeof targetRef.commit === "string") return `commit: ${targetRef.commit.slice(0, 7)}`
   if (typeof targetRef.url === "string") return `url: ${targetRef.url}`
   return null
-}
-
-type AttachedProofsSummary = {
-  github_proof?: { repo_url?: string; repo_owner?: string; repo_name?: string; status?: string }
-  documents?: Array<{ title?: string }>
-  website_proofs?: Array<{ target_website?: string; workflow_confidence?: string }>
-}
-
-/** Read the safe attached-proofs summary from a Project Defense project's metadata. */
-function getAttachedProofs(project: VBRProjectResponse | null): AttachedProofsSummary {
-  const metadata = project?.metadata as { attached_proofs?: AttachedProofsSummary } | undefined
-  return metadata?.attached_proofs ?? {}
 }
 
 const cardStyle: CSSProperties = {
@@ -200,8 +197,14 @@ export function VBRSessionRecorder({
   sessionId: string
   variant?: VBRSessionRecorderVariant
 }) {
+  const router = useRouter()
   const [session, setSession] = useState<VBRSessionDetailResponse | null>(null)
+  // Walkthrough variant shows only the project title. Project Defense uses the
+  // sanitized defense context below — never raw project metadata.
   const [project, setProject] = useState<VBRProjectResponse | null>(null)
+  // Project Defense context — allowlisted evidence summary (safe title, repo
+  // label, document/website counts). Never raw metadata.attached_proofs.
+  const [defenseContext, setDefenseContext] = useState<ProjectDefenseContextResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -224,6 +227,18 @@ export function VBRSessionRecorder({
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [transcriptMessage, setTranscriptMessage] = useState<string | null>(null)
+
+  // Owner-only private transcript preview (fetched separately from the
+  // transcribe POST, whose response deliberately omits transcript text).
+  const [transcript, setTranscript] = useState<VBRSessionTranscriptResponse | null>(null)
+  const [transcriptPreviewLoading, setTranscriptPreviewLoading] = useState(false)
+  const [transcriptPreviewError, setTranscriptPreviewError] = useState<string | null>(null)
+
+  // "Analyze Project Defense" — runs deterministic analysis against the
+  // recorded video transcript, then routes back to the selected project
+  // workspace (which shows the "Project Defense analyzed" completion panel).
+  const [analyzeLoading, setAnalyzeLoading] = useState(false)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null)
 
 
   const [telemetryStatus, setTelemetryStatus] = useState<string | null>(null)
@@ -301,11 +316,24 @@ export function VBRSessionRecorder({
           return
         }
         setSession(sessionData)
-        try {
-          const projectData = await getVBRProject(sessionData.project_id)
-          if (active) setProject(projectData)
-        } catch {
-          // Project title is a nice-to-have — don't fail the whole page if it can't load.
+        if (variant === "project_defense") {
+          // Sanitized defense context only — never raw project metadata. The
+          // context endpoint returns an allowlisted evidence summary (safe repo
+          // label, document/website counts), so no storage paths, signed URLs,
+          // provider JSON, private IDs, raw text, or scores can reach the UI.
+          try {
+            const context = await getProjectDefenseContext(sessionData.project_id)
+            if (active) setDefenseContext(context)
+          } catch {
+            // Context is a nice-to-have — don't fail the whole page if it can't load.
+          }
+        } else {
+          try {
+            const projectData = await getVBRProject(sessionData.project_id)
+            if (active) setProject(projectData)
+          } catch {
+            // Project title is a nice-to-have — don't fail the whole page if it can't load.
+          }
         }
       } catch (err) {
         if (active) setLoadError(err instanceof Error ? err.message : "Failed to load session.")
@@ -318,7 +346,7 @@ export function VBRSessionRecorder({
     return () => {
       active = false
     }
-  }, [sessionId])
+  }, [sessionId, variant])
 
   useEffect(() => {
     if (session?.status !== "recording" || !session.started_at) {
@@ -331,6 +359,16 @@ export function VBRSessionRecorder({
     const id = setInterval(tick, 1000)
     return () => clearInterval(id)
   }, [session?.status, session?.started_at, session?.duration_s])
+
+  // When the session is already transcribed (e.g. the student navigated back to
+  // this page after generating a transcript), load the saved transcript preview
+  // so it renders without requiring a re-run.
+  useEffect(() => {
+    if (session?.transcript_status !== "transcribed") return
+    if (transcript || transcriptPreviewLoading) return
+    loadTranscriptPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.transcript_status])
 
   async function refreshSession() {
     try {
@@ -676,6 +714,19 @@ export function VBRSessionRecorder({
   }
 
 
+  async function loadTranscriptPreview() {
+    setTranscriptPreviewLoading(true)
+    setTranscriptPreviewError(null)
+    try {
+      const data = await getVBRSessionTranscript(sessionId)
+      setTranscript(data)
+    } catch (err) {
+      setTranscriptPreviewError(err instanceof Error ? err.message : "Failed to load the saved transcript.")
+    } finally {
+      setTranscriptPreviewLoading(false)
+    }
+  }
+
   async function handleGenerateTranscript() {
     setTranscriptLoading(true)
     setTranscriptError(null)
@@ -685,12 +736,50 @@ export function VBRSessionRecorder({
         await processVBRSession(sessionId)
       }
       const result = await transcribeVBRSession(sessionId)
-      setTranscriptMessage(result.message)
+      if (result.status === "transcribed") {
+        // Real speech was transcribed — show the success message and preview.
+        setTranscriptMessage(result.message)
+        await loadTranscriptPreview()
+      } else if (result.status === "not_configured") {
+        // No provider configured is a safe, informational fallback — not a
+        // success and not an error.
+        setTranscriptMessage(result.message)
+      } else {
+        // "no_speech" (punctuation-only / silent recording) or any other
+        // non-success status is a failure: surface retry / manual fallback and
+        // never render the "Transcript saved" preview.
+        setTranscriptError(result.message)
+      }
     } catch (err) {
       setTranscriptError(err instanceof Error ? err.message : "Failed to generate transcript.")
     } finally {
       setTranscriptLoading(false)
       await refreshSession()
+    }
+  }
+
+  // Run analysis over the saved video transcript, then return to the selected
+  // project workspace. An empty submit body makes the backend fall back to the
+  // auto-generated transcript as the analysis source and mark the project's
+  // defense as completed — so the workspace renders the completion panel
+  // instead of another blank manual answer box. On failure we stay on the
+  // recorder and surface a safe retry / manual fallback message.
+  async function handleAnalyzeDefense() {
+    if (!session) return
+    setAnalyzeLoading(true)
+    setAnalyzeError(null)
+    try {
+      await submitDefenseAnswers(sessionId, {})
+      router.push(
+        `/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}`
+      )
+    } catch (err) {
+      setAnalyzeError(
+        err instanceof Error
+          ? err.message
+          : "Couldn't analyze your defense. Please retry, or paste your explanation in the Project Defense workspace."
+      )
+      setAnalyzeLoading(false)
     }
   }
 
@@ -824,18 +913,21 @@ export function VBRSessionRecorder({
       {variant === "project_defense" && (
         <section style={cardStyle} data-testid="project-defense-context">
           <div style={sectionTitleStyle}>Project context</div>
-          {project ? (
+          {defenseContext ? (
             (() => {
-              const attached = getAttachedProofs(project)
-              const repoLabel = attached.github_proof?.repo_url
-                ? `${attached.github_proof.repo_owner ?? ""}/${attached.github_proof.repo_name ?? ""}`.replace(/^\/|\/$/g, "") +
-                  (attached.github_proof.status ? ` (${attached.github_proof.status})` : "")
-                : project.repo_full_name || project.repo_url || "Repository URL only — no attached GitHub Proof"
-              const documentCount = attached.documents?.length ?? 0
-              const websiteProofCount = attached.website_proofs?.length ?? 0
+              // Everything here comes from the sanitized context DTO: the repo
+              // label is the allowlisted evidence label (safe owner/repo), and
+              // documents/website are safe counts — never raw storage paths,
+              // signed URLs, provider JSON, private IDs, or scores.
+              const { evidence } = defenseContext
+              const repoLabel = evidence.github_proof.attached
+                ? evidence.github_proof.label || "GitHub proof attached"
+                : defenseContext.project.repo_full_name || "Repository URL only — no attached GitHub Proof"
+              const documentCount = evidence.documents.count
+              const websiteProofCount = evidence.website_proof.count
               return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13, color: "var(--ink)" }}>
-                  <div><strong>Project:</strong> {project.title}</div>
+                  <div><strong>Project:</strong> {defenseContext.project.title}</div>
                   <div><strong>Repository:</strong> {repoLabel}</div>
                   <div><strong>Documents:</strong> {documentCount > 0 ? `${documentCount} attached` : "none attached"}</div>
                   <div><strong>Website Proof:</strong> {websiteProofCount > 0 ? `${websiteProofCount} attached` : "none attached"}</div>
@@ -1049,12 +1141,26 @@ export function VBRSessionRecorder({
             disabled={transcriptLoading}
             onClick={handleGenerateTranscript}
           >
-            {transcriptLoading ? "Generating transcript…" : "Generate transcript"}
+            {transcriptLoading
+              ? "Generating transcript…"
+              : session.transcript_status === "failed" ||
+                  session.transcript_status === "no_speech" ||
+                  session.transcript_status === "low_quality" ||
+                  transcriptError
+                ? "Retry transcript generation"
+                : "Generate transcript"}
           </button>
           {transcriptMessage && (
             <p style={{ fontSize: 12, color: "var(--emerald)", marginTop: 8 }}>{transcriptMessage}</p>
           )}
-          {transcriptError && <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8 }}>{transcriptError}</p>}
+          {transcriptError && (
+            <div data-testid="vbr-transcript-error">
+              <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8, marginBottom: 4 }}>{transcriptError}</p>
+              <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
+                Please retry, or paste your explanation using the manual transcript fallback.
+              </p>
+            </div>
+          )}
 
           {session.transcript_status === "transcribed" && (
             <div style={{ marginTop: 12 }} data-testid="vbr-video-evidence-preview">
@@ -1076,6 +1182,123 @@ export function VBRSessionRecorder({
                       {chip.related_skill && <span style={chipStyle}>{chip.related_skill}</span>}
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {session.transcript_status === "transcribed" && (
+            <div style={{ marginTop: 16 }} data-testid="vbr-transcript-preview">
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <div style={{ ...sectionTitleStyle, margin: 0 }}>Your transcript</div>
+                <span style={{ fontSize: 12, color: "var(--emerald)", fontWeight: 600 }}>✓ Transcript saved</span>
+              </div>
+              <p style={{ fontSize: 11, color: "var(--muted)", marginTop: 0, marginBottom: 8 }}>
+                This preview is private to you. It is never shown on your public report.
+              </p>
+
+              {transcriptPreviewLoading && (
+                <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>Loading transcript…</p>
+              )}
+
+              {transcriptPreviewError && (
+                <div style={{ marginTop: 4 }}>
+                  <p style={{ fontSize: 12, color: "var(--rose)", margin: "0 0 8px" }}>{transcriptPreviewError}</p>
+                  <button type="button" style={buttonStyle} onClick={loadTranscriptPreview}>
+                    Reload transcript
+                  </button>
+                </div>
+              )}
+
+              {!transcriptPreviewLoading && !transcriptPreviewError && transcript && (
+                transcript.segments.length > 0 ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                      maxHeight: 260,
+                      overflowY: "auto",
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                      background: "var(--bg-2)",
+                    }}
+                  >
+                    {transcript.segments.map((segment, i) => (
+                      <div
+                        key={`${segment.start_s}-${i}`}
+                        data-testid="vbr-transcript-segment"
+                        style={{ fontSize: 12, color: "var(--ink)", display: "flex", gap: 8, alignItems: "baseline" }}
+                      >
+                        <span style={{ ...chipStyle, flexShrink: 0 }}>{formatDuration(segment.start_s)}</span>
+                        <span>{segment.text}</span>
+                      </div>
+                    ))}
+                    {transcript.truncated && (
+                      <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>
+                        Preview truncated — the full transcript is saved to your evidence.
+                      </p>
+                    )}
+                  </div>
+                ) : transcript.preview_text ? (
+                  <p
+                    data-testid="vbr-transcript-text"
+                    style={{
+                      fontSize: 12,
+                      color: "var(--ink)",
+                      whiteSpace: "pre-wrap",
+                      margin: 0,
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: 10,
+                      background: "var(--bg-2)",
+                    }}
+                  >
+                    {transcript.preview_text}
+                    {transcript.truncated ? "…" : ""}
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 12, color: "var(--muted)", margin: 0 }}>
+                    Transcript saved. No spoken text was detected in this recording.
+                  </p>
+                )
+              )}
+            </div>
+          )}
+
+          {variant === "project_defense" && session.transcript_status === "transcribed" && (
+            <div style={{ marginTop: 16 }} data-testid="vbr-transcript-next-actions">
+              <div style={{ ...sectionTitleStyle, marginBottom: 8 }}>Next steps</div>
+              {/*
+                Deliberately no "View Project Report" / report-preview CTA here.
+                "Analyze Project Defense" runs the analysis against the saved
+                video transcript and then routes back to the selected project
+                workspace, which shows the "Project Defense analyzed" completion
+                panel — never a blank manual answer box. */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                <button
+                  type="button"
+                  style={analyzeLoading ? disabledButtonStyle : primaryButtonStyle}
+                  disabled={analyzeLoading}
+                  onClick={handleAnalyzeDefense}
+                >
+                  {analyzeLoading ? "Analyzing…" : "Analyze Project Defense"}
+                </button>
+                <Link
+                  href={`/student/proofs/project-defense?projectId=${encodeURIComponent(session.project_id)}&sessionId=${encodeURIComponent(session.id)}`}
+                  style={{ ...buttonStyle, textDecoration: "none", display: "inline-block" }}
+                >
+                  Return to Project Defense workspace
+                </Link>
+              </div>
+              {analyzeError && (
+                <div data-testid="vbr-analyze-error">
+                  <p style={{ fontSize: 12, color: "var(--rose)", marginTop: 8, marginBottom: 4 }}>{analyzeError}</p>
+                  <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 0 }}>
+                    Please retry, or paste your explanation using the manual transcript fallback in the
+                    Project Defense workspace.
+                  </p>
                 </div>
               )}
             </div>

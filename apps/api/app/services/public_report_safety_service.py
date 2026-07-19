@@ -82,6 +82,10 @@ from app.services.website_skill_proof_focus import (
     public_screenshot_access_label,
     website_behavior_claim,
     website_corroboration_note,
+    website_verification_mode_label,
+    website_verification_mode_note,
+    VERIFICATION_MODE_LIVE,
+    VERIFICATION_MODE_RECORDED,
 )
 from app.services.proof_synthesis_agent_service import (
     PROOF_GITHUB,
@@ -105,11 +109,14 @@ __all__ = [
     "public_safe_synthesis_result",
     "public_safe_stale_marker",
     "public_safe_skill_report",
+    "public_safe_document_inspection_card",
     "defense_privacy_is_clean",
     "public_safe_defense_analysis",
     "public_safe_defense_answer_evidence",
+    "public_safe_project_defense_inspection",
     "DEFENSE_PRIVACY_HIDDEN_MESSAGE",
     "DEFENSE_ANSWER_WITHHELD_MESSAGE",
+    "DEFENSE_INSPECTION_WITHHELD_MESSAGE",
 ]
 
 _TEXT_LIMIT = 400
@@ -162,6 +169,20 @@ _SECRET_KV_RE = re.compile(
 # The token run requires ≥6 chars so the bare English word "bearer" is untouched.
 _BEARER_RE = re.compile(r"(?i)(?:authorization\s*:\s*)?\bbearer\s+[\w.\-~+/=]{6,}")
 
+# GitHub personal-access / OAuth / app tokens (``ghp_…`` / ``gho_…`` / ``ghs_…`` /
+# ``github_pat_…``) are self-identifying credentials that carry no ``key=value``
+# shape, so the key=value matcher above never sees them.
+_GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9]{8,}\b|\bgithub_pat_[A-Za-z0-9_]{8,}\b")
+
+# Relative storage paths (``uploads/user-123/report.pdf``) are neither absolute
+# ``/Users/…`` paths, storage URLs, nor credentials, so no other matcher catches
+# them. Two path segments are required (so prose like "uploads/downloads" is left
+# alone), and the lookbehind skips ``…/uploads/…`` inside a legitimately public
+# http(s) URL path — those are gated by the safe-url checks instead.
+_RELATIVE_STORAGE_PATH_RE = re.compile(
+    r"(?<![\w/])uploads?/[\w.@%-]+/[^\s\"'<>]+", re.IGNORECASE
+)
+
 # Any http(s) URL — used to strip a secret-bearing query string while keeping the
 # safe base, and to scan for secret query params in the fail-closed gate.
 _URL_RE = re.compile(r"https?://[^\s\"'<>)\]}]+", re.IGNORECASE)
@@ -191,6 +212,8 @@ def _redact_secrets(text: str) -> str:
     out = _URL_RE.sub(_strip_secret_query, text)
     out = _BEARER_RE.sub("[redacted]", out)
     out = _SECRET_KV_RE.sub("[redacted]", out)
+    out = _GITHUB_TOKEN_RE.sub("[redacted]", out)
+    out = _RELATIVE_STORAGE_PATH_RE.sub("[redacted]", out)
     return out
 
 
@@ -342,6 +365,12 @@ _EXTRA_UNSAFE_KEYS = {
     "ocrtext",
     "rawtranscript",
     "providerconfig",
+    # Private-only real-unmapped-proof layer ("Attached proof not yet
+    # skill-mapped"). It exists ONLY on the owner report / owner passport; the
+    # public builders allowlist their fields and omit it, and this key makes an
+    # accidental leak fail closed at the public gate.
+    "realunmappedproofcontext",
+    "real_unmapped_proof_context",
 }
 
 # Extra unsafe substrings to reject on (lower-cased value match), layered on top
@@ -401,6 +430,8 @@ def _contains_secret_material(value: Any) -> bool:
         return any(_contains_secret_material(item) for item in value)
     if isinstance(value, str):
         if _SECRET_KV_RE.search(value) or _BEARER_RE.search(value):
+            return True
+        if _GITHUB_TOKEN_RE.search(value) or _RELATIVE_STORAGE_PATH_RE.search(value):
             return True
         for match in _URL_RE.finditer(value):
             _, sep, query = match.group(0).partition("?")
@@ -722,6 +753,19 @@ def public_safe_evidence_artifact(item: dict[str, Any]) -> dict[str, Any]:
         projected["website_screenshot_access_label"] = public_screenshot_access_label(
             item.get("website_screenshot_access_label"), screenshot_available=available
         )
+        # Recruiter verification mode — DERIVED here from whether a revalidated
+        # safe public URL survived (``projected["public_url"]``); never echoed
+        # from the payload. A local/private host is stripped by ``_safe_url`` and
+        # so always projects as recorded-replay-only. Copy is closed vocabulary.
+        mode = (
+            VERIFICATION_MODE_LIVE
+            if projected.get("public_url")
+            else VERIFICATION_MODE_RECORDED
+        )
+        projected["website_verification_mode"] = mode
+        projected["website_verification_mode_label"] = website_verification_mode_label(mode)
+        projected["website_verification_note"] = website_verification_mode_note(mode)
+        projected["website_deployment_recommended"] = mode == VERIFICATION_MODE_RECORDED
         # Cross-proof corroboration: BOOLEANS only, with the public note
         # RE-DERIVED from those booleans through the closed fragments — any
         # note text in the payload is ignored, never echoed.
@@ -1090,6 +1134,104 @@ def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
         "limitations": _scrub_str_list(report.get("limitations")),
     }
     return enforce_public_safe(projected)
+
+
+# Public replacement note shown on a Document Proof inspection card when the
+# document is not intentionally share-safe — recruiters see the locator + reason,
+# never the excerpt, and there is no download button.
+_PUBLIC_DOC_PRIVATE_ACCESS_NOTE = (
+    "Original document is private. Recruiters see verified excerpts and locators only."
+)
+
+
+def public_safe_document_inspection_card(card: Any) -> dict[str, Any] | None:
+    """Project a Document Proof inspection card to a recruiter-safe shape, fail-closed.
+
+    The private card (built by ``_build_document_inspection_card``) already avoids
+    raw text / paths / signed URLs / internal ids. This projection additionally:
+
+    * STRIPS ``safe_snippet`` unless the card is explicitly ``is_public_safe`` —
+      recruiters otherwise see only the locator (page/section/citation/figure) and
+      the why-supported reason, never the document excerpt;
+    * DISABLES download — ``can_download_document`` is forced ``False`` and both
+      URLs to ``None`` unless the card explicitly allows download AND carries a URL
+      that survives :func:`safe_public_url`; when disabled the access note is
+      replaced with a neutral "document is private" message;
+    * scrubs every free-text field and echoes only the documented safe fields, so
+      no internal id / path / provider JSON can ride out.
+
+    Returns ``None`` for a ``None`` / non-dict card.
+    """
+    if not isinstance(card, dict):
+        return None
+
+    is_public_safe = bool(card.get("is_public_safe"))
+    # Snippet is owner-only unless explicitly public-safe.
+    safe_snippet = _scrub_text_or_none(card.get("safe_snippet")) if is_public_safe else None
+
+    # Download stays closed unless BOTH explicit consent AND a genuinely safe URL.
+    download_url = safe_public_url(card.get("document_download_url")) if card.get("can_download_document") else None
+    open_url = safe_public_url(card.get("document_open_url")) if card.get("can_download_document") else None
+    can_download = bool(card.get("can_download_document")) and bool(download_url or open_url)
+    access_note = (
+        _scrub_text_or_none(card.get("access_note")) or ""
+        if can_download
+        else _PUBLIC_DOC_PRIVATE_ACCESS_NOTE
+    )
+
+    # Skill-specific detail lists ARE recruiter-safe (bounded, normalized claims —
+    # not the raw excerpt, which stays owner-only). Each entry is still scrubbed of
+    # any path/URL/score fragment, dropped if nothing survives, and capped.
+    def _public_detail_list(value: Any) -> list[str]:
+        out: list[str] = []
+        for entry in value if isinstance(value, list) else []:
+            scrubbed = scrub_public_text(entry)
+            if scrubbed and scrubbed not in out:
+                out.append(scrubbed)
+            if len(out) >= 5:
+                break
+        return out
+
+    page = card.get("page_number")
+    projected = {
+        "title": scrub_public_text(card.get("title")),
+        "source_type": _scrub_text_or_none(card.get("source_type")),
+        "status": _scrub_text_or_none(card.get("status")),
+        "matched_skill": public_safe_skill_name(card.get("matched_skill")),
+        "project_title": public_safe_skill_name(card.get("project_title")),
+        "evidence_role": scrub_public_text(card.get("evidence_role")) or "Supporting evidence",
+        "page_number": page if isinstance(page, int) else None,
+        "section_label": _scrub_text_or_none(card.get("section_label")),
+        "citation_label": _scrub_text_or_none(card.get("citation_label")),
+        "safe_snippet": safe_snippet,
+        "figure_reference": _scrub_text_or_none(card.get("figure_reference")),
+        "table_reference": _scrub_text_or_none(card.get("table_reference")),
+        "diagram_reference": _scrub_text_or_none(card.get("diagram_reference")),
+        "visual_or_table_summary": _scrub_text_or_none(card.get("visual_or_table_summary")),
+        "why_supported": scrub_public_text(card.get("why_supported")),
+        "corroborates": _scrub_text_or_none(card.get("corroborates")),
+        "limitation": scrub_public_text(card.get("limitation")),
+        "skill_specific_claims": _public_detail_list(card.get("skill_specific_claims")),
+        "technical_details": _public_detail_list(card.get("technical_details")),
+        "api_endpoints": _public_detail_list(card.get("api_endpoints")),
+        "request_response_details": _public_detail_list(card.get("request_response_details")),
+        "architecture_details": _public_detail_list(card.get("architecture_details")),
+        "implementation_hints": _public_detail_list(card.get("implementation_hints")),
+        "missing_detail_note": _scrub_text_or_none(card.get("missing_detail_note")),
+        "has_skill_specific_details": bool(card.get("has_skill_specific_details")),
+        "access_note": access_note,
+        # Download stays disabled publicly; the label/note explain the private state.
+        "document_access_label": _scrub_text_or_none(card.get("document_access_label"))
+        if can_download
+        else None,
+        "document_access_note": access_note,
+        "can_download_document": can_download,
+        "document_download_url": download_url,
+        "document_open_url": open_url,
+        "is_public_safe": is_public_safe,
+        "is_attached_to_project": bool(card.get("is_attached_to_project")),
+    }
+    return projected
 
 
 # ── Project Defense analysis (privacy fail-closed) ────────────────────────────
@@ -1495,6 +1637,236 @@ def public_safe_defense_answer_evidence(
                 "corroborates_document": corroborates_document,
                 "limitation": scrub_public_text(item.get("limitation")),
                 "privacy_status": "clean",
+            }
+        )
+    return out
+
+
+# ── Project Defense inspection cards (recruiter inspection layer) ─────────────
+#
+# The inspection cards (``project_defense_inspection_service``) are an
+# enrichment of the answer evidence above: same fail-closed gate, plus a safe
+# clip locator and derived "what this demonstrates" / corroboration wording. The
+# public projection re-derives all free text from the fixed taxonomy + flags
+# (never the candidate's answer), drops the clip locator on a withheld card, and
+# carries no internal ids or raw status strings.
+
+DEFENSE_INSPECTION_WITHHELD_MESSAGE = (
+    "Defense answer details are withheld because this session is not "
+    "public-safe."
+)
+
+# Fixed public note for the recording/transcript access fields (mirrors the
+# inspection service's ``DEFENSE_PRIVATE_WITHHELD_NOTE``). Recruiters never
+# receive a private recording link or the raw transcript.
+_DEFENSE_PRIVATE_WITHHELD_NOTE = (
+    "Defense recording and transcript are private. Recruiters see only verified "
+    "summary and timestamp labels."
+)
+
+
+# Fixed closing limitation (mirrors the inspection builder). Safe to echo.
+_INSPECTION_LIMITATION = (
+    "Project Defense is explanation evidence. It should be read with GitHub "
+    "Proof for implementation, Website Proof for runtime behavior, and Document "
+    "Proof for written project evidence."
+)
+
+_ALLOWED_ANSWER_PURPOSES = _ALLOWED_QUESTION_KINDS
+
+
+def _withheld_inspection_card(item: dict[str, Any], index: int) -> dict[str, Any]:
+    """Fixed, neutral public inspection card for a not-public-safe answer.
+
+    Keeps only the deterministic question kind (from the generated question's
+    ``target_ref`` — never answer-derived). Everything answer-derived, the clip
+    locator, and corroboration flags are dropped; free text is the fixed
+    withheld message.
+    """
+    kind = str(item.get("question_kind") or "")
+    return {
+        "evidence_id_safe": f"defense-inspection-{index}",
+        "question_text": None,
+        "question_kind": kind if kind in _ALLOWED_QUESTION_KINDS else "unknown_or_generic",
+        "project_title": scrub_public_text(item.get("project_title")),
+        "mapped_skill": None,
+        "claim_type": "project_architecture",
+        "answer_purpose": "unknown_or_generic",
+        "evidence_role": "insufficient_or_generic",
+        "qualitative_status": _ANSWER_WITHHELD_STATUS,
+        "safe_answer_summary": DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        "evidence_basis_chips": [],
+        "timestamp_label": None,
+        "clip_start_seconds": None,
+        "clip_end_seconds": None,
+        "clip_available": False,
+        "corroborates_github": False,
+        "corroborates_website": False,
+        "corroborates_document": False,
+        "corroboration_summary": "",
+        "what_this_demonstrates": "",
+        "limitation": _INSPECTION_LIMITATION,
+        "public_safe": False,
+        "withheld_reason": DEFENSE_INSPECTION_WITHHELD_MESSAGE,
+        # Fail-closed playable-evidence fields: no recording link, no transcript.
+        "video_available": False,
+        "video_playback_url": None,
+        "clip_playback_url": None,
+        "transcript_excerpt_available": False,
+        "safe_transcript_excerpt": None,
+        "transcript_excerpt_start_label": None,
+        "transcript_excerpt_end_label": None,
+        "transcript_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+        "recording_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+        "is_private_owner_view": False,
+        "is_public_share_safe": False,
+    }
+
+
+def public_safe_project_defense_inspection(
+    items: Any, analysis: Any
+) -> list[dict[str, Any]]:
+    """Project Defense inspection cards → recruiter-safe cards, fail-closed.
+
+    ``items`` is the owner ``project_defense_inspection`` list built by
+    :func:`project_defense_inspection_service.build_project_defense_inspection_cards`;
+    ``analysis`` is the raw defense analysis whose privacy scan gates the whole
+    session. A card is published with content ONLY when the session analysis is
+    explicitly clean (:func:`defense_privacy_is_clean`) AND the card itself is
+    ``public_safe``. Everything else becomes a fixed withheld card that carries
+    no answer-derived text, no clip locator, no corroboration flags, and no
+    internal ids.
+
+    The published ``safe_answer_summary`` is re-derived from the fixed taxonomy
+    + corroboration flags (never the candidate's answer text). Enum-ish fields
+    are allowlisted; the clip locator keeps only a label + numeric seconds.
+    """
+    if not isinstance(items, list) or not items:
+        return []
+
+    session_clean = defense_privacy_is_clean(analysis)
+
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(items[:_MAX_PUBLIC_ANSWER_EVIDENCE], start=1):
+        if not isinstance(item, dict):
+            continue
+        shareable = session_clean and bool(item.get("public_safe"))
+        if not shareable:
+            out.append(_withheld_inspection_card(item, index))
+            continue
+
+        mapped_skill = _scrub_text_or_none(item.get("mapped_skill"))
+        question_kind = _safe_vocab(
+            item.get("question_kind"), _ALLOWED_QUESTION_KINDS, "unknown_or_generic"
+        )
+        qualitative_status = _safe_vocab(
+            item.get("qualitative_status"), _ALLOWED_ANSWER_STATUSES, "Not explained"
+        )
+        corroborates_github = bool(item.get("corroborates_github"))
+        corroborates_website = bool(item.get("corroborates_website"))
+        corroborates_document = bool(item.get("corroborates_document"))
+
+        # Re-derive the taxonomy free text from the fixed vocabulary + flags
+        # rather than trusting the owner card's strings (defence in depth: an
+        # attacker-shaped owner value can never carry unsafe text through here).
+        from app.services.project_defense_inspection_service import (
+            _corroboration_summary as _derive_corroboration_summary,
+        )
+        from app.services.project_defense_inspection_service import (
+            _what_this_demonstrates as _derive_what_this_demonstrates,
+        )
+
+        claim_type = _safe_vocab(
+            item.get("claim_type"), _ALLOWED_CLAIM_TYPES, "project_architecture"
+        )
+
+        # Clip locator: label + numeric seconds only (never the chip summary).
+        clip_available = bool(item.get("clip_available"))
+        timestamp_label = _scrub_text_or_none(item.get("timestamp_label")) if clip_available else None
+        clip_start = item.get("clip_start_seconds")
+        clip_end = item.get("clip_end_seconds")
+        clip_start = float(clip_start) if isinstance(clip_start, (int, float)) and clip_available else None
+        clip_end = float(clip_end) if isinstance(clip_end, (int, float)) and clip_available else None
+
+        # Playable evidence + transcript excerpt fail closed on the public
+        # recruiter surface. The recording playback URL is NEVER exposed, and the
+        # verbatim transcript excerpt (the candidate's own spoken words) is
+        # withheld even on a public-safe card — recruiters see only the DERIVED
+        # ``safe_answer_summary`` + timestamp labels, matching the same invariant
+        # the answer-evidence projection enforces (raw answer text never goes
+        # public). Transcript excerpts are an owner-only enrichment.
+        public_excerpt = None
+        transcript_excerpt_available = False
+        transcript_access_note = _DEFENSE_PRIVATE_WITHHELD_NOTE
+
+        out.append(
+            {
+                "evidence_id_safe": f"defense-inspection-{index}",
+                "question_text": _scrub_text_or_none(item.get("question_text")),
+                "question_kind": question_kind,
+                "project_title": scrub_public_text(item.get("project_title")),
+                "mapped_skill": mapped_skill,
+                "claim_type": claim_type,
+                "answer_purpose": _safe_vocab(
+                    item.get("answer_purpose"), _ALLOWED_ANSWER_PURPOSES, "unknown_or_generic"
+                ),
+                "evidence_role": _safe_vocab(
+                    item.get("evidence_role"), _ALLOWED_EVIDENCE_ROLES, "insufficient_or_generic"
+                ),
+                "qualitative_status": qualitative_status,
+                # Derived description only — never the candidate's answer text.
+                "safe_answer_summary": _public_answer_summary(
+                    question_kind,
+                    mapped_skill,
+                    qualitative_status,
+                    corroborates_github,
+                    corroborates_website,
+                    corroborates_document,
+                ),
+                "evidence_basis_chips": [
+                    chip
+                    for chip in (item.get("evidence_basis_chips") or [])
+                    if isinstance(chip, str) and chip in _ALLOWED_BASIS_CHIPS
+                ],
+                "timestamp_label": timestamp_label,
+                "clip_start_seconds": clip_start,
+                "clip_end_seconds": clip_end,
+                "clip_available": clip_available,
+                "corroborates_github": corroborates_github,
+                "corroborates_website": corroborates_website,
+                "corroborates_document": corroborates_document,
+                # Re-derived from the fixed taxonomy + flags — never the owner's
+                # (or an attacker-shaped) free text.
+                "corroboration_summary": _derive_corroboration_summary(
+                    corroborates_github, corroborates_website, corroborates_document
+                ),
+                "what_this_demonstrates": _derive_what_this_demonstrates(
+                    claim_type, mapped_skill, qualitative_status
+                ),
+                "limitation": scrub_public_text(item.get("limitation")) or _INSPECTION_LIMITATION,
+                "public_safe": True,
+                "withheld_reason": None,
+                # Fail-closed playback: no private recording link, ever. A safe
+                # transcript excerpt may appear on this public-safe card.
+                "video_available": False,
+                "video_playback_url": None,
+                "clip_playback_url": None,
+                "transcript_excerpt_available": transcript_excerpt_available,
+                "safe_transcript_excerpt": public_excerpt,
+                "transcript_excerpt_start_label": _scrub_text_or_none(
+                    item.get("transcript_excerpt_start_label")
+                )
+                if transcript_excerpt_available
+                else None,
+                "transcript_excerpt_end_label": _scrub_text_or_none(
+                    item.get("transcript_excerpt_end_label")
+                )
+                if transcript_excerpt_available
+                else None,
+                "transcript_access_note": transcript_access_note,
+                "recording_access_note": _DEFENSE_PRIVATE_WITHHELD_NOTE,
+                "is_private_owner_view": False,
+                "is_public_share_safe": True,
             }
         )
     return out

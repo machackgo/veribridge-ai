@@ -875,7 +875,7 @@ class TestVisibleEvidenceEndpoints:
 
     def test_submit_visible_evidence_returns_202(self, client, mem_store):
         """POST /workflow/visible-evidence returns 202 Accepted."""
-        session_id = "endpoint-test-session-001"
+        session_id = _make_session(mem_store, _make_proof_data([]))
         r = client.post(
             f"/api/v1/student/extension-proof/sessions/{session_id}/workflow/visible-evidence",
             json={
@@ -897,9 +897,38 @@ class TestVisibleEvidenceEndpoints:
         assert data["events_stored"] == 1
         assert data["status"] == "accepted"
 
+    def test_duplicate_event_delivery_is_harmless(self, client, mem_store):
+        session_id = _make_session(mem_store, _make_proof_data([]))
+        payload = {
+            "events": [{
+                "event_id": "event-delivery-1",
+                "event_type": "result_detected",
+                "url": DETECTION_URL,
+                "page_title": "Detection Results",
+                "visible_text_blocks": ["dog: 0.89"],
+                "result_like_blocks": ["dog: 0.89"],
+                "input_snapshot": {},
+                "action_snapshot": {},
+            }]
+        }
+
+        first = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/workflow/visible-evidence",
+            json=payload,
+        )
+        second = client.post(
+            f"/api/v1/student/extension-proof/sessions/{session_id}/workflow/visible-evidence",
+            json=payload,
+        )
+
+        assert first.status_code == 202
+        assert first.json()["events_stored"] == 1
+        assert second.status_code == 202
+        assert second.json()["events_stored"] == 0
+
     def test_summary_endpoint_returns_visible_evidence_status(self, client, mem_store):
         """GET /workflow/visible-evidence/summary returns summary with status."""
-        session_id = "endpoint-test-session-002"
+        session_id = _make_session(mem_store, _make_proof_data([]))
         # First submit some evidence
         client.post(
             f"/api/v1/student/extension-proof/sessions/{session_id}/workflow/visible-evidence",

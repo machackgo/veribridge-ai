@@ -161,6 +161,17 @@ class CanonicalGitHubEvidence:
     # None = no trusted body was available to judge. Drives the read-time ML gate so
     # a deployment-only body can never present as ML primary implementation proof.
     ml_executable_signal: bool | None = None
+    # Symbol identity + ANALYZED context window from the trusted provenance (the
+    # scanner's AST focus). ``context_*`` describe the window the analyzer
+    # actually classified, which may be wider than the cited target lines — the
+    # citation itself is never rewritten to pretend otherwise.
+    symbol_name: str | None = None
+    symbol_type: str | None = None
+    context_start_line: int | None = None
+    context_end_line: int | None = None
+    # The analyzer version that stamped the trusted provenance (classification
+    # provenance for reports; None when no trusted provenance exists).
+    analysis_version: str | None = None
 
     @property
     def skill_key(self) -> str:
@@ -235,6 +246,11 @@ class CanonicalGitHubEvidence:
             "skill_relevance_label": self.skill_relevance_label,
             "skill_relevance_summary": self.skill_relevance_summary,
             "ml_executable_signal": self.ml_executable_signal,
+            "symbol_name": self.symbol_name,
+            "symbol_type": self.symbol_type,
+            "context_start_line": self.context_start_line,
+            "context_end_line": self.context_end_line,
+            "analysis_version": self.analysis_version,
             "public_safe": self.public_safe,
         }
 
@@ -507,6 +523,26 @@ def _build_item(
         grade=quality_grade,
     )
 
+    # Symbol identity + analyzed-context window from the TRUSTED provenance only
+    # (never user-editable metadata). Context lines are surfaced only when the
+    # analyzer actually classified a window different from the cited target.
+    symbol_name = (
+        str(provenance.get("symbol_name") or "").strip() or None if provenance else None
+    )
+    symbol_type = (
+        str(provenance.get("symbol_type") or "").strip() or None if provenance else None
+    )
+    context_start = _line(provenance.get("context_start_line")) if provenance else None
+    context_end = _line(provenance.get("context_end_line")) if provenance else None
+    if context_start is None and context_end is None and provenance:
+        f_start = _line(provenance.get("focused_start_line"))
+        f_end = _line(provenance.get("focused_end_line"))
+        if (f_start, f_end) != (line_start, line_end):
+            context_start, context_end = f_start, f_end
+    analysis_version = (
+        str(provenance.get("analyzer_version") or "").strip() or None if provenance else None
+    )
+
     return CanonicalGitHubEvidence(
         source_id=str(row.get("id") or ""),
         skill_name=skill,
@@ -531,6 +567,11 @@ def _build_item(
         code_block_purpose_key=code_block_purpose_key,
         skill_relevance_key=skill_relevance_key,
         ml_executable_signal=ml_executable_signal,
+        symbol_name=symbol_name,
+        symbol_type=symbol_type,
+        context_start_line=context_start,
+        context_end_line=context_end,
+        analysis_version=analysis_version,
         public_safe=public_safe,
     )
 

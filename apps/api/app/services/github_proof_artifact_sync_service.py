@@ -330,7 +330,9 @@ class GitHubProofArtifactSyncService:
 
     def _existing_pipeline(self, user_id: str, skill_name: str) -> SkillEvidencePipelineResponse | None:
         try:
-            for p in self._pipeline_svc.list_pipelines_for_student(user_id):
+            # Rows only — pulling every pipeline's artifacts per skill made this
+            # an N×M query storm on real databases.
+            for p in self._pipeline_svc.list_pipeline_rows_for_student(user_id):
                 if p.skill_name.strip().lower() == skill_name.strip().lower():
                     return p
         except Exception:
@@ -341,10 +343,9 @@ class GitHubProofArtifactSyncService:
 
     def _artifact_exists_for_proof(self, user_id: str, github_proof_id: str) -> bool:
         try:
-            for p in self._pipeline_svc.list_pipelines_for_student(user_id):
-                for a in self._pipeline_svc._list_artifacts_for_pipeline_by_id(p.id):
-                    if a.artifact_data.get("github_proof_id") == github_proof_id:
-                        return True
+            return self._pipeline_svc.has_artifact_matching(
+                user_id, github_proof_id=github_proof_id
+            )
         except Exception:
             pass
         return False

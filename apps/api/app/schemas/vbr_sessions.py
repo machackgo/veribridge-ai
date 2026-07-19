@@ -136,6 +136,32 @@ class VBRTranscriptionResponse(BaseModel):
     message: str
 
 
+class VBRTranscriptSegmentResponse(BaseModel):
+    start_s: float
+    end_s: float
+    text: str
+
+
+class VBRSessionTranscriptResponse(BaseModel):
+    """Owner-only private transcript preview for a recorded session.
+
+    Served to the student who owns the session so the recorder/workspace page
+    can render their generated transcript. Never used by the public recruiter
+    report path (which sanitizes independently).
+    """
+
+    session_id: str
+    status: str
+    transcript_id: str | None = None
+    provider: str | None = None
+    language: str | None = None
+    segment_count: int = 0
+    duration_s: float | None = None
+    preview_text: str = ""
+    truncated: bool = False
+    segments: list[VBRTranscriptSegmentResponse] = Field(default_factory=list)
+
+
 class VBRKeyframeExtractionResponse(BaseModel):
     session_id: str
     frame_count: int

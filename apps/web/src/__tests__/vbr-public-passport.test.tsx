@@ -112,8 +112,13 @@ describe("PublicPassportView", () => {
     const detail = await screen.findByTestId("public-skill-detail")
     const ref = screen.getByTestId("public-skill-project-ref")
     expect(ref).toHaveTextContent("Skill Evidence Tracker")
-    // The only outbound link is the public report path — never an internal id.
-    expect(detail.querySelector("a")).toHaveAttribute("href", "/vbr/report/tok-abc")
+    // Outbound links are public routes only: the published report path and the
+    // public skill report on the same slug — never an internal id.
+    expect(ref.querySelector("a")).toHaveAttribute("href", "/vbr/report/tok-abc")
+    expect(detail.querySelector('[data-testid="public-skill-report-link"]')).toHaveAttribute(
+      "href",
+      "/p/slug123/skills/python",
+    )
     expect(detail.textContent).not.toContain("project_id")
   })
 
@@ -372,6 +377,77 @@ describe("PublicPassportView", () => {
   })
 })
 
+// ── Recruiter link-review MVP ─────────────────────────────────────────────────
+
+describe("PublicPassportView — recruiter link-review MVP", () => {
+  it("renders the recruiter trust framing with the honest non-certification line", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const framing = screen.getByTestId("recruiter-trust-framing")
+    expect(framing).toHaveTextContent(
+      "This Passport summarizes public-safe proof submitted by the candidate.",
+    )
+    expect(framing).toHaveTextContent("not an employment certification or background check")
+    expect(framing).toHaveTextContent(
+      "Inspect the linked evidence before making hiring decisions.",
+    )
+  })
+
+  it("renders the recruiter review checklist", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const checklist = screen.getByTestId("recruiter-review-checklist")
+    expect(checklist).toHaveTextContent("GitHub / code evidence")
+    expect(checklist).toHaveTextContent("website / runtime evidence")
+    expect(checklist).toHaveTextContent("project defense explanation")
+    expect(checklist).toHaveTextContent("Review the limitations")
+  })
+
+  it("links top skills to their public skill report on the same slug", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // React (no drilldown detail) shows its report link inline.
+    expect(screen.getByTestId("public-skill-report-link")).toHaveAttribute(
+      "href",
+      "/p/slug123/skills/react",
+    )
+
+    // Python (has detail) shows its report link inside the expanded drilldown.
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    const links = await screen.findAllByTestId("public-skill-report-link")
+    expect(links.map((a) => a.getAttribute("href"))).toContain("/p/slug123/skills/python")
+  })
+
+  it("shows the recruiter CTA with the exact copy and request-vbr link", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const cta = screen.getByTestId("recruiter-cta")
+    expect(cta).toHaveTextContent("Want candidates to send proof-backed reports?")
+    expect(cta).toHaveTextContent(
+      "Ask applicants to generate a VeriBridge Verified Build Report for one project.",
+    )
+    expect(screen.getByTestId("recruiter-cta-request-vbr")).toHaveAttribute(
+      "href",
+      "/recruiters/request-vbr",
+    )
+    expect(screen.getByTestId("recruiter-cta-request-vbr")).toHaveTextContent(
+      "Request a VBR from your candidates",
+    )
+  })
+})
+
 describe("Canonical public passport route", () => {
   it("legacy /passport/[slug] redirects to the canonical /p/[slug] route", async () => {
     vi.mocked(redirect).mockClear()
@@ -438,5 +514,220 @@ describe("PublicPassportView — Phase 3 public safety", () => {
     // No private ids, owner-only routes, or suggestion logic ride along.
     expect(document.body.innerHTML).not.toContain("/student/vbr/projects/")
     expect(document.body.textContent).not.toContain("suggestion")
+  })
+})
+
+describe("PublicPassportView — Step 5 recruiter-ready publishing", () => {
+  it("shows the exact safe empty state when no project reports are published", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        top_skills: [],
+        featured_projects: [],
+        evidence_source_counts: {},
+        featured_project_count: 0,
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+
+    const empty = await screen.findByTestId("public-passport-no-projects")
+    expect(empty).toHaveTextContent("No published project reports yet.")
+    // No publish/report CTAs leak into the recruiter-facing empty state.
+    expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("view-report-preview-link")).not.toBeInTheDocument()
+  })
+
+  it("never renders unattached-proof counts or suggested-evidence cards", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.queryByTestId("attachment-suggestion")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("suggested-attachments")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("evidence-vault-section")).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/unattached proof item/i)
+    expect(document.body.textContent).not.toMatch(/suggested attachments/i)
+  })
+})
+
+describe("PublicPassportView — Document Proof trace safety", () => {
+  function documentTracePassport(): PublicWorkPassport {
+    return makePublicPassport({
+      top_skills: [
+        {
+          skill: "Machine Learning",
+          status: "Demonstrated",
+          evidence_sources: ["Document Proof"],
+          projects: [
+            { project_title: "Housing Price Predictor", evidence_sources: ["Document Proof"], public_report_path: "/vbr/report/tok-abc" },
+          ],
+          evidence_chips: [],
+          limitations: [],
+          evidence_traces: [
+            {
+              trace_id: "document-1-machine-learning",
+              source_type: "Document Proof",
+              source_title: "Final Year Project Report",
+              skill_names: ["Machine Learning"],
+              qualitative_status: "Supporting evidence",
+              safe_summary: "A supporting document the analyzer matched to Machine Learning on page 4.",
+              safe_detail: "A safe excerpt/page is shown for recruiters rather than the raw file.",
+              evidence_anchor: "",
+              location_type: "document_page",
+              location_label: "Page 4",
+              location_detail: "Page 4 · Model Architecture",
+              page_number: 4,
+              citation: "Model Architecture",
+              // Public projection strips the raw excerpt — no snippet on a public trace.
+              snippet: null,
+              public_url: null,
+              public_url_label: null,
+              timestamp: null,
+              limitation: "Document evidence supports but does not independently prove implementation or authorship.",
+              is_publicly_openable: false,
+              private_evidence_note: "Private document; only a safe citation is shown.",
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  it("S. public document trace exposes no raw snippet, storage path, or internal id", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(documentTracePassport())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    const detail = await screen.findByTestId("public-skill-detail")
+
+    // No raw excerpt is rendered for a public document trace.
+    expect(detail.querySelector('[data-testid="evidence-trace-snippet"]')).toBeNull()
+    const html = detail.innerHTML
+    expect(html).not.toContain("uploads/")
+    expect(html).not.toContain("?token=")
+    expect(html).not.toContain("document_id")
+    expect(html).not.toContain("source_id")
+    expect(html).not.toContain("optional_evidence_submissions")
+  })
+
+  it("T. public document trace shows the safe locator and limitation", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(documentTracePassport())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    const detail = await screen.findByTestId("public-skill-detail")
+
+    expect(detail.querySelector('[data-testid="evidence-trace-page"]')?.textContent).toContain("Page 4")
+    expect(detail.querySelector('[data-testid="evidence-trace-citation"]')?.textContent).toContain("Model Architecture")
+    expect(detail.textContent).toContain("does not independently prove implementation")
+  })
+})
+
+describe("PublicPassportView — Project Defense inspection (fail-closed)", () => {
+  function withInspection(cardOverrides = {}) {
+    const base = makePublicPassport()
+    return makePublicPassport({
+      featured_projects: [
+        {
+          ...base.featured_projects[0],
+          project_defense_inspection: [
+            {
+              evidence_id_safe: "defense-inspection-1",
+              question_text: null,
+              question_kind: "skill_explanation",
+              project_title: "Skill Evidence Tracker",
+              mapped_skill: null,
+              claim_type: "project_architecture",
+              answer_purpose: "unknown_or_generic",
+              evidence_role: "insufficient_or_generic",
+              qualitative_status: "Withheld for privacy",
+              safe_answer_summary: "Defense answer details are withheld because this session is not public-safe.",
+              evidence_basis_chips: [],
+              timestamp_label: null,
+              clip_start_seconds: null,
+              clip_end_seconds: null,
+              clip_available: false,
+              corroborates_github: false,
+              corroborates_website: false,
+              corroborates_document: false,
+              corroboration_summary: "",
+              what_this_demonstrates: "",
+              limitation: "Project Defense is explanation evidence.",
+              public_safe: false,
+              withheld_reason: "Defense answer details are withheld because this session is not public-safe.",
+              ...cardOverrides,
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  it("renders a withheld placeholder for a not-public-safe defense card", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(withInspection())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByTestId("public-passport-project-defense-inspection")).toBeInTheDocument()
+    expect(screen.getByTestId("pdi-withheld")).toHaveTextContent("withheld because this session is not public-safe")
+    // No answer text / question / timestamp exposed in the withheld state.
+    expect(screen.queryByTestId("pdi-question")).toBeNull()
+    expect(screen.queryByTestId("pdi-answer-summary")).toBeNull()
+    expect(screen.queryByTestId("pdi-timestamp")).toBeNull()
+  })
+
+  it("never exposes raw transcript, segments, or internal ids on the public passport", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(withInspection())
+    const { container } = render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    const html = container.innerHTML
+    for (const unsafe of ["transcript", "transcript_segments", "question_id", "storage_path", "signed_url", "vbr/sessions", "evidence_id_safe"]) {
+      expect(html).not.toContain(unsafe)
+    }
+  })
+
+  it("a public-safe card fails closed: no recording link and no verbatim excerpt", async () => {
+    // The backend public projection sends the playback URL and the verbatim
+    // excerpt as null even on a public-safe card — the recruiter sees only the
+    // derived summary + the "private" notes.
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      withInspection({
+        question_text: "How does your model make predictions?",
+        mapped_skill: "Python",
+        qualitative_status: "Explained with evidence",
+        safe_answer_summary: "The candidate explained this Python claim.",
+        public_safe: true,
+        withheld_reason: null,
+        video_available: false,
+        video_playback_url: null,
+        clip_playback_url: null,
+        transcript_excerpt_available: false,
+        safe_transcript_excerpt: null,
+        transcript_access_note: "Defense recording and transcript are private. Recruiters see only verified summary and timestamp labels.",
+        recording_access_note: "Defense recording and transcript are private. Recruiters see only verified summary and timestamp labels.",
+      }),
+    )
+    const { container } = render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // No <video> element and no verbatim transcript excerpt on the recruiter view.
+    expect(screen.queryByTestId("pdi-video")).toBeNull()
+    expect(screen.queryByTestId("pdi-transcript-excerpt")).toBeNull()
+    // Both fall back to the fixed "private" note.
+    expect(screen.getByTestId("pdi-recording-note")).toHaveTextContent(/private/i)
+    expect(screen.getByTestId("pdi-transcript-note")).toHaveTextContent(/private/i)
+    // No storage path / signed URL / segments leak.
+    const html = container.innerHTML
+    for (const unsafe of ["transcript_segments", "storage_path", "signed_url", "vbr/sessions"]) {
+      expect(html).not.toContain(unsafe)
+    }
+  })
+
+  it("shows nothing extra when a featured project has no inspection cards", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+    expect(screen.queryByTestId("public-passport-project-defense-inspection")).toBeNull()
   })
 })

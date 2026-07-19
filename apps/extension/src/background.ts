@@ -1,11 +1,31 @@
 // Background service worker — manages recording state and uploads proof to the backend.
 
-import type { WorkflowEvent, ExtensionState, RecordingStatus, VisibleEvidenceEvent } from "./types"
+import type { WorkflowEvent, ExtensionState, RecorderPrivateState, RecordingStatus, VisibleEvidenceEvent } from "./types"
 import { computeLiveCoach } from "./liveFeedback"
 import type { LiveCoachState } from "./liveFeedback"
+import {
+  normalizeRecorderSessionConfig,
+  recorderApiUrlForSession,
+  selectRecorderSessionConfig,
+  type RecorderSessionConfig,
+} from "./recorderSessionConfig"
+import {
+  RECORDER_AUTH_REFRESH_REQUEST,
+  RECORDER_INIT_REQUEST,
+  RECORDER_START_REQUEST,
+  RECORDER_TARGET_OPEN_REQUEST,
+  WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+  WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+  refreshWebsiteProofRecorderAuth,
+  safeRecorderDiagnostic,
+  type RecorderInitRequest,
+  type RecorderProtocolErrorCode,
+  type RecorderStartRequest,
+  type RecorderTargetOpenRequest,
+} from "../../../packages/shared/websiteProofRecorderContract"
 
 // ── Debug flag ────────────────────────────────────────────────────────────────
-const DEBUG_VISIBLE_EVIDENCE = true
+const DEBUG_VISIBLE_EVIDENCE = false
 
 function dbgVE(...args: unknown[]): void {
   if (DEBUG_VISIBLE_EVIDENCE) console.log("[VisibleEvidence]", ...args)
@@ -93,6 +113,8 @@ interface InternalState {
   sessionId: string
   apiUrl: string
   authToken: string
+  /** Atomic app-provided config for the fresh Website Proof session. */
+  recorderSessionConfig: RecorderSessionConfig | null
   isRecording: boolean
   events: WorkflowEvent[]
   /** Visible evidence DOM snapshots accumulated during the recording. */
@@ -112,6 +134,12 @@ interface InternalState {
   originalTabId: number | null
   trackedTabUrls: Map<number, string>  // last known URL per tracked tab (for navigation detection)
   proofBuilderTabId: number | null
+  /** Exact tab opened by the background for this config revision. */
+  targetTabId: number | null
+  /** Correlates the target-content readiness acknowledgement to the web request. */
+  targetOpenRequestId: string | null
+  targetOpenPending: boolean
+  targetReadyRevision: number | null
   // Recorder tab — auto-opened on START_RECORDING.
   // Tracks the tab so we can focus it if it already exists.
   recorderTabId: number | null
@@ -119,6 +147,8 @@ interface InternalState {
   videoUploadStatus: "none" | "uploading" | "uploaded" | "failed"
   videoUploadError: string | null
   videoKeyframeCount: number
+  /** Detected getDisplayMedia surface: "tab" | "window" | "screen" | null. */
+  captureSurface: string | null
   // ── Recorder tab stream state ───────────────────────────────────────────────
   // True while recorder tab has an active getDisplayMedia MediaRecorder stream.
   // Set via RECORDER_STREAM_STARTED / RECORDER_STREAM_STOPPED messages.
@@ -138,8 +168,9 @@ interface InternalState {
 
 const state: InternalState = {
   sessionId: "",
-  apiUrl: "http://localhost:8000",
+  apiUrl: "",
   authToken: "",
+  recorderSessionConfig: null,
   isRecording: false,
   events: [],
   visibleEvidenceEvents: [],
@@ -155,10 +186,15 @@ const state: InternalState = {
   originalTabId: null,
   trackedTabUrls: new Map(),
   proofBuilderTabId: null,
+  targetTabId: null,
+  targetOpenRequestId: null,
+  targetOpenPending: false,
+  targetReadyRevision: null,
   recorderTabId: null,
   videoUploadStatus: "none",
   videoUploadError: null,
   videoKeyframeCount: 0,
+  captureSurface: null,
   recorderTabStreamActive: false,
   claimedSkills: [],
   liveCoach: null,
@@ -167,18 +203,37 @@ const state: InternalState = {
 }
 
 // ── Persisted recording state key ────────────────────────────────────────────
-// Written on START_RECORDING; cleared on STOP_RECORDING and successful upload.
+// Written while RECORDING or STOPPED; cleared only after successful upload.
 // Lets the service worker restore recording context after Chrome kills it.
 const _SW_STATE_KEY = "vb_sw_recording"
+const _SW_EVIDENCE_BUFFER_KEY = "vb_sw_evidence_buffer"
 const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"
+export const RECORDER_SESSION_CONFIG_KEY = "vb_recorder_session_config"
+const MISSING_RECORDER_AUTH_MESSAGE =
+  "Recording isn't signed in. Open the VeriBridge Website Proof page while signed in, then restart the recording from there."
 
 interface PersistedRecordingState {
   sessionId: string
-  apiUrl: string
-  authToken: string
+  configRevision: number
   startedAt: string
+  phase: "recording" | "stopped"
+  stoppedAt?: string | null
   originalTabId?: number | null
   proofBuilderTabId?: number | null
+  videoUploadStatus?: "none" | "uploading" | "uploaded" | "failed"
+  videoUploadError?: string | null
+  videoKeyframeCount?: number
+  captureSurface?: string | null
+  recorderTabId?: number | null
+}
+
+interface PersistedEvidenceBuffer {
+  sessionId: string
+  configRevision: number
+  workflowEvents: WorkflowEvent[]
+  visibleEvidenceEvents: VisibleEvidenceEvent[]
+  /** True when oldest visible-evidence snapshots were dropped to fit the quota. */
+  truncated?: boolean
 }
 
 interface WebsiteProofUploadState {
@@ -190,6 +245,10 @@ interface WebsiteProofUploadState {
   lastUploadError?: string | null
 }
 
+let recordingStateWriteQueue: Promise<void> = Promise.resolve()
+let evidenceBufferWriteQueue: Promise<void> = Promise.resolve()
+let uploadStateWriteQueue: Promise<void> = Promise.resolve()
+
 /**
  * Persist the minimal recording context that must survive a service-worker restart.
  * MV3 service workers are killed when idle; without this, module-level state resets
@@ -197,49 +256,236 @@ interface WebsiteProofUploadState {
  * silently dropped, causing 0 DOM rows for the session.
  */
 function persistRecordingState(): void {
+  const config = state.recorderSessionConfig
+  if (!config) return
   const payload: PersistedRecordingState = {
-    sessionId: state.sessionId,
-    apiUrl: state.apiUrl,
-    authToken: state.authToken,
+    sessionId: config.session_id,
+    configRevision: config.config_revision,
     startedAt: state.startedAt ?? new Date().toISOString(),
+    phase: state.isRecording ? "recording" : "stopped",
+    stoppedAt: state.stoppedAt,
     originalTabId: state.originalTabId,
     proofBuilderTabId: state.proofBuilderTabId,
+    videoUploadStatus: state.videoUploadStatus,
+    videoUploadError: state.videoUploadError,
+    videoKeyframeCount: state.videoKeyframeCount,
+    captureSurface: state.captureSurface,
+    recorderTabId: state.recorderTabId,
   }
-  void chrome.storage.local.set({ [_SW_STATE_KEY]: payload })
+  const write = recordingStateWriteQueue.then(() =>
+    chrome.storage.local.set({ [_SW_STATE_KEY]: payload }),
+  )
+  recordingStateWriteQueue = write.catch(() => undefined)
   dbgVE("persistRecordingState: saved session", state.sessionId)
+}
+
+// chrome.storage.session holds up to 10MB (Chrome 112+). Keep the serialized
+// recovery buffer well under that so a long recording never fails its write
+// wholesale. Workflow events are small and structurally essential (kept in
+// full); bulky visible-evidence snapshots are trimmed oldest-first to fit.
+const _SW_EVIDENCE_BUDGET_BYTES = 6_000_000
+// Coalesce bursts of per-event persistence into a single trailing write so a
+// streaming recording does not re-serialize the whole buffer on every event.
+const _SW_EVIDENCE_COALESCE_MS = 400
+
+let evidenceBufferDirty = false
+let evidenceBufferFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+function buildEvidenceBufferPayload(): PersistedEvidenceBuffer | null {
+  const config = state.recorderSessionConfig
+  if (!config) return null
+  const workflowEvents = [...state.events]
+  const baseBytes = JSON.stringify({
+    sessionId: config.session_id,
+    configRevision: config.config_revision,
+    workflowEvents,
+  }).length
+  // Newest-first cumulative fit: measure each visible-evidence event once, then
+  // keep the most recent that fit the remaining budget (O(n), no re-serialize).
+  const visibleBudget = _SW_EVIDENCE_BUDGET_BYTES - baseBytes
+  const source = state.visibleEvidenceEvents
+  const kept: VisibleEvidenceEvent[] = []
+  let used = 2 // "[]" brackets
+  let truncated = false
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    const cost = JSON.stringify(source[i]).length + 1 // + comma separator
+    if (used + cost > visibleBudget) { truncated = true; break }
+    used += cost
+    kept.push(source[i])
+  }
+  const visibleEvidenceEvents = kept.reverse()
+  return {
+    sessionId: config.session_id,
+    configRevision: config.config_revision,
+    workflowEvents,
+    visibleEvidenceEvents,
+    ...(truncated ? { truncated: true } : {}),
+  }
+}
+
+/** Immediately enqueue a full recovery-buffer write (used at start/stop). */
+function flushEvidenceBuffer(): void {
+  evidenceBufferDirty = false
+  if (evidenceBufferFlushTimer !== null) {
+    clearTimeout(evidenceBufferFlushTimer)
+    evidenceBufferFlushTimer = null
+  }
+  const payload = buildEvidenceBufferPayload()
+  if (!payload) return
+  const write = evidenceBufferWriteQueue.then(() =>
+    chrome.storage.session.set({ [_SW_EVIDENCE_BUFFER_KEY]: payload }),
+  )
+  evidenceBufferWriteQueue = write.catch(() => undefined)
+}
+
+/** Debounced per-event persistence — coalesces streaming events into one write. */
+function persistEvidenceBuffer(): void {
+  if (!state.recorderSessionConfig) return
+  evidenceBufferDirty = true
+  if (evidenceBufferFlushTimer !== null) return
+  evidenceBufferFlushTimer = setTimeout(() => {
+    evidenceBufferFlushTimer = null
+    if (evidenceBufferDirty) flushEvidenceBuffer()
+  }, _SW_EVIDENCE_COALESCE_MS)
+}
+
+function clearPersistedEvidenceBuffer(): void {
+  evidenceBufferDirty = false
+  if (evidenceBufferFlushTimer !== null) {
+    clearTimeout(evidenceBufferFlushTimer)
+    evidenceBufferFlushTimer = null
+  }
+  const write = evidenceBufferWriteQueue.then(() =>
+    chrome.storage.session.remove(_SW_EVIDENCE_BUFFER_KEY),
+  )
+  evidenceBufferWriteQueue = write.catch(() => undefined)
 }
 
 /** Remove the persisted recording state (recording stopped or proof uploaded). */
 function clearPersistedRecordingState(): void {
-  void chrome.storage.local.remove(_SW_STATE_KEY)
+  const write = recordingStateWriteQueue.then(() => chrome.storage.local.remove(_SW_STATE_KEY))
+  recordingStateWriteQueue = write.catch(() => undefined)
   dbgVE("clearPersistedRecordingState: cleared")
 }
 
 function persistWebsiteProofUploadState(uploadState: WebsiteProofUploadState): void {
-  void chrome.storage.local.set({ [WEBSITE_PROOF_UPLOAD_STATE_KEY]: uploadState })
+  const write = uploadStateWriteQueue.then(() =>
+    chrome.storage.local.set({ [WEBSITE_PROOF_UPLOAD_STATE_KEY]: uploadState }),
+  )
+  uploadStateWriteQueue = write.catch(() => undefined)
+}
+
+// Runtime-only write epoch used solely to prevent an asynchronous startup read
+// from overwriting a config already acknowledged in this worker instance.
+let recorderSessionConfigWriteEpoch = 0
+let recorderSessionConfigWriteQueue: Promise<void> = Promise.resolve()
+
+function applyRecorderSessionConfig(config: RecorderSessionConfig): void {
+  state.recorderSessionConfig = config
+  state.sessionId = config.session_id
+  state.apiUrl = config.api_base_url
+  state.authToken = config.auth.access_token
+  state.claimedSkills = [...config.claimed_skills]
+}
+
+async function persistRecorderSessionConfig(config: RecorderSessionConfig): Promise<void> {
+  // One atomic object is the only durable recorder configuration. Popup and
+  // recorder views consume the public in-memory projection through GET_STATE.
+  const write = recorderSessionConfigWriteQueue.then(() =>
+    chrome.storage.local.set({ [RECORDER_SESSION_CONFIG_KEY]: config }),
+  )
+  recorderSessionConfigWriteQueue = write.catch(() => undefined)
+  await write
 }
 
 // On service-worker startup, check whether a recording was active before the SW
 // was killed.  If so, restore the core fields so VISIBLE_EVIDENCE_EVENT messages
 // are accepted again and re-broadcast START_CAPTURING to all open tabs.
-void chrome.storage.local.get(_SW_STATE_KEY).then((data) => {
-  const rs = (data as Record<string, unknown>)[_SW_STATE_KEY] as PersistedRecordingState | undefined
+const startupConfigWriteEpoch = recorderSessionConfigWriteEpoch
+void chrome.storage.local.get([
+  _SW_STATE_KEY,
+  RECORDER_SESSION_CONFIG_KEY,
+]).then(async (data) => {
+  const stored = data as Record<string, unknown>
+  // Restore the app-handed recorder auth (SET_RECORDER_AUTH persists these
+  // top-level keys) so a session started AFTER an MV3 service-worker restart
+  // still uploads with Authorization: Bearer instead of anonymously 401ing.
+  // The in-recording snapshot below takes precedence when one exists.
+  // A fresh runtime handoff may arrive while this async storage read is in
+  // flight. Never let the older stored config overwrite the acknowledged one.
+  if (recorderSessionConfigWriteEpoch === startupConfigWriteEpoch) {
+    const storedConfig = normalizeRecorderSessionConfig(
+      (stored[RECORDER_SESSION_CONFIG_KEY] ?? {}) as RecorderSessionConfig,
+    )
+    if (storedConfig) {
+      applyRecorderSessionConfig(storedConfig)
+    }
+  }
+  const rs = stored[_SW_STATE_KEY] as PersistedRecordingState | undefined
   if (!rs?.sessionId) return
+  if (
+    recorderSessionConfigWriteEpoch !== startupConfigWriteEpoch &&
+    state.sessionId &&
+    state.sessionId !== rs.sessionId
+  ) {
+    return
+  }
   dbgVE("service-worker restarted — restoring recording state for session:", rs.sessionId)
-  state.sessionId    = rs.sessionId
-  state.apiUrl       = (rs.apiUrl || "http://localhost:8000").replace(/\/$/, "")
-  state.authToken    = rs.authToken || ""
-  state.isRecording  = true
+  // A recording snapshot is valid only alongside the exact persisted config;
+  // it never reconstructs a second, partial session shape.
+  if (
+    !state.recorderSessionConfig ||
+    state.recorderSessionConfig.session_id !== rs.sessionId ||
+    state.recorderSessionConfig.config_revision !== rs.configRevision
+  ) {
+    clearPersistedRecordingState()
+    clearPersistedEvidenceBuffer()
+    return
+  }
+  const evidenceStored = await chrome.storage.session.get(_SW_EVIDENCE_BUFFER_KEY)
+  const evidence = evidenceStored[_SW_EVIDENCE_BUFFER_KEY] as PersistedEvidenceBuffer | undefined
+  if (
+    evidence?.sessionId === rs.sessionId &&
+    evidence.configRevision === rs.configRevision
+  ) {
+    state.events = Array.isArray(evidence.workflowEvents) ? evidence.workflowEvents : []
+    state.visibleEvidenceEvents = Array.isArray(evidence.visibleEvidenceEvents)
+      ? evidence.visibleEvidenceEvents
+      : []
+  } else {
+    state.events = []
+    state.visibleEvidenceEvents = []
+    clearPersistedEvidenceBuffer()
+  }
+  state.isRecording  = rs.phase !== "stopped"
   state.startedAt    = rs.startedAt
+  state.stoppedAt    = rs.stoppedAt ?? null
   state.originalTabId = rs.originalTabId ?? null
   state.proofBuilderTabId = rs.proofBuilderTabId ?? null
   state.trackedTabIds = new Set()
   if (state.originalTabId !== null) state.trackedTabIds.add(state.originalTabId)
-  state.status       = "recording"
-  state.statusMessage = "Recording resumed after extension restart…"
+  state.videoUploadStatus = rs.videoUploadStatus ?? "none"
+  state.videoUploadError = rs.videoUploadError ?? null
+  state.videoKeyframeCount = rs.videoKeyframeCount ?? 0
+  state.captureSurface = rs.captureSurface ?? null
+  state.recorderTabId = rs.recorderTabId ?? null
+  state.status       = state.isRecording ? "recording" : "stopped"
+  state.targetReadyRevision = state.recorderSessionConfig.config_revision
+  state.statusMessage = state.isRecording
+    ? "Recording resumed after extension restart…"
+    : `Stopped — ${state.events.length} event(s) recovered. Click Send Proof to upload.`
   // Re-broadcast START_CAPTURING so any content scripts that missed the original
   // broadcast (because the SW was dead) begin capturing immediately.
-  void broadcastToAllTabs({ type: "START_CAPTURING" })
+  if (state.isRecording) {
+    void broadcastToAllTabs({ type: "START_CAPTURING" })
+    // An extension reload destroys the recorder page's JavaScript context and
+    // its in-memory MediaRecorder even when the proof session itself restores
+    // successfully. Reconnect (or recreate) that recorder tab as part of the
+    // same persisted session so its Start button observes the restored worker
+    // state; do not wait for a second START_RECORDING request that the already-
+    // recording Website Proof page will correctly never send.
+    openOrRefreshRecorderTab({ active: true })
+  }
 })
 
 // ── Visual frame capture ──────────────────────────────────────────────────────
@@ -348,17 +594,21 @@ async function captureVisualFrame(
   }
 }
 
-/**
- * POST accumulated visual frames to the backend visual-frames endpoint.
- * Fire-and-forget — never throws, never retries, never blocks proof upload.
- */
-async function sendVisualFrames(): Promise<void> {
+type EvidenceUploadResult = { ok: true } | { ok: false; error: string }
+
+/** POST visual frames before the canonical proof upload can advance. */
+async function sendVisualFrames(): Promise<EvidenceUploadResult> {
   if (!state.sessionId || state.visualFrames.length === 0) {
     dbgVE(
       "[VisualFrame] sendVisualFrames skip — session=%s frames=%d",
       state.sessionId || "(none)", state.visualFrames.length,
     )
-    return
+    return { ok: true }
+  }
+  if (!state.authToken) {
+    dbgVE("[VisualFrame] upload skipped — missing recorder auth token")
+    console.warn("VeriBridge: visual frame upload skipped because recorder auth is missing. Restart from the VeriBridge app.")
+    return { ok: false, error: "Visual frame upload is missing recorder authentication." }
   }
 
   const frames = [...state.visualFrames]  // snapshot
@@ -378,18 +628,21 @@ async function sendVisualFrames(): Promise<void> {
   dbgVE("[VisualFrame] POSTing %d frames to backend session=%s", frames.length, state.sessionId)
 
   try {
-    const resp = await fetch(url, { method: "POST", headers, body })
+    let resp = await fetch(url, { method: "POST", headers, body })
+    if (!resp.ok && resp.status >= 500) {
+      await new Promise<void>(resolve => setTimeout(resolve, 800))
+      resp = await fetch(url, { method: "POST", headers, body })
+    }
     if (!resp.ok) {
-      let errBody = ""
-      try { errBody = await resp.text() } catch { /* ignore */ }
-      dbgVE("[VisualFrame] POST error — HTTP %d | %s", resp.status, errBody.slice(0, 200))
+      dbgVE("[VisualFrame] POST error — HTTP %d", resp.status)
+      return { ok: false, error: `Visual frame upload returned HTTP ${resp.status}.` }
     } else {
-      let respBody = ""
-      try { respBody = await resp.text() } catch { /* ignore */ }
-      dbgVE("[VisualFrame] POST success — HTTP %d | %s", resp.status, respBody.slice(0, 200))
+      dbgVE("[VisualFrame] POST success — HTTP %d", resp.status)
+      return { ok: true }
     }
   } catch (err) {
     dbgVE("[VisualFrame] POST network error:", err)
+    return { ok: false, error: "Visual frame upload failed because the backend was unreachable." }
   }
 }
 
@@ -433,7 +686,10 @@ function publicState(): ExtensionState {
   return {
     sessionId: state.sessionId,
     apiUrl: state.apiUrl,
-    authToken: state.authToken,
+    authConfigured: Boolean(state.authToken),
+    configRevision: state.recorderSessionConfig?.config_revision ?? null,
+    claimedSkills: [...(state.recorderSessionConfig?.claimed_skills ?? [])],
+    targetWebsiteUrl: state.recorderSessionConfig?.website_url ?? null,
     isRecording: state.isRecording,
     eventCount: state.events.length,
     startedAt: state.startedAt,
@@ -447,9 +703,14 @@ function publicState(): ExtensionState {
     videoUploadStatus: state.videoUploadStatus,
     videoUploadError: state.videoUploadError,
     videoKeyframeCount: state.videoKeyframeCount,
+    captureSurface: state.captureSurface,
     recorderTabStreamActive: state.recorderTabStreamActive,
     liveCoach: state.liveCoach,
   }
+}
+
+function privateRecorderState(): RecorderPrivateState {
+  return { ...publicState(), authToken: state.authToken }
 }
 
 function broadcastStateUpdate(): void {
@@ -480,6 +741,196 @@ function broadcastProofUploadStarted(): void {
   })
 }
 
+function recorderDiagnostic(
+  event: string,
+  config: RecorderSessionConfig | null,
+  errorCode?: RecorderProtocolErrorCode,
+): void {
+  console.info("[WebsiteProofRecorder]", {
+    event,
+    ...(config ? safeRecorderDiagnostic(config) : {}),
+    state: state.status,
+    timestamp: new Date().toISOString(),
+    ...(errorCode ? { error_code: errorCode } : {}),
+  })
+}
+
+function protocolNack(
+  requestId: string,
+  errorCode: RecorderProtocolErrorCode,
+  message: string,
+): Record<string, unknown> {
+  const config = state.recorderSessionConfig
+  recorderDiagnostic("extension_init_rejected", config, errorCode)
+  return {
+    ok: false,
+    request_id: requestId,
+    session_id: config?.session_id ?? null,
+    config_revision: config?.config_revision ?? null,
+    schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+    build_version: chrome.runtime.getManifest().version,
+    extension_id: chrome.runtime.id,
+    ready: false,
+    error_code: errorCode,
+    message,
+  }
+}
+
+function sameTargetOrigin(expectedUrl: string, actualUrl: string): boolean {
+  try {
+    return new URL(expectedUrl).origin === new URL(actualUrl).origin
+  } catch {
+    return false
+  }
+}
+
+function startRecordingForConfiguredTarget(
+  sessionId: string,
+  configRevision?: number,
+): Record<string, unknown> {
+  const config = state.recorderSessionConfig
+  if (!config || config.session_id !== sessionId) {
+    return {
+      ok: false,
+      error_code: "session_mismatch",
+      error: "This session has not completed the Website Proof recorder handshake. Retry from the proof page.",
+    }
+  }
+  if (configRevision !== undefined && configRevision !== config.config_revision) {
+    return {
+      ok: false,
+      error_code: "revision_mismatch",
+      error: "This start request uses a stale recorder configuration revision.",
+    }
+  }
+  if (state.isRecording) {
+    const sameSession = state.sessionId === sessionId
+    if (sameSession) {
+      // A same-session retry is also the recovery signal for a recorder page
+      // whose MediaRecorder was lost during an extension reload. Reconnect the
+      // page even though the logical proof start is idempotent.
+      openOrRefreshRecorderTab({ active: true })
+    }
+    return {
+      ok: sameSession,
+      idempotent: sameSession,
+      session_id: config.session_id,
+      config_revision: config.config_revision,
+      started_at: state.startedAt,
+      ready: sameSession,
+      ...(!sameSession ? { error_code: "different_session_active" } : {}),
+    }
+  }
+  if (
+    state.targetTabId === null ||
+    state.targetReadyRevision !== config.config_revision
+  ) {
+    return {
+      ok: false,
+      error_code: "recording_not_ready",
+      error: "The configured target content script has not acknowledged readiness.",
+    }
+  }
+
+  applyRecorderSessionConfig(config)
+  state.isRecording = true
+  state.events = []
+  state.visibleEvidenceEvents = []
+  state.visualFrames = []
+  state.lastFrameCaptureMs = 0
+  state.startedAt = new Date().toISOString()
+  state.stoppedAt = null
+  state.status = "recording"
+  state.statusMessage = "Recording…"
+  state.lastUploadError = null
+  state.dismissedForSessionId = ""
+  state.videoUploadStatus = "none"
+  state.videoUploadError = null
+  state.videoKeyframeCount = 0
+  state.captureSurface = null
+  state.recorderTabStreamActive = false
+  state.claimedSkills = [...config.claimed_skills]
+  state.liveCoach = null
+  state.sensitiveWarningSeen = false
+  state.lastSnapshotEventCount = 0
+  state.trackedTabIds = new Set([state.targetTabId])
+  state.trackedTabUrls = new Map()
+  state.originalTabId = state.targetTabId
+  persistRecordingState()
+  flushEvidenceBuffer()
+  void rememberProofBuilderTab()
+  void broadcastToAllTabs({ type: "START_CAPTURING" })
+
+  // A recorder tab can survive an unpacked-extension reload while its JS
+  // context is invalidated. Merely focusing that stale tab leaves
+  // "Start Screen Recording" disabled even though the new worker and target
+  // tab are recording. Refresh a non-capturing recorder tab before reuse so it
+  // polls the current worker/session; never refresh an active MediaRecorder
+  // stream because that would destroy the only in-memory video bytes.
+  openOrRefreshRecorderTab({ active: true })
+  setTimeout(() => { void captureVisualFrame("recording_start") }, 1200)
+  recorderDiagnostic("recording_started", config)
+  return {
+    ok: true,
+    idempotent: false,
+    session_id: config.session_id,
+    config_revision: config.config_revision,
+    started_at: state.startedAt,
+    ready: true,
+  }
+}
+
+function openOrRefreshRecorderTab(
+  options: { active: boolean; onReady?: (tabId: number | null) => void },
+): void {
+  const recorderUrl = chrome.runtime.getURL("recorder.html")
+  const focusWindow = (windowId: number | undefined): void => {
+    if (options.active && windowId !== undefined) {
+      void chrome.windows.update(windowId, { focused: true })
+    }
+  }
+  const createTab = (): void => {
+    chrome.tabs.create({ url: recorderUrl, active: options.active }, (tab) => {
+      state.recorderTabId = tab?.id ?? null
+      persistRecordingState()
+      focusWindow(tab?.windowId)
+      options.onReady?.(tab?.id ?? null)
+    })
+  }
+  const existingTabId = state.recorderTabId
+  if (existingTabId === null) {
+    createTab()
+    return
+  }
+  chrome.tabs.get(existingTabId, (existingTab) => {
+    if (chrome.runtime.lastError || !existingTab) {
+      createTab()
+      return
+    }
+    const activate = (): void => {
+      void chrome.tabs.update(existingTabId, { active: options.active })
+      focusWindow(existingTab.windowId)
+      options.onReady?.(existingTabId)
+    }
+    if (state.recorderTabStreamActive) {
+      activate()
+      return
+    }
+    chrome.tabs.reload(existingTabId, {}, () => {
+      if (chrome.runtime.lastError) {
+        // A tab retained from an invalidated extension context may reject
+        // reload. Re-navigating it to the current extension URL recreates the
+        // recorder page without allocating a duplicate tab.
+        void chrome.tabs.update(existingTabId, { url: recorderUrl, active: options.active })
+        focusWindow(existingTab.windowId)
+        options.onReady?.(existingTabId)
+        return
+      }
+      activate()
+    })
+  })
+}
+
 chrome.runtime.onMessage.addListener(
   (msg: { type: string; payload?: unknown }, sender: chrome.runtime.MessageSender, sendResponse) => {
     switch (msg.type) {
@@ -487,74 +938,254 @@ chrome.runtime.onMessage.addListener(
         sendResponse(publicState())
         break
 
+      case "GET_RECORDER_PRIVATE_STATE": {
+        const recorderPage = chrome.runtime.getURL("recorder.html")
+        if (typeof sender.url !== "string" || !sender.url.startsWith(recorderPage)) {
+          sendResponse({ ok: false, error_code: "authentication_unavailable" })
+          break
+        }
+        sendResponse(privateRecorderState())
+        break
+      }
+
+      case RECORDER_INIT_REQUEST: {
+        const request = (msg.payload ?? {}) as Partial<RecorderInitRequest>
+        const requestId = typeof request.request_id === "string" ? request.request_id : "unknown"
+        if (
+          request.expected_schema_version !== WEBSITE_PROOF_RECORDER_SCHEMA_VERSION ||
+          request.expected_build_version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION ||
+          chrome.runtime.getManifest().version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION
+        ) {
+          sendResponse(protocolNack(
+            requestId,
+            "extension_version_incompatible",
+            "The loaded recorder build is incompatible with this Website Proof page.",
+          ))
+          break
+        }
+        const selection = selectRecorderSessionConfig(
+          state.recorderSessionConfig,
+          request.config,
+          state.isRecording,
+        )
+        if (!selection.accepted || !selection.config) {
+          sendResponse(protocolNack(
+            requestId,
+            selection.error_code ?? "invalid_config",
+            "The recorder session configuration was rejected.",
+          ))
+          break
+        }
+        recorderSessionConfigWriteEpoch += 1
+        applyRecorderSessionConfig(selection.config)
+        state.targetTabId = null
+        state.targetOpenRequestId = null
+        state.targetOpenPending = false
+        state.targetReadyRevision = null
+        if (!state.isRecording) {
+          state.status = "ready"
+          state.statusMessage = "Website Proof session configured."
+        }
+        void persistRecorderSessionConfig(selection.config).then(() => {
+          if (state.isRecording) persistRecordingState()
+          recorderDiagnostic("extension_init_acknowledged", selection.config)
+          sendResponse({
+            ok: true,
+            request_id: requestId,
+            session_id: selection.config?.session_id,
+            config_revision: selection.config?.config_revision,
+            api_base_url: selection.config?.api_base_url,
+            schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+            build_version: chrome.runtime.getManifest().version,
+            extension_id: chrome.runtime.id,
+            ready: true,
+          })
+        }).catch(() => sendResponse(protocolNack(
+          requestId,
+          "storage_write_failed",
+          "The recorder could not persist the session configuration.",
+        )))
+        return true
+      }
+
+      case RECORDER_AUTH_REFRESH_REQUEST: {
+        const payload = (msg.payload ?? {}) as {
+          request_id?: unknown
+          session_id: unknown
+          config_revision: unknown
+          access_token: unknown
+          expires_at?: unknown
+        }
+        const refreshed = refreshWebsiteProofRecorderAuth(state.recorderSessionConfig, payload)
+        if (!refreshed) {
+          sendResponse({
+            ...protocolNack(
+              typeof payload.request_id === "string" ? payload.request_id : "unknown",
+              "session_mismatch",
+              "The auth refresh does not match the active recorder config.",
+            ),
+          })
+          break
+        }
+        recorderSessionConfigWriteEpoch += 1
+        applyRecorderSessionConfig(refreshed)
+        void persistRecorderSessionConfig(refreshed).then(() => {
+          if (state.isRecording) persistRecordingState()
+          sendResponse({
+            ok: true,
+            request_id: payload.request_id,
+            session_id: refreshed.session_id,
+            config_revision: refreshed.config_revision,
+          })
+        }).catch(() => sendResponse(protocolNack(
+          typeof payload.request_id === "string" ? payload.request_id : "unknown",
+          "storage_write_failed",
+          "The recorder could not persist refreshed authentication.",
+        )))
+        return true
+      }
+
+      case RECORDER_TARGET_OPEN_REQUEST: {
+        const request = (msg.payload ?? {}) as Partial<RecorderTargetOpenRequest>
+        const config = state.recorderSessionConfig
+        if (!config || request.session_id !== config.session_id) {
+          sendResponse(protocolNack(
+            typeof request.request_id === "string" ? request.request_id : "unknown",
+            "session_mismatch",
+            "The target request does not match the configured session.",
+          ))
+          break
+        }
+        if (request.config_revision !== config.config_revision) {
+          sendResponse(protocolNack(
+            typeof request.request_id === "string" ? request.request_id : "unknown",
+            "revision_mismatch",
+            "The target request uses a stale recorder revision.",
+          ))
+          break
+        }
+        if (sender.tab?.id === undefined) {
+          sendResponse(protocolNack(
+            typeof request.request_id === "string" ? request.request_id : "unknown",
+            "target_open_failed",
+            "The recorder could not identify the Website Proof tab.",
+          ))
+          break
+        }
+        if (state.targetOpenRequestId === request.request_id) {
+          sendResponse({
+            ok: true,
+            pending: state.targetOpenPending,
+            request_id: request.request_id,
+            session_id: config.session_id,
+            config_revision: config.config_revision,
+            target_tab_id: state.targetTabId,
+          })
+          break
+        }
+        state.proofBuilderTabId = sender.tab.id
+        state.targetOpenRequestId = String(request.request_id)
+        state.targetOpenPending = true
+        state.targetReadyRevision = null
+        recorderDiagnostic("target_open_requested", config)
+        chrome.tabs.create({ url: config.website_url, active: true, openerTabId: sender.tab.id }, (tab) => {
+          if (chrome.runtime.lastError || tab?.id === undefined) {
+            state.targetOpenPending = false
+            sendResponse(protocolNack(
+              String(request.request_id),
+              "target_open_failed",
+              "Chrome could not open the configured target page.",
+            ))
+            return
+          }
+          state.targetTabId = tab.id
+          state.targetOpenPending = false
+          state.originalTabId = tab.id
+          state.statusMessage = "Target opened. Waiting for the recorder content script…"
+          recorderDiagnostic("target_opened", config)
+          sendResponse({
+            ok: true,
+            request_id: request.request_id,
+            session_id: config.session_id,
+            config_revision: config.config_revision,
+            target_tab_id: tab.id,
+          })
+        })
+        return true
+      }
+
+      case "RECORDER_TARGET_CONTENT_READY": {
+        const config = state.recorderSessionConfig
+        const pageUrl = String((msg.payload as { page_url?: unknown } | undefined)?.page_url ?? "")
+        if (!config || sender.tab?.id === undefined || sender.tab.id !== state.targetTabId) {
+          sendResponse({ ok: false, error_code: "target_session_mismatch" })
+          break
+        }
+        if (!sameTargetOrigin(config.website_url, pageUrl)) {
+          sendResponse({ ok: false, error_code: "target_url_mismatch" })
+          break
+        }
+        state.originalTabId = sender.tab.id
+        state.targetReadyRevision = config.config_revision
+        state.status = "ready"
+        state.statusMessage = "Recorder ready"
+        const payload = {
+          request_id: state.targetOpenRequestId,
+          session_id: config.session_id,
+          config_revision: config.config_revision,
+          api_base_url: config.api_base_url,
+          claimed_skills: config.claimed_skills,
+          target_tab_id: sender.tab.id,
+          target_url: pageUrl,
+          ready: true,
+        }
+        recorderDiagnostic("target_content_script_ready", config)
+        if (state.proofBuilderTabId !== null) {
+          void chrome.tabs.sendMessage(state.proofBuilderTabId, {
+            type: "RECORDER_TARGET_READY",
+            payload,
+          }).catch(() => undefined)
+        }
+        sendResponse({ ok: true, ...payload })
+        break
+      }
+
+      case RECORDER_START_REQUEST: {
+        const request = (msg.payload ?? {}) as Partial<RecorderStartRequest>
+        const requestId = typeof request.request_id === "string" ? request.request_id : "unknown"
+        const result = startRecordingForConfiguredTarget(
+          typeof request.session_id === "string" ? request.session_id : "",
+          typeof request.config_revision === "number" ? request.config_revision : undefined,
+        )
+        if (!result.ok) {
+          sendResponse(protocolNack(
+            requestId,
+            (result.error_code as RecorderProtocolErrorCode | undefined) ?? "recording_start_failed",
+            String(result.error ?? "The recorder could not start capture."),
+          ))
+          break
+        }
+        sendResponse({ ...result, request_id: requestId })
+        break
+      }
+
+      // Legacy pages receive an explicit incompatibility response. New pages
+      // never use this partial shape; it exists only to make stale builds
+      // diagnosable during local development.
+      case "SET_RECORDER_AUTH":
+        sendResponse({
+          ok: false,
+          error_code: "extension_version_incompatible",
+          schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+          build_version: chrome.runtime.getManifest().version,
+        })
+        break
+
       case "START_RECORDING": {
-        const { sessionId, apiUrl, authToken, claimedSkills } = msg.payload as {
+        const { sessionId } = msg.payload as {
           sessionId: string
-          apiUrl: string
-          authToken: string
-          claimedSkills?: string[]
         }
-        state.sessionId = sessionId
-        state.apiUrl = (apiUrl || "http://localhost:8000").replace(/\/$/, "")
-        state.authToken = authToken
-        state.isRecording = true
-        state.events = []
-        state.visibleEvidenceEvents = []
-        state.visualFrames = []
-        state.lastFrameCaptureMs = 0
-        state.startedAt = new Date().toISOString()
-        state.stoppedAt = null
-        state.status = "recording"
-        state.statusMessage = "Recording…"
-        state.lastUploadError = null
-        state.dismissedForSessionId = ""  // new session clears any prior dismiss
-        // Reset video upload state for new session
-        state.videoUploadStatus = "none"
-        state.videoUploadError  = null
-        state.videoKeyframeCount = 0
-        state.recorderTabStreamActive = false
-        // Reset live coach state for new session
-        state.claimedSkills = claimedSkills ?? []
-        state.liveCoach = null
-        state.sensitiveWarningSeen = false
-        state.lastSnapshotEventCount = 0
-        // Reset tab tracking — seed with the original tab detected from the page URL.
-        state.trackedTabIds = new Set()
-        state.trackedTabUrls = new Map()
-        if (state.originalTabId !== null) {
-          state.trackedTabIds.add(state.originalTabId)
-        }
-        // Persist recording state so a service-worker restart can restore it.
-        persistRecordingState()
-        void rememberProofBuilderTab()
-        void broadcastToAllTabs({ type: "START_CAPTURING" })
-        // Auto-open the recorder tab so the user can start screen capture immediately.
-        // If the recorder tab is already open (recorderTabId set), focus it instead.
-        const recorderUrl = chrome.runtime.getURL("recorder.html")
-        const existingRecorderTabId = state.recorderTabId
-        if (existingRecorderTabId !== null) {
-          chrome.tabs.get(existingRecorderTabId, (existingTab) => {
-            if (chrome.runtime.lastError || !existingTab) {
-              // Tab was closed — open a fresh one
-              chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-                if (tab?.id !== undefined) state.recorderTabId = tab.id
-              })
-            } else {
-              // Focus the existing recorder tab
-              chrome.tabs.update(existingRecorderTabId, { active: true })
-              if (existingTab.windowId) {
-                chrome.windows.update(existingTab.windowId, { focused: true })
-              }
-            }
-          })
-        } else {
-          chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-            if (tab?.id !== undefined) state.recorderTabId = tab.id
-          })
-        }
-        // DOM-event frame capture at recording start (background helper — not primary)
-        setTimeout(() => { void captureVisualFrame("recording_start") }, 1200)
-        sendResponse({ ok: true })
+        sendResponse(startRecordingForConfiguredTarget(sessionId))
         break
       }
 
@@ -568,9 +1199,20 @@ chrome.runtime.onMessage.addListener(
         state.stoppedAt = new Date().toISOString()
         state.status = "stopped"
         state.statusMessage = `Stopped — ${state.events.length} event(s) captured. Click Send Proof to upload.`
-        // Clear persisted state — recording is explicitly stopped.
-        clearPersistedRecordingState()
+        // A stopped session remains recoverable until the canonical upload ACK.
+        // Flush synchronously so the full buffer is durable the instant capture
+        // ends — a service-worker death before Send Proof must not lose events.
+        persistRecordingState()
+        flushEvidenceBuffer()
         void broadcastToAllTabs({ type: "STOP_CAPTURING" })
+        recorderDiagnostic("recording_stopped", state.recorderSessionConfig)
+        // Kick off screen-recording finalization immediately: a Stop from the
+        // floating bar or popup must never leave the recorder tab capturing
+        // (previously the video upload silently never started, so Send Proof
+        // failed with "Finish uploading the screen recording…").
+        if (state.videoUploadStatus !== "uploaded") {
+          void sendFinalizeRequestToRecorder()
+        }
         sendResponse({ ok: true })
         break
 
@@ -597,6 +1239,16 @@ chrome.runtime.onMessage.addListener(
           sendResponse({ ok: false, reason: "different session active" })
           break
         }
+        const configuredApiUrl = recorderApiUrlForSession(state.recorderSessionConfig, session_id)
+        if (!configuredApiUrl && state.recorderSessionConfig) {
+          // A target/historical URL must never retarget a fresh config.
+          sendResponse({ ok: false, reason: "session config mismatch" })
+          break
+        }
+        if (!configuredApiUrl) {
+          sendResponse({ ok: false, reason: "missing API base for session" })
+          break
+        }
         // Remember which tab holds the VeriBridge proof URL so we can seed
         // trackedTabIds when recording starts.
         if (sender.tab?.id !== undefined) {
@@ -605,14 +1257,12 @@ chrome.runtime.onMessage.addListener(
             state.proofBuilderTabId = sender.tab.openerTabId
           }
         }
-        void chrome.storage.local.set({ currentSessionId: session_id })
         if (!state.isRecording) {
-          state.sessionId = session_id
           state.status = "ready"
           state.statusMessage =
             "Proof session detected from VeriBridge. You can start recording."
         }
-        sendResponse({ ok: true })
+        sendResponse({ ok: true, sessionId: session_id, apiUrl: configuredApiUrl })
         break
       }
 
@@ -672,11 +1322,40 @@ chrome.runtime.onMessage.addListener(
 
       // ── Video upload result from recorder tab ────────────────────────────────
       // Sent by recorder.ts after the WebM video is POSTed to /workflow/video.
+      case "RECORDER_VIDEO_UPLOAD_STARTED": {
+        const startedSession = ((msg.payload ?? {}) as { session_id?: string | null }).session_id
+        if (startedSession && state.sessionId && startedSession !== state.sessionId) {
+          dbgVE(
+            "[Video] ignoring upload-started for stale session %s (active %s)",
+            startedSession, state.sessionId,
+          )
+          sendResponse({ ok: false, ignored: true })
+          break
+        }
+        state.videoUploadStatus = "uploading"
+        state.videoUploadError = null
+        persistRecordingState()
+        broadcastStateUpdate()
+        sendResponse({ ok: true })
+        break
+      }
+
       case "RECORDER_VIDEO_UPLOADED": {
-        const { ok, error, keyframe_count } = (msg.payload ?? {}) as {
+        const { ok, error, keyframe_count, session_id } = (msg.payload ?? {}) as {
           ok?: boolean
           error?: string | null
           keyframe_count?: number
+          session_id?: string | null
+        }
+        // An upload result belongs to the session that was recorded, not to
+        // whichever session is active now — never credit a different session.
+        if (session_id && state.sessionId && session_id !== state.sessionId) {
+          dbgVE(
+            "[Video] ignoring upload result for stale session %s (active %s)",
+            session_id, state.sessionId,
+          )
+          sendResponse({ ok: false, ignored: true })
+          break
         }
         if (ok) {
           state.videoUploadStatus   = "uploaded"
@@ -692,6 +1371,8 @@ chrome.runtime.onMessage.addListener(
           state.videoKeyframeCount  = 0
           dbgVE("[Video] upload failed — %s session=%s", state.videoUploadError, state.sessionId)
         }
+        persistRecordingState()
+        broadcastStateUpdate()
         sendResponse({ ok: true })
         break
       }
@@ -699,12 +1380,22 @@ chrome.runtime.onMessage.addListener(
       // ── Recorder tab stream state (sent by recorder.ts) ─────────────────────
       // Lets the popup show ONE status line instead of duplicating the recorder
       // tab's "Screen capture active" indicator.
-      case "RECORDER_STREAM_STARTED":
+      case "RECORDER_STREAM_STARTED": {
         state.recorderTabStreamActive = true
+        const surface = (msg.payload as { display_surface?: unknown } | undefined)?.display_surface
+        state.captureSurface = typeof surface === "string" && surface ? surface : null
+        persistRecordingState()
         dbgVE("[RecorderStream] stream started — recorderTabStreamActive=true session=%s", state.sessionId)
         // Broadcast to all tracked content scripts so they hide the floating bar
         // (prevents the VeriBridge overlay from appearing inside the screen recording).
         void broadcastToAllTabs({ type: "RECORDER_STREAM_STARTED" })
+        sendResponse({ ok: true })
+        break
+      }
+
+      // Keepalive ping from the recorder tab during an upload — resets the MV3
+      // idle timer so the service worker survives long uploads.
+      case "RECORDER_VIDEO_UPLOAD_PROGRESS":
         sendResponse({ ok: true })
         break
 
@@ -720,26 +1411,10 @@ chrome.runtime.onMessage.addListener(
       // Auto-opened by START_RECORDING above.  This handler is kept so the popup
       // can re-open the tab if the user accidentally closed it.
       case "OPEN_RECORDER_TAB": {
-        const recorderUrl = chrome.runtime.getURL("recorder.html")
-        const existingTabId = state.recorderTabId
-        if (existingTabId !== null) {
-          chrome.tabs.get(existingTabId, (existingTab) => {
-            if (chrome.runtime.lastError || !existingTab) {
-              chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-                if (tab?.id !== undefined) state.recorderTabId = tab.id
-                sendResponse({ ok: true, tabId: tab?.id ?? null })
-              })
-            } else {
-              chrome.tabs.update(existingTabId, { active: true })
-              sendResponse({ ok: true, tabId: existingTabId })
-            }
-          })
-        } else {
-          chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-            if (tab?.id !== undefined) state.recorderTabId = tab.id
-            sendResponse({ ok: true, tabId: tab?.id ?? null })
-          })
-        }
+        openOrRefreshRecorderTab({
+          active: true,
+          onReady: (tabId) => sendResponse({ ok: true, tabId }),
+        })
         return true  // async sendResponse
       }
 
@@ -758,6 +1433,7 @@ chrome.runtime.onMessage.addListener(
       case "WORKFLOW_EVENT":
         if (state.isRecording) {
           state.events.push(msg.payload as WorkflowEvent)
+          persistEvidenceBuffer()
         }
         break
 
@@ -795,6 +1471,7 @@ chrome.runtime.onMessage.addListener(
         if (state.isRecording) {
           const veEvent = msg.payload as VisibleEvidenceEvent
           state.visibleEvidenceEvents.push(veEvent)
+          persistEvidenceBuffer()
           dbgVE("background received event batch",
             "| event_type:", veEvent.event_type,
             "| session_id:", state.sessionId,
@@ -858,6 +1535,7 @@ chrome.tabs.onCreated.addListener((tab) => {
       page_url: redactUrl(tab.url ?? tab.pendingUrl ?? ""),
       page_title: tab.title ?? "",
     })
+    persistEvidenceBuffer()
   }
 })
 
@@ -878,6 +1556,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         page_url: safeUrl,
         page_title: tab.title ?? "",
       })
+      persistEvidenceBuffer()
     }
     state.trackedTabUrls.set(tabId, safeUrl)
   }
@@ -908,6 +1587,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
  */
 async function pushLiveSnapshot(): Promise<void> {
   if (!state.sessionId || !state.isRecording) return
+  if (!state.authToken) return
 
   const events = state.visibleEvidenceEvents
   const allText = events.flatMap(e => e.visible_text_blocks).join(" ")
@@ -946,15 +1626,20 @@ async function pushLiveSnapshot(): Promise<void> {
 }
 
 /**
- * Fire-and-forget upload of accumulated visible evidence events.
- * Never throws; never retries more than once.  A failure here must not block
- * or affect the main proof upload.
+ * Upload accumulated visible evidence before advancing the session upload.
+ * Duplicate delivery is harmless because the backend keys events by the
+ * extension-generated event_id.
  */
-async function sendVisibleEvidence(): Promise<void> {
+async function sendVisibleEvidence(): Promise<EvidenceUploadResult> {
   if (!state.sessionId || state.visibleEvidenceEvents.length === 0) {
     dbgVE("sendVisibleEvidence: skipping — sessionId:", state.sessionId || "(none)",
       "events:", state.visibleEvidenceEvents.length)
-    return
+    return { ok: true }
+  }
+  if (!state.authToken) {
+    dbgVE("sendVisibleEvidence: upload skipped — missing recorder auth token")
+    console.warn("VeriBridge: visible evidence upload skipped because recorder auth is missing. Restart from the VeriBridge app.")
+    return { ok: false, error: "Visible evidence upload is missing recorder authentication." }
   }
   const events = [...state.visibleEvidenceEvents]          // snapshot — don't hold the reference
   const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visible-evidence`
@@ -978,26 +1663,208 @@ async function sendVisibleEvidence(): Promise<void> {
       resp = await attemptFetch()
     }
     if (!resp.ok) {
-      let errorBody = ""
-      try { errorBody = await resp.text() } catch { /* ignore */ }
-      dbgVE("sendVisibleEvidence: POST error — HTTP", resp.status, "|", errorBody.slice(0, 200))
+      dbgVE("sendVisibleEvidence: POST error — HTTP", resp.status)
       console.warn(`VeriBridge: visible evidence upload returned HTTP ${resp.status}`)
+      return { ok: false, error: `Visible evidence upload returned HTTP ${resp.status}.` }
     } else {
-      let responseBody = ""
-      try { responseBody = await resp.text() } catch { /* ignore */ }
-      dbgVE("sendVisibleEvidence: POST success — HTTP", resp.status, "|", responseBody.slice(0, 200))
+      dbgVE("sendVisibleEvidence: POST success — HTTP", resp.status)
+      return { ok: true }
     }
   } catch (err) {
     // Network failure — log and swallow so the main upload is not affected.
     dbgVE("sendVisibleEvidence: network error:", err)
     console.warn("VeriBridge: visible evidence upload failed:", err)
+    return { ok: false, error: "Visible evidence upload failed because the backend was unreachable." }
   }
+}
+
+// ── Screen-recording finalization orchestration ───────────────────────────────
+// The recorder tab owns the only copy of the screen recording. When the user
+// stops or sends the proof from the floating bar / popup, the background must
+// ask the recorder tab to finalize (flush final chunks → persist → upload) and
+// wait for the backend acknowledgment — never hard-fail with an instruction the
+// user cannot act on. Runtime messages reach extension pages (the recorder tab)
+// but not content scripts, so this broadcast targets exactly the recorder.
+
+/** Upper bound for one finalize-and-upload round trip (large blob + slow net). */
+const VIDEO_FINALIZE_WAIT_MS = 150_000
+
+interface RecorderFinalizeResponse {
+  ok?: boolean
+  has_media?: boolean
+  keyframe_count?: number
+  code?: string
+  message?: string
+  no_listener?: boolean
+  timed_out?: boolean
+}
+
+function sendFinalizeRequestToRecorder(): Promise<RecorderFinalizeResponse> {
+  return new Promise((resolve) => {
+    try {
+      // The target session travels with the request so a recorder tab left
+      // over from a PREVIOUS session stays silent instead of answering with
+      // its own (already-completed) upload state — a stale tab answering
+      // first is how a missing recording got reported as uploaded.
+      chrome.runtime.sendMessage({
+        type: "RECORDER_FINALIZE_REQUEST",
+        payload: { session_id: state.sessionId },
+      }, (resp) => {
+        if (chrome.runtime.lastError || resp === undefined || resp === null) {
+          resolve({ no_listener: true })
+          return
+        }
+        resolve(resp as RecorderFinalizeResponse)
+      })
+    } catch {
+      resolve({ no_listener: true })
+    }
+  })
+}
+
+// The status mutates concurrently (RECORDER_VIDEO_UPLOADED runs during awaits),
+// so reads go through this helper to avoid stale control-flow narrowing.
+function videoUploadStatusNow(): InternalState["videoUploadStatus"] {
+  return state.videoUploadStatus
+}
+
+/** Poll the video-upload status (updated by RECORDER_VIDEO_UPLOADED) until settled. */
+async function waitForVideoUploaded(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (videoUploadStatusNow() === "uploaded") return true
+    if (videoUploadStatusNow() === "failed") return false
+    await new Promise<void>((r) => setTimeout(r, 1000))
+  }
+  return videoUploadStatusNow() === "uploaded"
+}
+
+/** Open (or keep) a recorder tab so its load-time recovery can resume a persisted upload. */
+function openRecorderTabForRecovery(): void {
+  const recorderUrl = chrome.runtime.getURL("recorder.html")
+  const createTab = (): void => {
+    chrome.tabs.create({ url: recorderUrl, active: false }, (tab) => {
+      if (tab?.id !== undefined) {
+        state.recorderTabId = tab.id
+        persistRecordingState()
+      }
+    })
+  }
+  const existingTabId = state.recorderTabId
+  if (existingTabId !== null) {
+    chrome.tabs.get(existingTabId, (existingTab) => {
+      if (chrome.runtime.lastError || !existingTab) createTab()
+    })
+  } else {
+    createTab()
+  }
+}
+
+async function ensureVideoUploaded(): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (state.videoUploadStatus === "uploaded") return { ok: true }
+  recorderDiagnostic("video_finalize_requested", state.recorderSessionConfig)
+  const overallDeadline = Date.now() + VIDEO_FINALIZE_WAIT_MS
+
+  // The recorder answers only after its upload settles; cap the wait (and
+  // clear the cap timer on settle so it never lingers).
+  const resp = await new Promise<RecorderFinalizeResponse>((resolve) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) { settled = true; resolve({ timed_out: true }) }
+    }, VIDEO_FINALIZE_WAIT_MS)
+    void sendFinalizeRequestToRecorder().then((r) => {
+      if (!settled) { settled = true; clearTimeout(timer); resolve(r) }
+    })
+  })
+
+  if (resp.ok === true) {
+    if (videoUploadStatusNow() !== "uploaded") {
+      state.videoUploadStatus = "uploaded"
+      state.videoUploadError = null
+      const kf = Number(resp.keyframe_count ?? 0)
+      state.videoKeyframeCount = Number.isFinite(kf) ? kf : 0
+      persistRecordingState()
+    }
+    return { ok: true }
+  }
+
+  if (resp.no_listener === true) {
+    // Recorder tab is closed. Re-open it: on load it recovers any persisted
+    // recording from IndexedDB, resumes the upload, and reports back via
+    // RECORDER_VIDEO_UPLOADED — which the poll below observes.
+    openRecorderTabForRecovery()
+    const remaining = overallDeadline - Date.now()
+    if (remaining > 0 && await waitForVideoUploaded(remaining)) return { ok: true }
+    const error =
+      state.videoUploadError ??
+      "The screen recording has not been uploaded yet. Open the VeriBridge recorder tab, " +
+      "finish or retry the recording upload, then send proof again. [WPR-UPLOAD-ACK-LOST]"
+    return { ok: false, error }
+  }
+
+  if (resp.timed_out === true) {
+    if (videoUploadStatusNow() === "uploaded") return { ok: true }
+    return {
+      ok: false,
+      error:
+        "The screen recording upload did not finish in time. Keep the recorder tab open " +
+        "until the upload completes, then retry. [WPR-UPLOAD-ACK-LOST]",
+    }
+  }
+
+  const message = String(resp.message ?? "The screen recording could not be uploaded.")
+  return { ok: false, error: resp.code ? `${message} [${resp.code}]` : message }
 }
 
 async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error?: string }> {
   if (!state.sessionId) {
     const err = "No session ID. Enter a session ID in the extension popup."
     return { ok: false, error: err }
+  }
+  if (!state.authToken) {
+    state.status = "upload_failed"
+    state.statusMessage = `Upload failed: ${MISSING_RECORDER_AUTH_MESSAGE}`
+    state.lastUploadError = MISSING_RECORDER_AUTH_MESSAGE
+    persistWebsiteProofUploadState({
+      status: "upload_failed",
+      sessionId: state.sessionId,
+      startedAt: new Date().toISOString(),
+      lastEvent: "upload_failed",
+      statusMessage: state.statusMessage,
+      lastUploadError: MISSING_RECORDER_AUTH_MESSAGE,
+    })
+    broadcastStateUpdate()
+    return { ok: false, error: MISSING_RECORDER_AUTH_MESSAGE }
+  }
+  if (state.videoUploadStatus !== "uploaded") {
+    // The recorder tab still holds the capture, an in-flight upload, or a
+    // failed-but-recoverable recording. Finalize it (stop → flush final
+    // chunks → persist → upload with the same idempotency key) and wait for
+    // the backend acknowledgment instead of hard-failing with an instruction
+    // the user cannot act on from the floating bar.
+    state.status = "uploading"
+    state.statusMessage = "Finishing screen recording upload…"
+    state.lastUploadError = null
+    broadcastProofUploadStarted()
+    broadcastStateUpdate()
+    const ensured = await ensureVideoUploaded()
+    if (!ensured.ok) {
+      const replayError = ensured.error
+      state.status = "upload_failed"
+      state.statusMessage = `Upload failed: ${replayError}`
+      state.lastUploadError = replayError
+      persistWebsiteProofUploadState({
+        status: "upload_failed",
+        sessionId: state.sessionId,
+        startedAt: new Date().toISOString(),
+        lastEvent: "upload_failed",
+        statusMessage: state.statusMessage,
+        lastUploadError: replayError,
+      })
+      recorderDiagnostic("proof_upload_blocked", state.recorderSessionConfig, "replay_not_retained")
+      broadcastStateUpdate()
+      return { ok: false, error: replayError }
+    }
   }
 
   state.status = "uploading"
@@ -1014,13 +1881,31 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     await captureVisualFrame("recording_end")
   }
 
-  // Fire-and-forget: send visible evidence events to the backend.
-  // This must not block or affect the main proof upload.
-  void sendVisibleEvidence()
-
-  // Fire-and-forget: send visual frames to the backend.
-  // This must not block or affect the main proof upload.
-  void sendVisualFrames()
+  // Analysis may not begin until both side-evidence contracts have either
+  // persisted their batch or explicitly reported that the batch is empty.
+  const [visibleEvidenceResult, visualFrameResult] = await Promise.all([
+    sendVisibleEvidence(),
+    sendVisualFrames(),
+  ])
+  const failedSideEvidence = [visibleEvidenceResult, visualFrameResult]
+    .find((result): result is { ok: false; error: string } => !result.ok)
+  if (failedSideEvidence) {
+    const errorMsg = failedSideEvidence.error
+    state.status = "upload_failed"
+    state.statusMessage = `Upload failed: ${errorMsg}`
+    state.lastUploadError = errorMsg
+    persistWebsiteProofUploadState({
+      status: "upload_failed",
+      sessionId: state.sessionId,
+      startedAt: new Date().toISOString(),
+      lastEvent: "upload_failed",
+      statusMessage: state.statusMessage,
+      lastUploadError: errorMsg,
+    })
+    broadcastStateUpdate()
+    return { ok: false, error: errorMsg }
+  }
+  recorderDiagnostic("evidence_uploaded", state.recorderSessionConfig)
 
   const trackedUrls = [
     ...new Set(
@@ -1070,6 +1955,13 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
           ?? errorMsg
       } catch { /* keep HTTP status string */ }
 
+      if (resp.status === 401) {
+        // The backend correctly failed closed: the recorder had an expired or
+        // invalid token. Give the user the actionable recovery path instead of
+        // the raw backend auth message.
+        errorMsg = MISSING_RECORDER_AUTH_MESSAGE
+      }
+
       state.status = "upload_failed"
       state.statusMessage = `Upload failed: ${errorMsg}`
       state.lastUploadError = errorMsg
@@ -1097,9 +1989,11 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
       lastUploadError: null,
     })
     broadcastStateUpdate()
+    recorderDiagnostic("proof_uploaded", state.recorderSessionConfig)
     // Proof uploaded — clear persisted recording state so a future SW restart
     // doesn't incorrectly resume a completed recording.
     clearPersistedRecordingState()
+    clearPersistedEvidenceBuffer()
     void chrome.storage.local.set({
       currentSessionId: state.sessionId,
       lastUploadedSessionId: state.sessionId,

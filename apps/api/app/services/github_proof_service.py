@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from app.db.supabase import SupabaseAPIError, SupabaseConnectionError, SupabaseFKError
 from app.schemas.github_proof_submission import (
     GitHubProofPublicResponse,
     GitHubProofSubmissionResponse,
@@ -20,6 +21,7 @@ from app.services.public_work_passport_service import (
 from app.services.github_evidence_service import GitHubRepoRef, parse_github_repo_url
 
 _GITHUB_PROOFS = "github_proof_submissions"
+_USERS = "users"
 _SESSIONS = "extension_proof_sessions"
 _PASSPORTS = "public_work_passports"
 _GRANTS = "evidence_access_grants"
@@ -51,10 +53,17 @@ class GitHubProofService:
         repo_url: str,
         proof_session_id: str | None = None,
         submitted_skill_claims: list[str] | None = None,
+        email: str | None = None,
     ) -> GitHubProofSubmissionResponse:
         repo_ref = self.parse_github_repo_url(repo_url)
         if repo_ref is None:
             raise GitHubProofValidationError("Unsupported GitHub repository URL.")
+        # A freshly signed-up Supabase user has an ``auth.users`` row but no
+        # ``public.users`` row (no signup endpoint/DB trigger creates it), and
+        # ``github_proof_submissions.user_id`` FK-references ``public.users``.
+        # Provision the caller's OWN row before the FK-dependent insert so the
+        # first proof a new user submits does not fail with a 23503 violation.
+        self._ensure_user_row(user_id, email)
         if proof_session_id:
             self._session_for_user(user_id, proof_session_id)
         normalized_repo_url = _repo_root_url(repo_ref)
@@ -330,11 +339,28 @@ class GitHubProofService:
         rows = getattr(result, "data", []) or []
         return rows[0] if rows else None
 
+    def _ensure_user_row(self, user_id: str, email: str | None) -> None:
+        """Provision the authenticated caller's own ``public.users`` row.
+
+        Delegates to the central :mod:`app.services.user_provisioning_service`
+        helper shared by every first-write student flow. Scoped strictly to the
+        caller — no fallback/default user, no cross-tenant access — and a no-op
+        when the row already exists.
+        """
+        from app.services.user_provisioning_service import (
+            ensure_public_user_for_auth_user,
+        )
+
+        ensure_public_user_for_auth_user(self._client, user_id, email)
+
     def _save(self, row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(self._client, dict):
             self._client.setdefault(_GITHUB_PROOFS, {})[str(row["id"])] = row
             return row
-        result = self._client.table(_GITHUB_PROOFS).upsert(make_json_safe(row)).execute()
+        try:
+            result = self._client.table(_GITHUB_PROOFS).upsert(make_json_safe(row)).execute()
+        except Exception as exc:
+            raise _classify_db_error(exc, "UPSERT", _GITHUB_PROOFS) from exc
         rows = getattr(result, "data", []) or []
         if not rows:
             raise RuntimeError("github_proof_submissions upsert returned no data.")
@@ -349,14 +375,38 @@ class GitHubProofService:
         return str((rows[0] if rows else {}).get("email") or "")
 
 
+_FK_MARKERS = ("23503", "foreign key", "foreign-key", "violates foreign key")
+
+
+def _classify_db_error(exc: Exception, op: str, table: str) -> Exception:
+    """Map a raw Supabase/httpx error to a typed, safe service exception.
+
+    Never carries a traceback or secrets into the message — only the operation,
+    table, and exception class name — so the endpoint can surface a clear,
+    non-leaky error instead of a generic 500.
+    """
+    exc_name = type(exc).__name__
+    exc_str = str(exc).lower()
+    if any(marker in exc_str for marker in _FK_MARKERS):
+        return SupabaseFKError(
+            f"{op} {table} failed: a required parent row is missing (foreign-key constraint)."
+        )
+    if isinstance(exc, (ConnectionError, TimeoutError)) or "timed out" in exc_str or "connection" in exc_str:
+        return SupabaseConnectionError(f"{op} {table} failed: network error ({exc_name}).")
+    return SupabaseAPIError(f"{op} {table} failed: Supabase returned an error ({exc_name}).")
+
+
 def submit_github_proof(
     user_id: str,
     repo_url: str,
     client: Any,
     proof_session_id: str | None = None,
     submitted_skill_claims: list[str] | None = None,
+    email: str | None = None,
 ) -> GitHubProofSubmissionResponse:
-    return GitHubProofService(client).submit_github_proof(user_id, repo_url, proof_session_id, submitted_skill_claims)
+    return GitHubProofService(client).submit_github_proof(
+        user_id, repo_url, proof_session_id, submitted_skill_claims, email
+    )
 
 
 def analyze_github_proof(user_id: str, github_proof_id: str, client: Any) -> GitHubProofSubmissionResponse:

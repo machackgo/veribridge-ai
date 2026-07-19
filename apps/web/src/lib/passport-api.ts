@@ -6,6 +6,7 @@
 "use client"
 
 import { fetchAPI } from "./api"
+import { PUBLIC_API_BASE } from "./api-base"
 import {
   withRecruiterTokenHeader,
   clearRecruiterSession,
@@ -14,7 +15,9 @@ import {
 const API = "/api/v1"
 
 /** Base URL for direct fetch calls (recruiter public endpoints don't use Supabase auth). */
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000"
+// Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
+// fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
+const API_BASE_URL = PUBLIC_API_BASE
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
 
@@ -184,6 +187,10 @@ export type GitHubProofResponse = {
   last_analyzed_at?: string | null
   created_at: string
   updated_at: string
+  /** Canonical project relationship — the SAME rows the Passport/report read. */
+  project_id?: string | null
+  project_title?: string | null
+  project_relationship_state?: string
 }
 
 /**
@@ -615,6 +622,17 @@ export type DocumentProofResponse = {
   analysis_json: Record<string, unknown>
   evidence_objects: Array<Record<string, unknown>>
   created_at?: string | null
+  /** Original-file retention (migration 056): opaque artifact id only. */
+  original_retained?: boolean
+  original_artifact_id?: string | null
+  /**
+   * Canonical project relationship — the SAME rows the Passport and reports
+   * read. Attachment status must render from these fields only, never from a
+   * display title, so "shown under a project" can't diverge from "attached".
+   */
+  project_id?: string | null
+  project_title?: string | null
+  project_relationship_state?: string
 }
 
 /**
@@ -632,6 +650,17 @@ export type DocumentProofSyncResult = {
 
 export function listDocumentProofs(): Promise<DocumentProofResponse[]> {
   return apiJson(`${API}/student/document-proofs`)
+}
+
+/**
+ * Deterministic, additive block re-extraction (tables / charts / diagrams /
+ * code blocks / metrics with section+block locators) from the retained
+ * original file. Idempotent; the original analysis is preserved.
+ */
+export function reextractDocumentBlocks(evidenceId: string): Promise<DocumentProofResponse> {
+  return apiJson(`${API}/student/document-proofs/${encodeURIComponent(evidenceId)}/reextract-blocks`, {
+    method: "POST",
+  })
 }
 
 export function submitDocumentProof(body: {
@@ -660,11 +689,6 @@ export async function uploadDocumentProof(
     source_type?: DocumentProofSourceType
   },
 ): Promise<DocumentProofResponse> {
-  const supabase = (await import("@/lib/supabase/client")).createSupabaseBrowserClient()
-  const { data: { session } } = await supabase.auth.getSession()
-  const headers: Record<string, string> = {}
-  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`
-
   const form = new FormData()
   form.append("file", file)
   if (meta?.title) form.append("title", meta.title)
@@ -672,10 +696,12 @@ export async function uploadDocumentProof(
   if (meta?.description) form.append("description", meta.description)
   if (meta?.source_type) form.append("source_type", meta.source_type)
 
-  const res = await fetch(`${API_BASE_URL}${API}/student/document-proofs/upload`, {
+  // fetchAPI attaches the Supabase Bearer token, never sends this private
+  // student call anonymously (signed out → local 401 with a clear message),
+  // and leaves Content-Type to the browser for FormData bodies.
+  const res = await fetchAPI(`${API}/student/document-proofs/upload`, {
     method: "POST",
     body: form,
-    headers,
   })
   if (!res.ok) {
     let message = `Upload failed (HTTP ${res.status}).`
