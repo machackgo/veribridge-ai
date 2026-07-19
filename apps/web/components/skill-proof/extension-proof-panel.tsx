@@ -3,24 +3,18 @@
 import React, { useEffect, useMemo, useReducer, useRef, useState } from "react"
 import type { CSSProperties } from "react"
 import {
+  fetchAPI,
   createExtensionProofSession,
   listExtensionProofSessions,
   createSkillEvidence,
   getExtensionProofSession,
-  getLiveWebsiteCheck,
-  runLiveWebsiteCheck,
   startExtensionProofSession,
   analyzeWorkflowEvidence,
   getWorkflowAnalysis,
-  analyzeExtensionProofGitHub,
-  getExtensionProofGitHubAnalysis,
   getWorkflowPrivacyScan,
-  analyzeProjectDefense,
-  getProjectDefenseAnalysis,
   uploadProjectDefenseMedia,
   transcribeDefenseMedia,
   refineDefenseTranscript,
-  runFinalEvaluation,
   submitOptionalEvidence,
   uploadOptionalEvidenceFile,
   type FinalEvaluationResult,
@@ -49,7 +43,6 @@ import {
   type ProjectDefenseMediaUploadResponse,
   type TranscriptionStatus,
   type ReadinessLevel,
-  discoverWebsiteEvidence,
   type WebsiteEvidenceDiscoveryResponse,
   type DiscoveredEvidenceItem,
   type DiscoveredEvidenceType,
@@ -66,7 +59,6 @@ import {
   type ProofFinalizationResult,
   type VBRProjectResponse,
 } from "@/lib/vbr-api"
-import { VerificationReviewSection, type WebsiteProofReviewSnapshot } from "./verification-review-section"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
 import type {
   ObservedDemonstration,
@@ -339,7 +331,7 @@ const STEPPER_STEPS: Array<{ label: string; statuses: ExtensionProofSessionStatu
   { label: "Recording",             statuses: ["recording"] },
   { label: "Proof Uploaded",        statuses: ["uploaded_pending_analysis"] },
   { label: "Analyzing",             statuses: ["analyzing"] },
-  { label: "Final Verification",    statuses: ["completed"] },
+  { label: "Website Proof Complete", statuses: ["completed"] },
 ]
 
 function stepperIndex(status: ExtensionProofSessionStatus): number {
@@ -943,59 +935,34 @@ function evidenceLabelOverride(key: string, s: EvidenceItemStatus, finalVerifica
   return evidenceLabel(s)
 }
 
-function evidenceFinalStyle(key: string, s: EvidenceItemStatus, finalVerificationReady: boolean): CSSProperties {
-  if (key === "final" && s === "pending" && finalVerificationReady) {
-    // "Ready for Review" — blue tint, distinct from "pending" (gray) and "complete" (green)
-    return { color: "#1d4ed8", background: "#eff6ff", border: "1px solid #bfdbfe" }
-  }
-  return evidenceItemStyle(s)
-}
 
-function evidenceFinalIcon(key: string, s: EvidenceItemStatus, finalVerificationReady: boolean): string {
-  if (key === "final" && s === "pending" && finalVerificationReady) return "→"
-  return evidenceIcon(s)
-}
 
 function EvidenceChecklist({
   status,
   urlType,
   analysis,
-  liveCheck,
-  liveChecking,
-  hasGithubUrl,
-  githubAnalysis,
-  githubAnalyzing,
-  finalEvaluationPresent = false,
-  finalVerificationReady = false,
 }: {
   status: ExtensionProofSessionStatus
   urlType: UrlType
   analysis: WorkflowAnalysisResponse | null
-  liveCheck: LiveWebsiteCheckResponse | null
-  liveChecking: boolean
-  hasGithubUrl: boolean
-  githubAnalysis: ExtensionProofGitHubAnalysisResponse | null
-  githubAnalyzing: boolean
-  finalEvaluationPresent?: boolean
-  /** When true, "Final Verification" shows as "Ready for Review" (blue).
-   *  This is set when readiness score >= 80 and privacy scan is not flagged.
-   *  It does NOT mark Final Verification as complete — that requires a
-   *  separate VeriBridge reviewer step. */
-  finalVerificationReady?: boolean
 }) {
-  const items = buildEvidenceItems(urlType, analysis, liveCheck, liveChecking, hasGithubUrl, githubAnalysis, githubAnalyzing, finalEvaluationPresent)
+  // Website Proof is a focused workflow-evidence experience: GitHub Evidence,
+  // the Live Website Check, and the combined Final Verification belong to the
+  // other proof pipelines / Work Passport synthesis, so they never appear in
+  // this page's checklist.
+  const items = buildEvidenceItems(urlType, analysis, null, false, false, null, false, false)
+    .filter((item) => item.key !== "github" && item.key !== "final" && item.key !== "live_check")
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px" }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-          Verification Checklist
+          Workflow Evidence Checklist
         </span>
       </div>
       <div style={{ padding: "10px 14px", display: "grid", gap: 7 }}>
         {items.map((item) => {
           const s = item.getStatus(status)
-          const isFinalReady = item.key === "final" && s === "pending" && finalVerificationReady
-          const style = evidenceFinalStyle(item.key, s, finalVerificationReady)
+          const style = evidenceItemStyle(s)
           return (
             <div
               key={item.key}
@@ -1006,18 +973,188 @@ function EvidenceChecklist({
             >
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, lineHeight: 1 }}>
-                  {evidenceFinalIcon(item.key, s, finalVerificationReady)}
+                  {evidenceIcon(s)}
                 </span>
-                <span style={{ fontSize: 12, fontWeight: (s === "complete" || isFinalReady) ? 600 : 400 }}>
+                <span style={{ fontSize: 12, fontWeight: s === "complete" ? 600 : 400 }}>
                   {item.label}
                 </span>
               </div>
               <span style={{ fontSize: 11, fontWeight: 600 }}>
-                {evidenceLabelOverride(item.key, s, finalVerificationReady)}
+                {evidenceLabelOverride(item.key, s)}
               </span>
             </div>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+// ── Recorded proof video ──────────────────────────────────────────────────────
+
+type RecordingReplayState =
+  | { kind: "loading" }
+  | { kind: "ready"; objectUrl: string; byteSize: number; mimeType: string | null }
+  | { kind: "processing" }
+  | { kind: "not_retained" }
+  | { kind: "error"; message: string }
+
+const REPLAY_RECHECK_MS = 5_000
+// Bounded silent rechecks (~2 min) while the extension's upload finishes landing.
+const REPLAY_MAX_RECHECKS = 24
+
+/**
+ * Replays the retained recording for this Website Proof session — the primary
+ * artifact of the proof. Playback streams through the owner-gated canonical
+ * replay route (`/api/v1/proofs/website/{session_id}/replay`) via an
+ * authenticated fetch, so no storage path or public URL ever reaches the DOM
+ * and access is re-checked by the backend on every request.
+ *
+ * Honest states: sessions captured before recording retention (or whose upload
+ * never reached a retained terminal state) have no replay — that renders as a
+ * plain `not_retained` end-state, distinct from a transient `error` (Retry).
+ */
+export function WebsiteProofRecordingSection({
+  sessionId,
+  sessionStatus,
+}: {
+  sessionId: string
+  sessionStatus: ExtensionProofSessionStatus
+}) {
+  const [state, setState] = useState<RecordingReplayState>({ kind: "loading" })
+  const objectUrlRef = useRef<string | null>(null)
+  const rechecksLeftRef = useRef(REPLAY_MAX_RECHECKS)
+  const recheckTimerRef = useRef<number | null>(null)
+
+  // A recording can only exist once the proof has been uploaded.
+  const canHaveRecording = (
+    ["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]
+  ).includes(sessionStatus)
+
+  const load = React.useCallback(async (opts?: { silent?: boolean }) => {
+    if (recheckTimerRef.current !== null) {
+      window.clearTimeout(recheckTimerRef.current)
+      recheckTimerRef.current = null
+    }
+    if (!opts?.silent) setState({ kind: "loading" })
+    try {
+      const res = await fetchAPI(`/api/v1/proofs/website/${encodeURIComponent(sessionId)}/replay`)
+      if (res.ok) {
+        const blob = await res.blob()
+        if (blob && blob.size > 0) {
+          const previousUrl = objectUrlRef.current
+          const url = URL.createObjectURL(blob)
+          objectUrlRef.current = url
+          setState({ kind: "ready", objectUrl: url, byteSize: blob.size, mimeType: blob.type || null })
+          // Revoke the previous replay URL only after React has swapped the
+          // <video> source, so the player never requests a dead blob URL.
+          if (previousUrl) window.setTimeout(() => URL.revokeObjectURL(previousUrl), 5_000)
+          return
+        }
+      }
+      if (res.status === 404 || res.ok) {
+        // No retained replay for this session yet. The recorder's upload can
+        // still be landing, so keep a bounded silent recheck running before
+        // settling on the honest terminal "not retained" state.
+        if (rechecksLeftRef.current > 0) {
+          rechecksLeftRef.current -= 1
+          setState({ kind: "processing" })
+          recheckTimerRef.current = window.setTimeout(() => { void load({ silent: true }) }, REPLAY_RECHECK_MS)
+        } else {
+          setState({ kind: "not_retained" })
+        }
+        return
+      }
+      setState({ kind: "error", message: `The recording could not be loaded (HTTP ${res.status}). Retry shortly.` })
+    } catch {
+      setState({ kind: "error", message: "The recording could not be loaded. Check your connection and retry." })
+    }
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!canHaveRecording) return
+    rechecksLeftRef.current = REPLAY_MAX_RECHECKS
+    void load()
+    return () => {
+      if (recheckTimerRef.current !== null) window.clearTimeout(recheckTimerRef.current)
+    }
+  }, [sessionId, canHaveRecording, load])
+
+  // Release the local object URL when the section unmounts.
+  useEffect(() => () => {
+    if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current)
+  }, [])
+
+  if (!canHaveRecording) return null
+
+  return (
+    <div data-testid="website-proof-recording-section" style={{ border: "1px solid var(--line)", borderRadius: 14, background: "var(--bg-2)", overflow: "hidden" }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Recorded Proof Video</div>
+          <p style={{ margin: "3px 0 0", fontSize: 11, color: "var(--ink-2)", lineHeight: 1.6 }}>
+            The recorded walkthrough this Website Proof&apos;s evidence is derived from.
+          </p>
+        </div>
+        <span data-testid="website-proof-recording-privacy" style={{ fontSize: 10, color: "#166534", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 999, padding: "3px 8px", fontWeight: 700 }}>
+          Private retained evidence
+        </span>
+      </div>
+      <div style={{ padding: "14px 16px" }}>
+        {state.kind === "loading" && (
+          <div data-testid="website-proof-recording-loading" style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+            Loading secure replay…
+          </div>
+        )}
+
+        {state.kind === "ready" && (
+          <div style={{ display: "grid", gap: 9 }}>
+            <video
+              data-testid="website-proof-recording-video"
+              controls
+              preload="metadata"
+              playsInline
+              src={state.objectUrl}
+              style={{ width: "100%", borderRadius: 10, background: "#000", display: "block", maxHeight: 480 }}
+            >
+              Your browser cannot play this recording.
+            </video>
+            <span style={{ fontSize: 10, color: "var(--muted)" }}>
+              Owner-only replay — access is re-checked on every request. {Math.max(1, Math.round(state.byteSize / (1024 * 1024)))} MB
+            </span>
+          </div>
+        )}
+
+        {state.kind === "processing" && (
+          <div data-testid="website-proof-recording-processing" style={{ fontSize: 12, color: "#1e40af", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "12px 14px", lineHeight: 1.6 }}>
+            The secure recording upload is still finishing. The replay will appear here as soon as the retained video is ready.
+          </div>
+        )}
+
+        {state.kind === "not_retained" && (
+          <div data-testid="website-proof-recording-unavailable" style={{ fontSize: 12, color: "var(--ink-2)", background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", lineHeight: 1.6 }}>
+            A replayable recording was not retained for this proof. This happens for sessions captured before
+            recording retention was enabled, or when the recording upload did not complete. The workflow
+            evidence below remains valid — record a new Website Proof to capture a replayable walkthrough.
+          </div>
+        )}
+
+        {state.kind === "error" && (
+          <div data-testid="website-proof-recording-error" role="alert" style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "10px 14px" }}>
+              {state.message}
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => void load()}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1076,8 +1213,8 @@ function StatusMessage({
   if (status === "uploaded_pending_analysis") {
     const title = local ? "✓ Local workflow evidence uploaded" : "✓ Website workflow evidence uploaded"
     const body = local
-      ? "Local workflow proof uploaded. This demonstrates the project running in the student's local environment. Recruiters cannot directly open the localhost URL, so GitHub evidence, setup instructions, or deployment are recommended for stronger verification."
-      : "Workflow proof uploaded. GitHub analysis and final verification are still pending."
+      ? "Local workflow proof uploaded. This demonstrates the project running in your local environment. Run the workflow analysis below to review the recorded evidence."
+      : "Workflow proof uploaded. Run the workflow analysis below to review the recorded evidence."
 
     return (
       <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 8 }}>
@@ -1124,7 +1261,7 @@ function StatusMessage({
 
 // ── Live Website Check components ────────────────────────────────────────────
 
-function LiveWebsiteCheckInProgress({
+export function LiveWebsiteCheckInProgress({
   simProgress,
   simStageIdx,
 }: {
@@ -1511,10 +1648,13 @@ function SourceScoreBadge({
     : source.status === "missing" ? "#fecaca"
     : "#e2e8f0"
 
-  // Show "partial evidence" label for partial status to match task intent
-  const scoreLabel = source.status === "partial"
-    ? `partial — ${source.score}/100`
-    : `${source.score}/100`
+  // Qualitative evidence labels only — the Website Proof page never presents
+  // numeric trust/confidence scores. Scoring synthesis lives in the Passport /
+  // VBR report layer, and model confidence is not candidate ability.
+  const scoreLabel = source.status === "pass" ? "strong evidence"
+    : source.status === "partial" ? "partial evidence"
+    : source.status === "missing" ? "insufficient evidence"
+    : source.status
 
   return (
     <span title={source.notes || source.status} style={{ fontSize: 9, fontWeight: 700,
@@ -1945,7 +2085,7 @@ function AdvancedVisualReasoningSection({
           textTransform: "uppercase", color: "#6d28d9" }}>
           Advanced Visual Reasoning
         </div>
-        <SourceScoreBadge label="Qwen Score" source={sourceScore} />
+        <SourceScoreBadge label="Visual reasoning" source={sourceScore} />
       </div>
 
       {/* Provider + status + frame count */}
@@ -2168,7 +2308,7 @@ function VideoKeyframeEvidenceSection({
           Video / Keyframe Evidence
         </span>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <SourceScoreBadge label="Keyframe Score" source={keyframeScore} />
+          <SourceScoreBadge label="Keyframes" source={keyframeScore} />
           {/* Upload status chip */}
           {videoUploaded ? (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
@@ -2257,7 +2397,7 @@ function VideoKeyframeEvidenceSection({
         {/* OCR/Visual provider status */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 10, color: "#64748b", minWidth: 130 }}>OCR/visual analysis</span>
-          <SourceScoreBadge label="OCR Score" source={ocrScore} />
+          <SourceScoreBadge label="OCR text" source={ocrScore} />
           {visualStatus === "analyzed" ? (
             <span style={{ fontSize: 9, fontWeight: 700, padding: "2px 7px", borderRadius: 4,
               background: "#f0fdf4", color: "#166534", border: "1px solid #bbf7d0" }}>
@@ -2715,6 +2855,18 @@ function ObservedDemonstrationTimeline({
   )
 }
 
+// Historical analyses (stored before the qualitative-labels change) embed a
+// numeric "Evidence strength: NN/100" sentence in their narrative text.
+// Present it qualitatively at render time — the stored evidence itself is not
+// rewritten, only this page's presentation of it.
+function presentAnalysisNarrative(text: string): string {
+  return text.replace(/Evidence strength: (\d+)\s*\/\s*100/g, (_m, n) => {
+    const score = Number(n)
+    const label = score >= 70 ? "strong" : score >= 40 ? "moderate" : "limited"
+    return `Evidence strength: ${label}`
+  })
+}
+
 function WorkflowAnalysisCard({
   analysis,
   finalEvaluation,
@@ -2737,14 +2889,10 @@ function WorkflowAnalysisCard({
           <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>AI Reviewed · {analysisTypeLabel}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <SourceScoreBadge label="Website Workflow Score" source={workflowSourceScore(finalEvaluation ?? null, analysis)} />
-          {/* Evidence strength score */}
-          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ fontSize: 11, color: "#3b82f6" }}>Evidence Strength</span>
-            <span style={{ fontSize: 14, fontWeight: 800, color: "#1e40af" }}>
-              {analysis.evidence_strength_score}<span style={{ fontSize: 10, fontWeight: 500 }}>/100</span>
-            </span>
-          </div>
+          {/* Qualitative evidence labels only — numeric workflow/evidence-strength
+              scores are never shown on the Website Proof page; combined scoring
+              lives in the Passport / VBR report synthesis. */}
+          <SourceScoreBadge label="Workflow evidence" source={workflowSourceScore(finalEvaluation ?? null, analysis)} />
           {/* Confidence badge */}
           <span style={{
             fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", padding: "3px 9px",
@@ -2773,7 +2921,7 @@ function WorkflowAnalysisCard({
         {/* Summary */}
         <AnalysisSection title="Summary">
           <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7 }}>
-            {analysis.workflow_summary}
+            {presentAnalysisNarrative(analysis.workflow_summary)}
           </p>
         </AnalysisSection>
 
@@ -2808,7 +2956,7 @@ function WorkflowAnalysisCard({
         <AnalysisSection title="Recruiter Summary">
           <div style={{ background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
             <p style={{ margin: 0, fontSize: 12, color: "var(--ink-2)", lineHeight: 1.7, fontStyle: "italic" }}>
-              {analysis.recruiter_summary}
+              {presentAnalysisNarrative(analysis.recruiter_summary)}
             </p>
           </div>
         </AnalysisSection>
@@ -2829,12 +2977,21 @@ function WorkflowAnalysisCard({
           </div>
         )}
 
-        {/* Improvement suggestions */}
-        {analysis.student_improvement_suggestions.length > 0 && (
-          <AnalysisSection title="Suggestions to Strengthen Your Proof">
-            <BulletList items={analysis.student_improvement_suggestions} color="#1e40af" />
-          </AnalysisSection>
-        )}
+        {/* Improvement suggestions — Website-Proof-scoped only. Historical
+            analyses stored cross-proof advice (run GitHub analysis / live
+            check / defense); those belong to other pipelines and are filtered
+            from this page's presentation. */}
+        {(() => {
+          const websiteScoped = analysis.student_improvement_suggestions.filter(
+            (s) => !/github|live website check|project defense/i.test(s),
+          )
+          if (websiteScoped.length === 0) return null
+          return (
+            <AnalysisSection title="Suggestions to Strengthen Your Proof">
+              <BulletList items={websiteScoped} color="#1e40af" />
+            </AnalysisSection>
+          )
+        })()}
 
         {/* Human review needed */}
         {analysis.human_review_needed && (
@@ -2847,8 +3004,8 @@ function WorkflowAnalysisCard({
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
           <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
             Workflow analysis is based on browser events, DOM evidence, visual frames, video
-            keyframes, and sequence analysis where available. Final verification remains pending
-            until GitHub evidence, live website check (if applicable), and all evidence steps are complete.
+            keyframes, and sequence analysis where available. This is a workflow-evidence analysis
+            of the recorded website walkthrough — not a combined VeriBridge verification score.
           </p>
         </div>
       </div>
@@ -4697,7 +4854,7 @@ function CombinedEvidenceSummaryCard({
 
 // ── GitHub Analysis components ────────────────────────────────────────────────
 
-function GitHubAnalysisInProgress({
+export function GitHubAnalysisInProgress({
   simProgress,
   simStageIdx,
 }: {
@@ -4759,7 +4916,7 @@ function confidenceScoreToLabel(score: number): { label: string; bg: string; col
   return { label: "INSUFFICIENT", bg: "#f1f5f9", color: "#475569", border: "#e2e8f0" }
 }
 
-function GitHubAnalysisCard({
+export function GitHubAnalysisCard({
   analysis,
   onRerun,
   sourceScore,
@@ -5103,7 +5260,7 @@ function detectSkillTip(
   }
 }
 
-function computeReadinessReport({
+export function computeReadinessReport({
   sessionStatus,
   urlType,
   claimedSkills,
@@ -6081,7 +6238,7 @@ const TRANSCRIPTION_STATUS_CONFIG: Record<string, { label: string; color: string
   analysis_complete:     { label: "Analysis complete",                                         color: "#065f46", bg: "#f0fdf4", border: "#d1fae5" },
 }
 
-function ProjectDefenseSection({
+export function ProjectDefenseSection({
   session,
   defenseAnalysis,
   defenseTranscript,
@@ -7185,7 +7342,7 @@ function EvidenceDiscoveryCard({ item }: { item: DiscoveredEvidenceItem }) {
   )
 }
 
-function EvidenceDiscoveryResults({ discovery }: { discovery: WebsiteEvidenceDiscoveryResponse }) {
+export function EvidenceDiscoveryResults({ discovery }: { discovery: WebsiteEvidenceDiscoveryResponse }) {
   if (discovery.error && !["fetch_timeout", "fetch_error", "http_error", "non_html_response"].includes(discovery.error)) {
     return (
       <div style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px" }}>
@@ -7369,21 +7526,6 @@ export function ExtensionProofPanel({
     transitionWebsiteProofProgress({ type: "reset" })
     setPrivacyAcknowledged(false)
     setPrivacyScan(null)
-    setGithubAnalysis(null)
-    setGithubAnalyzing(false)
-    setGithubAnalyzeError(null)
-    setLiveCheck(null)
-    setLiveChecking(false)
-    setLiveCheckError(null)
-    setDefenseAnalysis(null)
-    setDefenseTranscript("")
-    setDefenseAnalyzing(false)
-    setDefenseAnalyzeError(null)
-    setFinalEval(null)
-    setFinalEvalRunning(false)
-    setDiscovery(null)
-    setDiscovering(false)
-    setDiscoveryError(null)
     setResumeCandidate(null)
     setSaveState("not_saved")
     setSaveError(null)
@@ -7487,39 +7629,6 @@ export function ExtensionProofPanel({
   const [privacyScan, setPrivacyScan] = useState<WorkflowPrivacyScanResponse | null>(null)
   const analyzeTimeoutRef               = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // GitHub evidence analysis state
-  const [githubAnalysis, setGithubAnalysis]       = useState<ExtensionProofGitHubAnalysisResponse | null>(null)
-  const [githubAnalyzing, setGithubAnalyzing]     = useState(false)
-  const [githubAnalyzeError, setGithubAnalyzeError] = useState<string | null>(null)
-  const [githubSimProgress, setGithubSimProgress] = useState(0)
-  const [githubSimStageIdx, setGithubSimStageIdx] = useState(0)
-  const githubAnalyzeTimeoutRef                   = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Live website check state
-  const [liveCheck, setLiveCheck]           = useState<LiveWebsiteCheckResponse | null>(null)
-  const [liveChecking, setLiveChecking]     = useState(false)
-  const [liveCheckError, setLiveCheckError] = useState<string | null>(null)
-  const [liveCheckProgress, setLiveCheckProgress] = useState(0)
-  const [liveCheckStageIdx, setLiveCheckStageIdx]  = useState(0)
-  const liveCheckTimeoutRef                 = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // Project defense transcript state
-  const [defenseAnalysis, setDefenseAnalysis] = useState<ProjectDefenseAnalysisResponse | null>(null)
-  const [defenseTranscript, setDefenseTranscript] = useState("")
-  const [defenseAnalyzing, setDefenseAnalyzing] = useState(false)
-  const [defenseAnalyzeError, setDefenseAnalyzeError] = useState<string | null>(null)
-  const [defenseSimProgress, setDefenseSimProgress] = useState(0)
-  const [defenseSimStageIdx, setDefenseSimStageIdx] = useState(0)
-
-  // Final evidence evaluation state
-  const [finalEval, setFinalEval]         = useState<FinalEvaluationResult | null>(null)
-  const [finalEvalRunning, setFinalEvalRunning] = useState(false)
-
-  // Website evidence discovery state
-  const [discovery, setDiscovery]           = useState<WebsiteEvidenceDiscoveryResponse | null>(null)
-  const [discovering, setDiscovering]       = useState(false)
-  const [discoveryError, setDiscoveryError] = useState<string | null>(null)
-
   // Derived from form.websiteUrl — available in both form and session_active steps.
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
@@ -7558,8 +7667,14 @@ export function ExtensionProofPanel({
             clearActiveExtensionProofSession(restored.id)
           }
         })
-        .catch(() => {
-          if (!cancelled) {
+        .catch((err: unknown) => {
+          if (cancelled) return
+          // Only a definitive not-found removes the recovery pointer. A
+          // transient failure (network outage, auth still hydrating after a
+          // hard reload, backend busy) must NOT delete it — that would orphan
+          // an unfinished session the user can otherwise resume.
+          const message = err instanceof Error ? err.message : ""
+          if (message.includes("not found")) {
             clearActiveExtensionProofSession(draft.sessionId)
           }
         })
@@ -7743,104 +7858,12 @@ export function ExtensionProofPanel({
   // displays stale data from the wrong session.
   const currentSessionAnalysis: WorkflowAnalysisResponse | null =
     workflowAnalysis?.proof_session_id === session?.id ? workflowAnalysis : null
-  const finalEvalForDisplay = useMemo(
-    () => stabilizeFinalEvaluationForMvp(
-      mergeVisibleSourceScores(finalEval, currentSessionAnalysis, defenseAnalysis),
-      urlType,
-    ),
-    [finalEval, currentSessionAnalysis, defenseAnalysis, urlType],
-  )
 
   useEffect(() => {
     if (currentSessionAnalysis) {
       transitionWebsiteProofProgress({ type: "workflow_report_exists" })
     }
   }, [currentSessionAnalysis?.id])
-
-  // ── Verification Readiness Report (computed from existing state) ──────────
-  // Re-computed whenever any piece of evidence changes. No extra API call needed.
-  const readinessReport = useMemo<ReadinessReport | null>(() => {
-    if (!session) return null
-    const uploadedOrLater: ExtensionProofSessionStatus[] = [
-      "uploaded_pending_analysis", "analyzing", "completed",
-    ]
-    if (!uploadedOrLater.includes(session.status)) return null
-    return computeReadinessReport({
-      sessionStatus: session.status,
-      urlType,
-      claimedSkills: form.skillName.trim()
-        ? form.skillName.split(",").map(s => s.trim()).filter(Boolean)
-        : [],
-      workflowAnalysis: currentSessionAnalysis,
-      liveCheck,
-      githubAnalysis,
-      privacyScan,
-      defenseAnalysis,
-    })
-  }, [
-    session?.id, session?.status,
-    urlType,
-    form.skillName,
-    currentSessionAnalysis?.id,
-    liveCheck?.id,
-    githubAnalysis?.id,
-    privacyScan?.status,
-    privacyScan?.redacted_fields_count,
-    defenseAnalysis?.id,
-    defenseAnalysis?.overall_defense_score,
-    defenseAnalysis?.privacy_scan_status,
-  ])
-
-  const reviewSnapshot = useMemo<WebsiteProofReviewSnapshot | null>(() => {
-    if (!session) return null
-    const claimedSkills = form.skillName.trim()
-      ? form.skillName.split(",").map(s => s.trim()).filter(Boolean)
-      : []
-    const source = (key: string) => sourceScoreFromEvaluation(finalEvalForDisplay, key)
-    const workflowScore = workflowSourceScore(finalEvalForDisplay, currentSessionAnalysis)
-    const videoScore = videoKeyframeSourceScore(finalEvalForDisplay, currentSessionAnalysis)
-    const ocrScore = ocrSourceScore(finalEvalForDisplay, currentSessionAnalysis)
-    const domScore = domSourceScore(finalEvalForDisplay, currentSessionAnalysis)
-    const qwenScore = qwenSourceScore(finalEvalForDisplay, currentSessionAnalysis)
-    const githubScore = source("github")
-    const defenseScore = projectDefenseSourceScore(finalEvalForDisplay, defenseAnalysis)
-    const documentScore = source("uploaded_documents")
-    const recommendation =
-      finalEvalForDisplay?.final_student_summary ||
-      readinessReport?.recruiter_summary ||
-      "Evidence package not yet fully scored."
-    return {
-      proofSessionId: session.id,
-      websiteUrlType: isLocal_(urlType) ? "local" : urlType === "live_deployed_url" ? "live" : urlType === "invalid_url" ? "invalid" : "private",
-      claimedSkills,
-      workflowEvidenceStatus: session.status,
-      workflowAnalysisScore: workflowScore?.score ?? currentSessionAnalysis?.evidence_strength_score ?? null,
-      videoKeyframeScore: videoScore?.score ?? null,
-      ocrScore: ocrScore?.score ?? null,
-      domScore: domScore?.score ?? null,
-      qwenVisualReasoningScore: qwenScore?.score ?? null,
-      githubStatus: githubScore?.status ?? (form.githubUrl.trim() ? "not_run" : "not_provided"),
-      githubScore: githubScore?.score ?? null,
-      projectDefenseScore: defenseScore?.score ?? null,
-      documentEvidenceScore: documentScore?.score ?? null,
-      finalEvidenceScore: finalEvalForDisplay?.final_score ?? readinessReport?.readiness_score ?? null,
-      privacyScanStatus: privacyScan?.status ?? "not_run",
-      generatedRecommendation: recommendation,
-      timestamp: new Date().toISOString(),
-    }
-  }, [
-    session?.id,
-    session?.status,
-    form.skillName,
-    form.githubUrl,
-    urlType,
-    finalEvalForDisplay,
-    currentSessionAnalysis,
-    defenseAnalysis,
-    readinessReport?.readiness_score,
-    readinessReport?.recruiter_summary,
-    privacyScan?.status,
-  ])
 
   useEffect(() => {
     const previousLifecycle = previousWorkflowProgressLifecycleRef.current
@@ -7922,33 +7945,6 @@ export function ExtensionProofPanel({
     }).catch(() => undefined)
   }, [session?.id, session?.status, workflowAnalysis?.proof_session_id])
 
-  // ── Auto-fetch live website check ─────────────────────────────────────────
-  // When session reaches completed and url is live, load any persisted check.
-  useEffect(() => {
-    if (!session) return
-    if (session.status !== "completed") return
-    if (liveCheck) return
-    if (!isLiveCheckApplicable(urlType)) return
-    void getLiveWebsiteCheck(session.id).then((r) => {
-      if (r) setLiveCheck(r)
-    }).catch(() => undefined)
-  }, [session?.id, session?.status, liveCheck, urlType])
-
-  // ── Auto-fetch GitHub analysis ────────────────────────────────────────────
-  // When session has proof uploaded and a GitHub URL, load any persisted result.
-  useEffect(() => {
-    if (!session) return
-    if (!form.githubUrl.trim()) return
-    if (githubAnalysis) return
-    const uploadedOrLater: ExtensionProofSessionStatus[] = [
-      "uploaded_pending_analysis", "analyzing", "completed",
-    ]
-    if (!uploadedOrLater.includes(session.status)) return
-    void getExtensionProofGitHubAnalysis(session.id).then((r) => {
-      if (r) setGithubAnalysis(r)
-    }).catch(() => undefined)
-  }, [session?.id, session?.status, githubAnalysis, form.githubUrl])
-
   // ── Auto-fetch privacy scan ───────────────────────────────────────────────
   // Load the scan result once proof is uploaded (scan runs automatically on upload).
   useEffect(() => {
@@ -7962,106 +7958,6 @@ export function ExtensionProofPanel({
       if (r) setPrivacyScan(r)
     }).catch(() => undefined)
   }, [session?.id, session?.status, privacyScan])
-
-  // ── Auto-fetch project defense analysis ───────────────────────────────────
-  // Load a previously submitted defense transcript on modal load.
-  useEffect(() => {
-    if (!session) return
-    if (defenseAnalysis) return
-    const uploadedOrLater: ExtensionProofSessionStatus[] = [
-      "uploaded_pending_analysis", "analyzing", "completed",
-    ]
-    if (!uploadedOrLater.includes(session.status)) return
-    void getProjectDefenseAnalysis(session.id).then((r) => {
-      if (r) {
-        setDefenseAnalysis(r)
-        setDefenseTranscript(r.transcript_text)
-      }
-    }).catch(() => undefined)
-  }, [session?.id, session?.status, defenseAnalysis])
-
-  // ── Auto-run final evaluator when workflow analysis is ready ─────────────
-  // Re-runs when GitHub or live check results arrive to refresh scores.
-  const currentSessionAnalysisId = currentSessionAnalysis?.id ?? null
-  useEffect(() => {
-    if (!session) return
-    if (!currentSessionAnalysis) return
-    if (finalEvalRunning) return
-    void handleRunFinalEval()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionAnalysisId, githubAnalysis?.id, liveCheck?.id])
-
-  // ── Simulated progress for live check ────────────────────────────────────
-  useEffect(() => {
-    if (!liveChecking) {
-      setLiveCheckProgress(0)
-      setLiveCheckStageIdx(0)
-      return
-    }
-    const schedule = [
-      { delay: 200,  stageIdx: 0, progress: 15 },
-      { delay: 700,  stageIdx: 1, progress: 35 },
-      { delay: 1400, stageIdx: 2, progress: 55 },
-      { delay: 2200, stageIdx: 3, progress: 75 },
-      { delay: 3500, stageIdx: 4, progress: 90 },
-    ]
-    const timers = schedule.map(({ delay, stageIdx, progress }) =>
-      setTimeout(() => {
-        setLiveCheckStageIdx(stageIdx)
-        setLiveCheckProgress(progress)
-      }, delay)
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [liveChecking])
-
-  // ── Simulated progress for GitHub analysis ────────────────────────────────
-  useEffect(() => {
-    if (!githubAnalyzing) {
-      setGithubSimProgress(0)
-      setGithubSimStageIdx(0)
-      return
-    }
-    const schedule = [
-      { delay: 250,  stageIdx: 0, progress: 15 },
-      { delay: 800,  stageIdx: 1, progress: 30 },
-      { delay: 1600, stageIdx: 2, progress: 45 },
-      { delay: 2600, stageIdx: 3, progress: 60 },
-      { delay: 3700, stageIdx: 4, progress: 75 },
-      { delay: 5000, stageIdx: 5, progress: 85 },
-      { delay: 6500, stageIdx: 6, progress: 92 },
-    ]
-    const timers = schedule.map(({ delay, stageIdx, progress }) =>
-      setTimeout(() => {
-        setGithubSimStageIdx(stageIdx)
-        setGithubSimProgress(progress)
-      }, delay)
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [githubAnalyzing])
-
-  // ── Simulated progress for defense analysis ────────────────────────────────
-  useEffect(() => {
-    if (!defenseAnalyzing) {
-      setDefenseSimProgress(0)
-      setDefenseSimStageIdx(0)
-      return
-    }
-    const schedule = [
-      { delay: 200,  stageIdx: 0, progress: 18 },
-      { delay: 700,  stageIdx: 1, progress: 35 },
-      { delay: 1400, stageIdx: 2, progress: 52 },
-      { delay: 2200, stageIdx: 3, progress: 68 },
-      { delay: 3200, stageIdx: 4, progress: 82 },
-      { delay: 4200, stageIdx: 5, progress: 93 },
-    ]
-    const timers = schedule.map(({ delay, stageIdx, progress }) =>
-      setTimeout(() => {
-        setDefenseSimStageIdx(stageIdx)
-        setDefenseSimProgress(progress)
-      }, delay)
-    )
-    return () => timers.forEach(clearTimeout)
-  }, [defenseAnalyzing])
 
   // ── Analyze workflow ──────────────────────────────────────────────────────
 
@@ -8118,130 +8014,6 @@ export function ExtensionProofPanel({
       transitionWebsiteProofProgress({ type: "analysis_failed" })
     } finally {
       if (!cancelled) setAnalyzing(false)
-    }
-  }
-
-  // ── Run live website check ────────────────────────────────────────────────
-
-  async function handleLiveCheck() {
-    if (!session) return
-    setLiveChecking(true)
-    setLiveCheckError(null)
-    setLiveCheck(null)
-
-    let cancelled = false
-    const timeoutId = setTimeout(() => {
-      cancelled = true
-      setLiveChecking(false)
-      setLiveCheckError("Live website check timed out after 30 seconds. Please retry.")
-      if (liveCheckTimeoutRef.current === timeoutId) liveCheckTimeoutRef.current = null
-    }, 30_000)
-    liveCheckTimeoutRef.current = timeoutId
-
-    try {
-      const result = await runLiveWebsiteCheck(session.id, form.websiteUrl.trim())
-      if (cancelled) return
-      clearTimeout(timeoutId)
-      liveCheckTimeoutRef.current = null
-      setLiveCheck(result)
-    } catch (err) {
-      if (cancelled) return
-      clearTimeout(timeoutId)
-      liveCheckTimeoutRef.current = null
-      setLiveCheckError(err instanceof Error ? err.message : "Live website check failed. Please try again.")
-    } finally {
-      if (!cancelled) setLiveChecking(false)
-    }
-  }
-
-  // ── Run GitHub evidence analysis ──────────────────────────────────────────
-
-  async function handleGitHubAnalysis() {
-    if (!session) return
-    const githubUrl = form.githubUrl.trim()
-    if (!githubUrl) return
-
-    setGithubAnalyzing(true)
-    setGithubAnalyzeError(null)
-    setGithubAnalysis(null)
-
-    let cancelled = false
-    const timeoutId = setTimeout(() => {
-      cancelled = true
-      setGithubAnalyzing(false)
-      setGithubAnalyzeError("GitHub analysis timed out after 90 seconds. Please retry.")
-      if (githubAnalyzeTimeoutRef.current === timeoutId) githubAnalyzeTimeoutRef.current = null
-    }, 90_000)
-    githubAnalyzeTimeoutRef.current = timeoutId
-
-    try {
-      const result = await analyzeExtensionProofGitHub(session.id, githubUrl, parseSkills(), {
-        liveWebsiteUrl: liveCheck?.final_url ?? form.websiteUrl.trim(),
-        livePageTitle: liveCheck?.page_title ?? "",
-        proofObjective: form.proofObjective.trim(),
-      })
-      if (cancelled) return
-      clearTimeout(timeoutId)
-      githubAnalyzeTimeoutRef.current = null
-      setGithubAnalysis(result)
-    } catch (err) {
-      if (cancelled) return
-      clearTimeout(timeoutId)
-      githubAnalyzeTimeoutRef.current = null
-      setGithubAnalyzeError(err instanceof Error ? err.message : "GitHub analysis failed. Please try again.")
-    } finally {
-      if (!cancelled) setGithubAnalyzing(false)
-    }
-  }
-
-  // ── Run final evidence evaluation ─────────────────────────────────────────
-  // Auto-triggered when workflow analysis is available; re-runs after GitHub/live check.
-
-  async function handleRunFinalEval() {
-    if (!session) return
-    if (finalEvalRunning) return
-    setFinalEvalRunning(true)
-    try {
-      const result = await runFinalEvaluation(
-        session.id,
-        parseSkills(),
-        form.githubUrl.trim() || null,
-      )
-      setFinalEval(result)
-    } catch {
-      // Non-blocking — silently ignore if evaluator fails
-    } finally {
-      setFinalEvalRunning(false)
-    }
-  }
-
-  // ── Analyze project defense transcript ────────────────────────────────────
-
-  async function handleDefenseAnalysis() {
-    if (!session) return
-    if (defenseTranscript.trim().split(/\s+/).filter(Boolean).length < 30) return
-
-    setDefenseAnalyzing(true)
-    setDefenseAnalyzeError(null)
-
-    try {
-      const result = await analyzeProjectDefense(session.id, {
-        video_url: defenseAnalysis?.video_url ?? null,
-        transcript_text: defenseTranscript.trim(),
-        claimed_skills: parseSkills(),
-        proof_objective: form.proofObjective.trim(),
-        workflow_summary: currentSessionAnalysis?.workflow_summary ?? "",
-        github_summary: githubAnalysis?.recruiter_summary ?? "",
-        live_check_summary: liveCheck?.recruiter_summary ?? "",
-      })
-      setDefenseAnalysis(result)
-      if (currentSessionAnalysis) {
-        await handleRunFinalEval()
-      }
-    } catch (err) {
-      setDefenseAnalyzeError(err instanceof Error ? err.message : "Defense analysis failed. Please try again.")
-    } finally {
-      setDefenseAnalyzing(false)
     }
   }
 
@@ -8316,24 +8088,6 @@ export function ExtensionProofPanel({
       setError(err instanceof Error ? err.message : "Failed to create proof session.")
     } finally {
       setCreating(false)
-    }
-  }
-
-  // ── Discover evidence ─────────────────────────────────────────────────────
-
-  async function handleDiscover() {
-    const url = form.websiteUrl.trim()
-    if (!url || urlType === "invalid_url" || local) return
-    setDiscoveryError(null)
-    setDiscovery(null)
-    setDiscovering(true)
-    try {
-      const result = await discoverWebsiteEvidence(url)
-      setDiscovery(result)
-    } catch (err) {
-      setDiscoveryError(err instanceof Error ? err.message : "Evidence discovery failed. Please try again.")
-    } finally {
-      setDiscovering(false)
     }
   }
 
@@ -8541,10 +8295,10 @@ export function ExtensionProofPanel({
         <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af", marginBottom: 5 }}>Website Proof</div>
           <p style={{ margin: 0, fontSize: 12, color: "#1e40af", lineHeight: 1.65 }}>
-            Record a walkthrough of your website, app, dashboard, or portfolio. VeriBridge uses the
-            workflow recording, AI analysis, and optional project defense to connect evidence to your
-            skills and update your Work Passport. Works for deployed sites, private dashboards, and
-            local development servers.
+            Record a walkthrough of your website, app, dashboard, or portfolio. VeriBridge preserves
+            the recording and derives website workflow evidence from it, then attaches the completed
+            proof to the project you select. Works for deployed sites, private dashboards, and local
+            development servers.
           </p>
         </div>
 
@@ -8691,41 +8445,6 @@ export function ExtensionProofPanel({
           </div>
         </div>
 
-        {/* Evidence Discovery */}
-        {!local && form.websiteUrl.trim() && urlType !== "invalid_url" && (
-          <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
-                🔍 Discover evidence from this website
-              </span>
-              <button
-                type="button"
-                onClick={() => void handleDiscover()}
-                disabled={discovering || creating}
-                style={{
-                  border: "1px solid var(--line-2)",
-                  background: discovering || creating ? "var(--bg-2)" : "transparent",
-                  color: discovering || creating ? "var(--muted)" : "var(--ink-2)",
-                  borderRadius: 8, padding: "5px 12px", fontWeight: 600, fontSize: 12,
-                  cursor: discovering || creating ? "not-allowed" : "pointer",
-                }}
-              >
-                {discovering ? "Scanning…" : discovery ? "Scan again" : "Scan page"}
-              </button>
-            </div>
-
-            {discoveryError && (
-              <div style={{ fontSize: 11, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "6px 10px" }}>
-                {discoveryError}
-              </div>
-            )}
-
-            {discovery && !discoveryError && (
-              <EvidenceDiscoveryResults discovery={discovery} />
-            )}
-          </div>
-        )}
-
         {/* Footer */}
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -8774,6 +8493,7 @@ export function ExtensionProofPanel({
 
   if (step === "session_active" && session) {
     const hasStarted = (["recording", "uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status)
+    const canReconnectRecorder = session.status === "recording" && !recorderReady
     const isCompleted = session.status === "completed"
     const isExpired   = session.status === "expired"
     const entryState = websiteProofEntryState(session)
@@ -8787,8 +8507,8 @@ export function ExtensionProofPanel({
 
     const sectionTitle = local ? "Local Workflow Evidence" : "Website Workflow Evidence"
     const sectionSubtitle = local
-      ? "This evidence shows a recorded workflow of your locally running project. It demonstrates the app working in your development environment. Recruiters will see this as medium-confidence evidence — add GitHub or deploy your app for stronger verification."
-      : "This evidence shows a recorded workflow of the submitted website or application. It verifies that the app was demonstrated, but it is not the final skill verification by itself."
+      ? "A recorded walkthrough of your locally running project. The recording and the evidence derived from it show the app working in your development environment."
+      : "A recorded walkthrough of the submitted website or application. The recording is preserved and the website workflow evidence below is derived from it."
     const cardTitle = local ? "Local Workflow Evidence Session" : "Website Workflow Evidence Session"
 
     const sessionDetails: Array<[string, string, boolean]> = [
@@ -8796,6 +8516,9 @@ export function ExtensionProofPanel({
       ["Website",    form.websiteUrl, false],
       ...(form.githubUrl ? [["GitHub", form.githubUrl, false] as [string, string, boolean]] : []),
       ["Skill",      form.skillName, false],
+      ...(session.created_at
+        ? [["Recorded", new Date(session.created_at).toLocaleString(), false] as [string, string, boolean]]
+        : []),
     ]
 
     return (
@@ -8852,18 +8575,11 @@ export function ExtensionProofPanel({
 
         {/* Live Proof Coach removed — live feedback runs locally in extension only */}
 
-        {/* Evidence checklist */}
+        {/* Workflow evidence checklist — website-evidence steps only */}
         <EvidenceChecklist
           status={session.status}
           urlType={urlType}
           analysis={currentSessionAnalysis}
-          liveCheck={liveCheck}
-          liveChecking={liveChecking}
-          hasGithubUrl={!!form.githubUrl.trim()}
-          githubAnalysis={githubAnalysis}
-          githubAnalyzing={githubAnalyzing}
-          finalEvaluationPresent={Boolean(finalEvalForDisplay)}
-          finalVerificationReady={readinessReport?.final_verification_status === "ready_for_review"}
         />
 
         {workflowAnalysisProgress && (
@@ -8914,15 +8630,22 @@ export function ExtensionProofPanel({
           />
         )}
 
+        {/* Recorded proof video — the primary artifact of a Website Proof. */}
+        <WebsiteProofRecordingSection
+          sessionId={session.id}
+          sessionStatus={session.status}
+        />
+
+
         {/* Analyze button — shown when uploaded and not yet analyzing */}
         {session.status === "uploaded_pending_analysis" && !currentSessionAnalysis && !analyzing && (
           <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Ready to analyze your workflow</div>
               <p style={{ margin: "4px 0 0", fontSize: 12, color: "#1e3a8a", lineHeight: 1.65 }}>
-                VeriBridge will analyze your recorded workflow timeline to identify which claimed skills
-                are supported, what interactions were demonstrated, and what evidence is still missing.
-                This is a Workflow Timeline Analysis — it does not replace GitHub evidence or final verification.
+                VeriBridge will analyze your recorded walkthrough to identify which claimed skills
+                were demonstrated in the recording, what interactions were observed, and what
+                evidence is still missing. Only this session&apos;s recording is analyzed.
               </p>
             </div>
             <div>
@@ -8945,7 +8668,7 @@ export function ExtensionProofPanel({
         )}
 
         {/* Workflow analysis result card */}
-        {currentSessionAnalysis && <WorkflowAnalysisCard analysis={currentSessionAnalysis} finalEvaluation={finalEval} />}
+        {currentSessionAnalysis && <WorkflowAnalysisCard analysis={currentSessionAnalysis} finalEvaluation={null} />}
 
         {/* Dev-only: session ID linkage debug info */}
         {process.env.NODE_ENV === "development" && (
@@ -8959,237 +8682,13 @@ export function ExtensionProofPanel({
           </div>
         )}
 
-        {/* ── Live Website Check ─────────────────────────────────────────── */}
-
-        {/* Not available note for local projects */}
-        {isLocal(urlType) && isCompleted && (
-          <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "12px 14px", display: "grid", gap: 4 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#1e40af" }}>Local/private website detected</div>
-            <p style={{ margin: 0, fontSize: 11, color: "#1e3a8a", lineHeight: 1.6 }}>
-              Public live check is not applicable for local development URLs. Verification will rely on workflow
-              recording, DOM/visual evidence, GitHub, transcript, and optional documents.
-            </p>
-          </div>
-        )}
-
-        {/* Run button for live deployed URLs — shown once workflow analysis is done and check not yet run */}
-        {isLiveCheckApplicable(urlType) && isCompleted && !liveCheck && !liveChecking && (
-          <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Run Live Website Check</div>
-              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#1e3a8a", lineHeight: 1.65 }}>
-                VeriBridge will send a live HTTP request to your deployed website to confirm it is publicly
-                accessible, capture the HTTP status, response time, and page title.
-              </p>
-            </div>
-            <div>
-              <button
-                type="button"
-                onClick={() => void handleLiveCheck()}
-                style={{
-                  border: "1px solid transparent", background: "#1d4ed8", color: "#fff",
-                  borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer",
-                }}
-              >
-                Run Live Website Check
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Live check error */}
-        {liveCheckError && !liveCheck && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
-            <div style={{ color: "#991b1b", fontSize: 12 }}>{liveCheckError}</div>
-            {!liveChecking && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => void handleLiveCheck()}
-                  style={{
-                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
-                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
-                  }}
-                >
-                  Retry Live Website Check
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Live check in-progress */}
-        {liveChecking && (
-          <LiveWebsiteCheckInProgress simProgress={liveCheckProgress} simStageIdx={liveCheckStageIdx} />
-        )}
-
-        {/* Live check result */}
-        {liveCheck && (
-          <LiveWebsiteCheckCard
-            check={liveCheck}
-            onRetry={() => void handleLiveCheck()}
-            sourceScore={sourceScoreFromEvaluation(finalEvalForDisplay, "live_website_check")}
-          />
-        )}
-
-        {/* ── GitHub Evidence Analysis ────────────────────────────────── */}
-
-        {/* No GitHub URL provided */}
-        {!form.githubUrl.trim() && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
-          <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#f8fafc", padding: "12px 14px", display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>GitHub Evidence: Not Provided</div>
-            <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
-              No GitHub URL was submitted with this proof session. Add a public GitHub repository to strengthen your evidence.
-            </p>
-          </div>
-        )}
-
-        {/* Run GitHub analysis button — shown when GitHub URL provided, proof uploaded, and not yet analyzed */}
-        {form.githubUrl.trim() && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && !githubAnalysis && !githubAnalyzing && (
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, background: "#f9fafb", padding: "14px 16px", display: "grid", gap: 10 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>Run GitHub Evidence Analysis</div>
-              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#374151", lineHeight: 1.65 }}>
-                VeriBridge will fetch your public repository, detect the tech stack, match claimed skills, and generate a recruiter-readable evidence report.
-              </p>
-              <p style={{ margin: "6px 0 0", fontSize: 11, color: "#6b7280" }}>
-                Repo: <span style={{ fontFamily: "monospace" }}>{form.githubUrl.trim()}</span>
-              </p>
-            </div>
-            <div>
-              <button
-                type="button"
-                onClick={() => void handleGitHubAnalysis()}
-                style={{
-                  border: "1px solid transparent", background: "#111827", color: "#fff",
-                  borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer",
-                }}
-              >
-                Run GitHub Evidence Analysis
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* GitHub analysis error */}
-        {githubAnalyzeError && !githubAnalysis && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
-            <div style={{ color: "#991b1b", fontSize: 12 }}>{githubAnalyzeError}</div>
-            {!githubAnalyzing && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => void handleGitHubAnalysis()}
-                  style={{
-                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
-                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
-                  }}
-                >
-                  Retry GitHub Analysis
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* GitHub analysis in progress */}
-        {githubAnalyzing && (
-          <GitHubAnalysisInProgress simProgress={githubSimProgress} simStageIdx={githubSimStageIdx} />
-        )}
-
-        {/* GitHub analysis result */}
-        {githubAnalysis && !githubAnalyzing && (
-          <GitHubAnalysisCard
-            analysis={githubAnalysis}
-            onRerun={() => void handleGitHubAnalysis()}
-            sourceScore={sourceScoreFromEvaluation(finalEvalForDisplay, "github")}
-          />
-        )}
-
-        {/* ── Project Defense Transcript ─────────────────────────────────── */}
-        <ProjectDefenseSection
-          session={session}
-          defenseAnalysis={defenseAnalysis}
-          defenseTranscript={defenseTranscript}
-          defenseAnalyzing={defenseAnalyzing}
-          defenseAnalyzeError={defenseAnalyzeError}
-          defenseSimProgress={defenseSimProgress}
-          defenseSimStageIdx={defenseSimStageIdx}
-          sourceScore={projectDefenseSourceScore(finalEvalForDisplay, defenseAnalysis)}
-          onTranscriptChange={setDefenseTranscript}
-          onAnalyze={() => void handleDefenseAnalysis()}
-        />
-
-        {/* ── Additional Evidence Modules (AI/CS/DS modules only — non-CS hidden) ── */}
-        {isCompleted && (
-          <FutureProofModulesSection
-            sessionId={session.id}
-            documentScore={sourceScoreFromEvaluation(finalEvalForDisplay, "uploaded_documents")}
-            onAnalyzed={() => void handleRunFinalEval()}
-          />
-        )}
-
-        {/* ── Final Evidence Score ─────────────────────────────────────────── */}
-        {finalEvalForDisplay && currentSessionAnalysis && (
-          <FinalEvaluatorCard
-            evaluation={finalEvalForDisplay}
-            sessionId={session.id}
-            onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
-            onRunLiveCheck={isLiveCheckApplicable(urlType) ? () => void handleLiveCheck() : undefined}
-            hideActions
-          />
-        )}
-        {finalEvalRunning && !finalEval && (
-          <div style={{ padding: "10px 14px", background: "#f8fafc",
-            border: "1px solid #e2e8f0", borderRadius: 10,
-            fontSize: 11, color: "#94a3b8" }}>
-            Computing final evidence score…
-          </div>
-        )}
-
-        {/* ── Detected Skill Profile ───────────────────────────────────────── */}
-        {finalEvalForDisplay && (
-          <DetectedSkillProfileSection evaluation={finalEvalForDisplay} />
-        )}
-
-        {/* ── Final Recommendations ──────────────────────────────────────── */}
-        {finalEvalForDisplay && (
-          <FinalRecommendationsSection
-            evaluation={finalEvalForDisplay}
-            sessionId={session.id}
-            onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
-            onRunLiveCheck={isLiveCheckApplicable(urlType) ? () => void handleLiveCheck() : undefined}
-          />
-        )}
-
-        {/* ── Verification Review ────────────────────────────────────────── */}
-        {/* Track A: AI Review MVP. Track B: Human/Faculty/Expert (coming soon).
-            IMPORTANT: human_verified is NEVER set by AI review. */}
-        <VerificationReviewSection
-          sessionId={session.id}
-          readinessScore={readinessReport?.readiness_score ?? 0}
-          readinessLevel={readinessReport?.readiness_level ?? "insufficient"}
-          readinessReady={readinessReport !== null}
-          snapshot={reviewSnapshot ?? {
-            proofSessionId: session.id,
-            websiteUrlType: isLocal_(urlType) ? "local" : urlType === "live_deployed_url" ? "live" : urlType === "invalid_url" ? "invalid" : "private",
-            claimedSkills: [],
-            workflowEvidenceStatus: session.status,
-            workflowAnalysisScore: null,
-            videoKeyframeScore: null,
-            ocrScore: null,
-            domScore: null,
-            qwenVisualReasoningScore: null,
-            githubStatus: "not_run",
-            githubScore: null,
-            projectDefenseScore: null,
-            documentEvidenceScore: null,
-            finalEvidenceScore: readinessReport?.readiness_score ?? null,
-            privacyScanStatus: privacyScan?.status ?? "not_run",
-            generatedRecommendation: readinessReport?.recruiter_summary ?? "Evidence package not yet fully scored.",
-            timestamp: new Date().toISOString(),
-          }}
-        />
+        {/* Legacy multi-source sections (GitHub Evidence Analysis, Live Website
+            Check, Project Defense, Document evidence, Final Evidence Score,
+            grouped skill profile, recommendations, verification review) are
+            intentionally NOT rendered here. Website Proof is a single focused
+            proof type — cross-proof aggregation happens in the Work Passport /
+            Project Report / Skill Report synthesis layer. Their independent
+            proof pipelines remain available at their own routes. */}
 
         {/* Expired */}
         {isExpired && (
@@ -9213,7 +8712,7 @@ export function ExtensionProofPanel({
             </button>
           )}
 
-          {!hasStarted && !isExpired && (
+          {(!hasStarted || recorderLifecycle.state === "FAILED_RETRYABLE" || canReconnectRecorder) && !isExpired && (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
               {recorderLifecycle.state === "FAILED_RETRYABLE" && (
                 <button
@@ -9231,7 +8730,13 @@ export function ExtensionProofPanel({
                 disabled={starting}
                 style={{ border: "1px solid transparent", background: starting ? "var(--bg-2)" : "#065f46", color: starting ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: starting ? "not-allowed" : "pointer" }}
               >
-                {starting ? "Initializing recorder…" : recorderLifecycle.state === "FAILED_RETRYABLE" ? "Retry recorder initialization" : "▶  Start Proof Demo"}
+                {starting
+                  ? "Initializing recorder…"
+                  : recorderLifecycle.state === "FAILED_RETRYABLE"
+                    ? "Retry recorder initialization"
+                    : canReconnectRecorder
+                      ? "Reconnect recorder"
+                      : "▶  Start Proof Demo"}
               </button>
             </div>
           )}
@@ -9321,7 +8826,7 @@ export function ExtensionProofPanel({
             )}
 
             {saveError && (
-              <div role="alert" style={{ border: "1px solid #fecaca", borderRadius: 9, background: "#fef2f2", color: "#991b1b", padding: "8px 10px", fontSize: 12 }}>
+              <div data-testid="website-proof-save-error" role="alert" style={{ border: "1px solid #fecaca", borderRadius: 9, background: "#fef2f2", color: "#991b1b", padding: "8px 10px", fontSize: 12 }}>
                 {saveError}
               </div>
             )}
@@ -9347,6 +8852,17 @@ export function ExtensionProofPanel({
                 {saveState === "already_saved" && (
                   <div style={{ fontSize: 11, color: "#166534" }}>Already saved — no duplicate evidence was created.</div>
                 )}
+                <div>
+                  <button
+                    type="button"
+                    data-testid="website-proof-reconcile-save"
+                    onClick={() => void handleSaveProof()}
+                    disabled={saveState === "saving"}
+                    style={{ border: "1px solid #86efac", background: "#fff", color: "#166534", borderRadius: 9, padding: "8px 12px", fontWeight: 700, fontSize: 12, cursor: saveState === "saving" ? "not-allowed" : "pointer" }}
+                  >
+                    {saveState === "saving" ? "Verifying saved evidence…" : "Verify saved evidence"}
+                  </button>
+                </div>
                 <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
                   <a href="/student/vbr/passport" style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View in Passport</a>
                   <a href={`/student/vbr/projects/${encodeURIComponent(savedProjectId)}/report`} style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View Project Report</a>

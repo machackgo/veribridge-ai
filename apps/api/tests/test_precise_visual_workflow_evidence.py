@@ -259,6 +259,40 @@ class TestExtractIAOPatterns:
         assert len(patterns) >= 1
         assert patterns[0]["pattern_type"] == "document_to_extraction"
 
+    def test_document_without_observed_upload_never_claims_extraction(self):
+        """Anti-fabrication guard: a session classified as "document" from
+        keyword matching alone (e.g. a project-gallery site whose copy mentions
+        "upload") must NOT produce the "a file was uploaded and extracted"
+        narrative when no upload interaction was actually recorded."""
+        events = [
+            {"type": "page_visit", "page_url": "https://reactplay.io", "page_title": "ReactPlay — plays"},
+            {"type": "click",      "page_url": "https://reactplay.io", "element_text": "Search"},
+            {"type": "click",      "page_url": "https://reactplay.io/plays", "element_text": "Open play"},
+        ]
+        patterns = _extract_iao_patterns(events, "document")
+        assert patterns, "generic interaction should still be reported"
+        assert patterns[0]["pattern_type"] == "generic_interaction"
+
+    def test_ml_app_without_upload_or_ml_action_never_claims_inference(self):
+        """A generic "Start"/"Search" click on a site that merely mentions
+        ML-ish words must not become an image_to_prediction inference claim."""
+        events = [
+            {"type": "page_visit", "page_url": "https://reactplay.io", "page_title": "ReactPlay"},
+            {"type": "click",      "page_url": "https://reactplay.io", "element_text": "Start"},
+        ]
+        patterns = _extract_iao_patterns(events, "ml_app")
+        assert patterns
+        assert patterns[0]["pattern_type"] == "generic_interaction"
+
+    def test_ml_app_with_explicit_ml_action_still_claims_inference(self):
+        events = [
+            {"type": "page_visit", "page_url": DETECTION_URL, "page_title": "Detector"},
+            {"type": "click",      "page_url": DETECTION_URL, "element_text": "Detect Objects"},
+        ]
+        patterns = _extract_iao_patterns(events, "ml_app")
+        assert patterns
+        assert patterns[0]["pattern_type"] == "image_to_prediction"
+
     def test_no_patterns_from_empty_events(self):
         patterns = _extract_iao_patterns([], "ml_app")
         assert len(patterns) == 0

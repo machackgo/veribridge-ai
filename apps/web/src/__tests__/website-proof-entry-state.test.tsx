@@ -104,7 +104,7 @@ beforeEach(() => {
       config_revision: input.config_revision,
       api_base_url: "http://localhost:8128",
       schema_version: 1,
-      build_version: "0.2.0",
+      build_version: "0.2.1",
       extension_id: "extension-id",
       ready: true,
     },
@@ -197,6 +197,64 @@ describe("Website Proof entry-state contract", () => {
     fireEvent.click(screen.getByRole("button", { name: "Resume" }))
     expect(await screen.findByText(/session-active/)).toBeInTheDocument()
     expect(screen.getByText("https://wikitok.io/")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect recorder" }))
+    await waitFor(() => expect(apiMocks.initializeWebsiteProofRecorder).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: "session-active" }),
+    ))
+    expect(apiMocks.createExtensionProofSession).not.toHaveBeenCalled()
+  })
+
+  it("retries recorder initialization on the same started session after an upload failure", async () => {
+    const active = session({
+      id: "session-retry-same-proof",
+      user_id: "user-1",
+      status: "recording",
+      website_url: "https://wikitok.io/",
+      claimed_skills: ["React"],
+      proof_objective: "Demonstrate the same recoverable workflow session",
+      proof_upload_id: null,
+    })
+    saveActiveExtensionProofSession({
+      sessionId: active.id,
+      form: {
+        websiteUrl: "https://wikitok.io/",
+        githubUrl: "",
+        skillName: "React",
+        proofObjective: "Demonstrate the same recoverable workflow session",
+      },
+      configRevision: 1,
+      savedAt: "2026-07-14T10:10:00Z",
+    })
+    apiMocks.getExtensionProofSession.mockResolvedValue(active)
+
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }))
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      data: {
+        source: "veribridge-extension",
+        type: "VERIBRIDGE_EXTENSION_STATE",
+        payload: {
+          sessionId: active.id,
+          status: "upload_failed",
+          statusMessage: "Proof upload failed",
+          lastUploadError: "Recording data was unavailable",
+          isRecording: false,
+        },
+      },
+    }))
+
+    const retry = await screen.findByRole("button", { name: "Retry recorder initialization" })
+    fireEvent.click(retry)
+
+    await waitFor(() => expect(apiMocks.initializeWebsiteProofRecorder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session_id: active.id,
+        config_revision: 2,
+      }),
+    ))
+    expect(apiMocks.createExtensionProofSession).not.toHaveBeenCalled()
   })
 
   it("never selects an implicit latest session when no explicit local pointer exists", async () => {
@@ -219,6 +277,27 @@ describe("Website Proof entry-state contract", () => {
     expect(apiMocks.getExtensionProofSession).not.toHaveBeenCalled()
     expect(apiMocks.listExtensionProofSessions).not.toHaveBeenCalled()
     expect(screen.queryByText("You have an unfinished Website Proof.")).not.toBeInTheDocument()
+  })
+
+  it("keeps the recovery pointer on a transient landing fetch failure and clears it only on not-found", async () => {
+    const draft = {
+      sessionId: "session-active",
+      form: { websiteUrl: "https://wikitok.io/", githubUrl: "", skillName: "React", proofObjective: "Show the active feed workflow" },
+      savedAt: "2026-07-14T10:10:00Z",
+    }
+    // Transient failure (network outage / auth still hydrating): pointer survives.
+    saveActiveExtensionProofSession(draft)
+    apiMocks.getExtensionProofSession.mockRejectedValueOnce(new Error("Get session failed (HTTP 503)."))
+    const first = render(<ExtensionProofPanel onBack={() => undefined} />)
+    await waitFor(() => expect(apiMocks.getExtensionProofSession).toHaveBeenCalledTimes(1))
+    expect(localStorage.getItem("vb_active_extension_proof_session")).not.toBeNull()
+    first.unmount()
+
+    // Definitive not-found: only then is the stale pointer removed.
+    apiMocks.getExtensionProofSession.mockRejectedValueOnce(new Error("Extension proof session not found."))
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    await waitFor(() => expect(apiMocks.getExtensionProofSession).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(localStorage.getItem("vb_active_extension_proof_session")).toBeNull())
   })
 
   it("Start new clears only the active pointer and leaves the backend session untouched", async () => {
@@ -337,7 +416,9 @@ describe("Website Proof entry-state contract", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Save this proof" }))
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Select the project")
+    // Target the save error specifically — the recorded-video section renders
+    // its own role="alert" when replay loading fails in the test environment.
+    expect(await screen.findByTestId("website-proof-save-error")).toHaveTextContent("Select the project")
     expect(vbrMocks.finalizeWebsiteProof).not.toHaveBeenCalled()
   })
 

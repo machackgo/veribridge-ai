@@ -237,8 +237,22 @@ def _build_attachment_index(db: Any, user_id: str) -> dict[tuple[str, str], list
         if project_id not in index[(table, sid)]:
             index[(table, sid)].append(project_id)
 
+    from app.services.canonical_project_evidence import (
+        github_identity_conflict,
+        project_repo_identity,
+    )
+
     owned_projects = _rows_for_user(db, _PROJECTS_TABLE, user_id)
     owned_project_ids = {str(p.get("id") or "") for p in owned_projects}
+    project_identity_by_id = {
+        str(p.get("id") or ""): project_repo_identity(p) for p in owned_projects
+    }
+
+    def _github_edge_conflicts(repo_url: Any, project_id: str) -> bool:
+        """Repository-identity read gate (canonical resolver rule 4): a legacy
+        github→project edge whose repositories provably contradict must not
+        present the proof as attached to that project."""
+        return github_identity_conflict(project_identity_by_id.get(project_id, ""), repo_url)
 
     for project in owned_projects:
         project_id = str(project.get("id") or "")
@@ -250,7 +264,9 @@ def _build_attachment_index(db: Any, user_id: str) -> dict[tuple[str, str], list
             continue
 
         github = attached.get("github_proof")
-        if isinstance(github, dict):
+        if isinstance(github, dict) and not _github_edge_conflicts(
+            github.get("repo_url"), project_id
+        ):
             _add(_GITHUB_PROOFS_TABLE, github.get("github_proof_id") or github.get("id"), project_id)
 
         for doc in attached.get("documents") or []:
@@ -294,6 +310,10 @@ def _build_attachment_index(db: Any, user_id: str) -> dict[tuple[str, str], list
         "document": _DOCUMENTS_TABLE,
         "github": _GITHUB_PROOFS_TABLE,
     }
+    github_repo_by_proof_id = {
+        str(row.get("id") or ""): row.get("repo_url")
+        for row in _rows_for_user(db, _GITHUB_PROOFS_TABLE, user_id)
+    }
     for relation in _rows_for_user(
         db,
         _PROOF_PROJECT_RELATIONSHIPS_TABLE,
@@ -303,8 +323,14 @@ def _build_attachment_index(db: Any, user_id: str) -> dict[tuple[str, str], list
         table = relation_table_by_proof_type.get(str(relation.get("proof_type") or ""))
         if table and relation.get("relationship_state") == "directly_linked":
             pid = str(relation.get("project_id") or "")
-            if pid in owned_project_ids:
-                _add(table, relation.get("proof_id"), pid)
+            proof_id = str(relation.get("proof_id") or "")
+            if pid not in owned_project_ids:
+                continue
+            if table == _GITHUB_PROOFS_TABLE and _github_edge_conflicts(
+                github_repo_by_proof_id.get(proof_id), pid
+            ):
+                continue
+            _add(table, proof_id, pid)
 
     return index
 

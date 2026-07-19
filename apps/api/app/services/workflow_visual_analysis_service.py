@@ -1274,8 +1274,13 @@ class WorkflowVisualAnalysisService:
         if visible_evidence_event_id:
             row["visible_evidence_event_id"] = visible_evidence_event_id
 
-        try:
-            if frame_sha256:
+        # Deduplicate: skip the insert only when an identical frame row already
+        # exists.  The lookup is best-effort — a failure here (or a client that
+        # does not return a concrete list) must NEVER prevent the insert below,
+        # otherwise valid frame metadata (frame_type/frame_sha256/timestamp_ms)
+        # would be silently dropped.
+        if frame_sha256:
+            try:
                 existing = (
                     self._db.table(_TABLE)
                     .select("id")
@@ -1287,9 +1292,15 @@ class WorkflowVisualAnalysisService:
                     .limit(1)
                     .execute()
                 )
-                existing_rows = getattr(existing, "data", None) or []
-                if existing_rows:
-                    return str(existing_rows[0]["id"])
+                existing_rows = getattr(existing, "data", None)
+                if isinstance(existing_rows, list) and existing_rows:
+                    first = existing_rows[0]
+                    if isinstance(first, dict) and first.get("id"):
+                        return str(first["id"])
+            except Exception as exc:
+                logger.debug("[VisualAnalysis] Frame dedup lookup skipped: %s", exc)
+
+        try:
             self._db.table(_TABLE).insert(row).execute()
         except Exception as exc:
             logger.warning("[VisualAnalysis] Failed to store frame record: %s", exc)

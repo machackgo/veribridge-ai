@@ -181,12 +181,14 @@ function AnalysisResults({
   videoEvidenceChips,
   syncStatus,
   syncSkills,
+  syncError,
   onSync,
 }: {
   analysis: DefenseAnalysisResponse
   videoEvidenceChips: VideoEvidenceChip[]
   syncStatus: "idle" | "syncing" | "saved" | "error"
   syncSkills: string[]
+  syncError: string | null
   onSync: () => void
 }) {
   return (
@@ -287,7 +289,7 @@ function AnalysisResults({
           )}
           {syncStatus === "error" && (
             <Mono style={{ fontSize: 11, color: TOKEN.rose, display: "block", marginTop: 6 }}>
-              Couldn&apos;t save to Skill Graph. Try again.
+              {syncError || "Couldn't save to Skill Graph. Try again."}
             </Mono>
           )}
         </div>
@@ -1200,9 +1202,14 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [result, setResult] = useState<SubmitDefenseAnswersResponse | null>(null)
 
-  // Step F — sync
-  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "saved" | "error">("idle")
+  // Step F — sync. A resumed workspace starts from the backend's honest
+  // saved/not-saved state so a refresh never shows "Not saved" after a
+  // successful save.
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "saved" | "error">(
+    initialContext?.skill_graph_synced ? "saved" : "idle",
+  )
   const [syncSkills, setSyncSkills] = useState<string[]>([])
+  const [syncError, setSyncError] = useState<string | null>(null)
 
   // "Record another defense" — creates a fresh recording session (new attempt).
   const [recordAnotherLoading, setRecordAnotherLoading] = useState(false)
@@ -1267,6 +1274,7 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
         const context = await getProjectDefenseContext(projectId)
         if (!active || !context) return
         setCreated({ project: context.project, metadata: context.metadata })
+        if (context.skill_graph_synced) setSyncStatus("saved")
         // The resumed defense already exists — drop any stale working draft.
         clearProjectDefenseDraft()
 
@@ -1493,15 +1501,20 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
   const handleSync = async () => {
     if (!sessionId) return
     setSyncStatus("syncing")
+    setSyncError(null)
     try {
       const response = await syncProjectDefenseToSkillGraph(sessionId)
       if (response.ok && response.errors.length === 0) {
         setSyncSkills(response.skills_synced)
         setSyncStatus("saved")
       } else {
+        // Surface the backend's own reason (e.g. "No skills to save yet…")
+        // instead of a generic retry message that hides the real cause.
+        setSyncError(response.errors[0] ?? null)
         setSyncStatus("error")
       }
-    } catch {
+    } catch (e: unknown) {
+      setSyncError(e instanceof Error ? e.message : null)
       setSyncStatus("error")
     }
   }
@@ -2205,6 +2218,7 @@ export function ProjectDefensePanel({ initialContext, onBack }: ProjectDefensePa
           videoEvidenceChips={result.video_evidence_chips}
           syncStatus={syncStatus}
           syncSkills={syncSkills}
+          syncError={syncError}
           onSync={handleSync}
         />
       )}

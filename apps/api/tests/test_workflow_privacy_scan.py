@@ -157,6 +157,78 @@ class TestScanProofData:
         assert result.status == "flagged"
         assert any("Google API key" in f or "API key" in f.lower() or "api" in f.lower() for f in result.risk_flags), result.risk_flags
 
+    # ── Percent-encoded redaction placeholders ────────────────────────────────
+    # URL.searchParams.set(k, "[REDACTED]") + URL.toString() in the extension
+    # percent-encodes the brackets, so captured URLs carry %5BREDACTED%5D.
+
+    def test_encoded_redacted_url_param_is_not_flagged(self) -> None:
+        """?access_token=%5BREDACTED%5D is an already-redacted placeholder, not a live value."""
+        data = {
+            "workflow_events": [
+                {"type": "navigation", "page_url": "https://app.example.com/callback?access_token=%5BREDACTED%5D&user=test"},
+            ]
+        }
+        result = scan_proof_data(data)
+        assert result.status == "redacted", result.risk_flags
+        assert result.risk_flags == []
+        assert result.redacted_urls_count >= 1
+        assert result.contains_sensitive_data is False
+
+    def test_encoded_redacted_lowercase_hex_is_recognized(self) -> None:
+        """RFC 3986 hex digits are case-insensitive: %5bREDACTED%5d also counts as redacted."""
+        data = {
+            "workflow_events": [
+                {"type": "navigation", "page_url": "https://app.example.com/cb?api_key=%5bREDACTED%5d"},
+            ]
+        }
+        result = scan_proof_data(data)
+        assert result.status == "redacted", result.risk_flags
+        assert result.redacted_urls_count >= 1
+
+    def test_encoded_redacted_sensitive_field_marker_counts_as_redacted(self) -> None:
+        """The encoded content-script marker %5BREDACTED_SENSITIVE_FIELD%5D is recognized too."""
+        data = {"workflow_events": [{"type": "input_change", "value": "%5BREDACTED_SENSITIVE_FIELD%5D"}]}
+        result = scan_proof_data(data)
+        assert result.status == "redacted"
+        assert result.redacted_fields_count >= 1
+
+    def test_lowercase_placeholder_word_is_not_treated_as_redacted(self) -> None:
+        """The pipeline only emits uppercase REDACTED; %5Bredacted%5D is a live value and stays flagged."""
+        data = {
+            "workflow_events": [
+                {"type": "navigation", "page_url": "https://app.example.com/cb?access_token=%5Bredacted%5D"},
+            ]
+        }
+        result = scan_proof_data(data)
+        assert result.status == "flagged"
+        assert result.contains_sensitive_data is True
+
+    def test_malformed_encoded_placeholder_stays_flagged(self) -> None:
+        """Unterminated or double-encoded placeholders are not recognized and fail closed."""
+        for value in ("%5BREDACTED", "%255BREDACTED%255D", "%5BREDACTEDX%5D"):
+            data = {
+                "workflow_events": [
+                    {"type": "navigation", "page_url": f"https://app.example.com/cb?access_token={value}"},
+                ]
+            }
+            result = scan_proof_data(data)
+            assert result.status == "flagged", value
+            assert result.contains_sensitive_data is True, value
+
+    def test_encoded_placeholder_next_to_real_secret_still_flags_the_secret(self) -> None:
+        """A redacted param must not mask a genuine secret elsewhere in the same URL."""
+        data = {
+            "workflow_events": [
+                {
+                    "type": "navigation",
+                    "page_url": "https://app.example.com/cb?access_token=%5BREDACTED%5D&api_key=AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ12345678",
+                },
+            ]
+        }
+        result = scan_proof_data(data)
+        assert result.status == "flagged"
+        assert result.contains_sensitive_data is True
+
     # ── JWT detection ─────────────────────────────────────────────────────────
 
     def test_jwt_like_string_is_flagged(self) -> None:

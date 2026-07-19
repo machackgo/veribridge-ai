@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
+from app.services.vbr_student_report import collect_project_defense_traces
 
 from tests.test_vbr_project_defense import (
     DEFENSE_TRANSCRIPT,
@@ -578,6 +579,7 @@ def test_report_includes_project_defense_analysis_and_skill_evidence(client: Tes
 
     assert body["session_id"] == session_id
     assert body["evidence_package"]["project_defense_completed"] is True
+    assert body["project_status"] == "defense complete"
 
     report_analysis = body["project_defense_analysis"]
     assert report_analysis is not None
@@ -972,6 +974,27 @@ def test_project_defense_answer_creates_process_evidence_trace(client: TestClien
     assert defense_traces
     assert all(t["is_publicly_openable"] is False for t in defense_traces)
     assert any("self-explanation" in t["limitation"].lower() for t in defense_traces)
+
+
+def test_low_ownership_defense_never_claims_candidate_built_project() -> None:
+    traces: list[dict] = []
+
+    collect_project_defense_traces(
+        traces.append,
+        analysis={
+            "ownership_signal_score": 10,
+            "skills_mentioned": ["Python"],
+            "skills_explained_well": [],
+            "risk_flags": ["No clear ownership signal detected in the transcript."],
+        },
+        defense_questions=[],
+    )
+
+    assert len(traces) == 1
+    trace = traces[0]
+    assert "ownership was not established" in trace["safe_detail"]
+    assert "built the project" not in trace["safe_detail"]
+    assert "own work" not in trace["safe_summary"]
 
 
 def test_video_chip_trace_carries_timestamp(client: TestClient, mem_store: dict) -> None:

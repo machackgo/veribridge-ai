@@ -101,6 +101,8 @@ export interface ExtensionState {
   videoUploadError: string | null
   /** Number of keyframes extracted from the uploaded video (0 if not yet extracted). */
   videoKeyframeCount: number
+  /** Detected screen-capture scope: "tab" | "window" | "screen" | "unknown" | null. */
+  captureSurface: string | null
   // ── Recorder tab screen-capture state ─────────────────────────────────────
   /**
    * True while the recorder tab has an active getDisplayMedia stream (MediaRecorder running).

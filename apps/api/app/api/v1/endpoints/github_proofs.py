@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.deps import AuthenticatedUser, get_current_user_id, get_current_user_identity, get_db
 from app.db.supabase import SupabaseError, SupabaseFKError
 from app.schemas.github_proof_submission import GitHubProofSubmissionCreate, GitHubProofSubmissionResponse
+from app.services.canonical_project_evidence import github_identity_conflict, project_repo_identity
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.github_proof_service import (
     GitHubProofNotFoundError,
@@ -25,9 +26,17 @@ def _github_relationships(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
     """github_proof_id → canonical relationship, from the SAME sources the
     Passport/report attachment index reads: normalized 058 rows first, then the
     projects' ``attached_proofs.github_proof`` metadata. Owner-scoped;
-    best-effort (a pre-058 database simply yields metadata-only results)."""
+    best-effort (a pre-058 database simply yields metadata-only results).
+
+    Each mapping carries the project's ``project_repo_identity`` so the caller
+    can apply the SAME repository-identity read gate the canonical resolver
+    uses: a legacy relationship row that attaches a proof to a project whose own
+    declared repository contradicts the proof's repository must never surface
+    as "Attached to <project>" (it would both mislead the student and lock the
+    proof out of being attached to its real project)."""
     out: dict[str, dict[str, Any]] = {}
     projects: dict[str, str] = {}
+    project_identities: dict[str, str] = {}
     try:
         if isinstance(db, dict):
             project_rows = [
@@ -35,11 +44,17 @@ def _github_relationships(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
                 if str(row.get("user_id") or "") == str(user_id)
             ]
         else:
-            resp = db.table("vbr_projects").select("id,title,metadata").eq("user_id", user_id).execute()
+            resp = (
+                db.table("vbr_projects")
+                .select("id,title,repo_url,repo_full_name,metadata")
+                .eq("user_id", user_id)
+                .execute()
+            )
             project_rows = list(getattr(resp, "data", []) or [])
         for project in project_rows:
             pid = str(project.get("id") or "")
             projects[pid] = str(project.get("title") or "Project")
+            project_identities[pid] = project_repo_identity(project)
             attached = ((project.get("metadata") or {}).get("attached_proofs") or {})
             github_summary = attached.get("github_proof")
             proof_id = str((github_summary or {}).get("github_proof_id") or "")
@@ -47,6 +62,7 @@ def _github_relationships(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
                 out[proof_id] = {
                     "project_id": pid,
                     "project_title": projects[pid],
+                    "project_repo_identity": project_identities[pid],
                     "state": "directly_linked",
                 }
     except Exception:
@@ -74,6 +90,7 @@ def _github_relationships(db: Any, user_id: str) -> dict[str, dict[str, Any]]:
                 out[proof_id] = {
                     "project_id": pid,
                     "project_title": projects[pid],
+                    "project_repo_identity": project_identities.get(pid, ""),
                     "state": "directly_linked",
                 }
     except Exception:
@@ -161,6 +178,14 @@ def list_github_proofs(
     relationships = _github_relationships(db, user_id)
     for proof in proofs:
         relationship = relationships.get(str(proof.id))
+        # Repository-identity read gate (same rule as the canonical resolver):
+        # a legacy relationship attaching this proof to a project whose own
+        # repository contradicts the proof's repository is excluded, so the
+        # proof honestly shows as attachable to its real project.
+        if relationship and github_identity_conflict(
+            str(relationship.get("project_repo_identity") or ""), proof.repo_url
+        ):
+            relationship = None
         if relationship:
             proof.project_id = relationship["project_id"]
             proof.project_title = relationship["project_title"]

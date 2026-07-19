@@ -4,8 +4,11 @@ import { build } from "esbuild"
 const outdir = "/tmp/veribridge-extension-tests"
 const entries = [
   "tests/recorder-session-config.test.ts",
+  "tests/recorder-bridge.test.ts",
+  "tests/recorder-finalize.test.ts",
   "tests/background-recorder-lifecycle.test.ts",
   "tests/background-recovery.test.ts",
+  "tests/background-finalize-orchestration.test.ts",
 ]
 
 await build({

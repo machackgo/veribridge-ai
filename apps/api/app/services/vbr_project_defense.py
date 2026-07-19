@@ -30,6 +30,13 @@ from app.schemas.vbr_project_defense import (
     ProjectDefenseCreateRequest,
     SubmitDefenseAnswersRequest,
 )
+from app.services.canonical_project_evidence import (
+    canonical_proof_ids_for_projects,
+    canonical_website_session_ids,
+    github_identity_conflict,
+    project_repo_identity,
+    resolve_canonical_github_summary,
+)
 from app.services.github_evidence_service import parse_github_repo_url
 from app.services.github_proof_service import GitHubProofNotFoundError, GitHubProofService
 from app.services.optional_evidence_service import OptionalEvidenceService
@@ -387,6 +394,13 @@ def _resolve_repo_url_and_proof(
         github_summary = _github_proof_summary(db, user_id, github_proof_id)
         if not repo_url:
             repo_url = (github_summary.get("repo_url") or "").strip()
+        elif github_identity_conflict(
+            project_repo_identity({"repo_url": repo_url}), github_summary.get("repo_url")
+        ):
+            # Explicit repo_url and the attached GitHub proof must agree — a
+            # contradictory pair would create a project whose declared
+            # repository and attached proof point at different repositories.
+            raise ValueError("github_proof_repo_mismatch")
 
     if not repo_url:
         repo_url = (body.attached_proofs.repo_url or "").strip()
@@ -657,6 +671,9 @@ def _safe_website_view(website: Any) -> dict[str, Any] | None:
     """
     if not isinstance(website, dict):
         return None
+    # Closed-vocabulary status only (e.g. ``analysis_pending`` for an attached
+    # completed session whose analysis has not landed) — never free text.
+    status = str(website.get("status") or "").strip().lower()
     return {
         "target_website": _safe_website_display(website.get("target_website")),
         "workflow_confidence": (
@@ -665,6 +682,7 @@ def _safe_website_view(website: Any) -> dict[str, Any] | None:
         if website.get("workflow_confidence")
         else None,
         "supported_skills": _clean_list(website.get("supported_skills")),
+        "status": status if status in ("analysis_pending",) else None,
     }
 
 
@@ -820,13 +838,7 @@ def _normalized_repo_identity(project: dict[str, Any]) -> str:
     NOT sufficient on its own to merge two rows, because a single monorepo can
     hold many distinct projects (see :func:`_canonical_project_key`).
     """
-    full_name = str(project.get("repo_full_name") or "").strip().lower()
-    if full_name:
-        return full_name.strip("/")
-    ref = parse_github_repo_url(str(project.get("repo_url") or "").strip())
-    if ref is not None:
-        return f"{ref.owner}/{ref.repo}".lower()
-    return ""
+    return project_repo_identity(project)
 
 
 def _canonical_project_key(project: dict[str, Any]) -> tuple:
@@ -898,6 +910,71 @@ def _pick_canonical_project(db: Any, group: list[dict[str, Any]]) -> dict[str, A
         return (status_rank, has_github, str(project.get("updated_at") or ""))
 
     return max(group, key=sort_key)
+
+
+# ── Evidence-derived claimed skills ──────────────────────────────────────────
+#
+# Projects created through the plain Projects flow (POST /vbr/projects) start
+# with empty metadata, and the project-first defense workspace never asks the
+# student to type a claimed-skills list. Without skills the whole downstream
+# skill dimension silently degrades: no skill-grounded defense questions, an
+# analysis whose skills_mentioned is always empty, and a Skill Graph sync that
+# fails with "No claimed skills on this project". When the student has not
+# explicitly claimed skills, a deterministic, conservative skill list is
+# derived from the SAFE attached-proof summaries already stored on the project
+# (GitHub detected_skills, document skill names, website supported_skills) —
+# never from raw payloads. Explicit claimed_skills always win untouched.
+
+_MAX_DERIVED_CLAIMED_SKILLS = 12
+_MAX_SKILL_NAME_CHARS = 40
+_MAX_SKILL_NAME_WORDS = 4
+
+
+def _plausible_skill_name(name: str) -> bool:
+    """Reject junk skill labels (e.g. a whole sentence of concatenated skills)."""
+    text = name.strip()
+    if not text or len(text) > _MAX_SKILL_NAME_CHARS:
+        return False
+    return len(text.split()) <= _MAX_SKILL_NAME_WORDS
+
+
+def derive_claimed_skills_from_attached(attached: Any) -> list[str]:
+    """Deterministic skill list from safe attached-proof summaries only."""
+    if not isinstance(attached, dict):
+        return []
+    candidates: list[str] = []
+    github = attached.get("github_proof")
+    if isinstance(github, dict):
+        candidates.extend(_clean_list(github.get("detected_skills")))
+    for doc in attached.get("documents") or []:
+        if isinstance(doc, dict):
+            candidates.extend(_clean_list(doc.get("skills")))
+    for website in attached.get("website_proofs") or []:
+        if isinstance(website, dict):
+            candidates.extend(_clean_list(website.get("supported_skills")))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in candidates:
+        if not _plausible_skill_name(name):
+            continue
+        key = name.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name.strip())
+        if len(out) >= _MAX_DERIVED_CLAIMED_SKILLS:
+            break
+    return out
+
+
+def effective_claimed_skills(metadata: dict[str, Any]) -> list[str]:
+    """Explicit claimed skills, or evidence-derived skills when none exist."""
+    metadata = metadata if isinstance(metadata, dict) else {}
+    explicit = _clean_list(metadata.get("claimed_skills") or [])
+    if explicit:
+        return explicit
+    return derive_claimed_skills_from_attached(metadata.get("attached_proofs"))
 
 
 def _merge_group_metadata(group: list[dict[str, Any]]) -> dict[str, Any]:
@@ -994,6 +1071,157 @@ def build_merged_project(db: Any, group: list[dict[str, Any]]) -> dict[str, Any]
     return {**canonical, "metadata": _merge_group_metadata(group)}
 
 
+# ── Canonical relationship supplementation ───────────────────────────────────
+#
+# ``metadata.attached_proofs`` is only ONE of the write paths that can attach a
+# proof to a project. Website Proof sessions record their project edge in
+# ``proof_project_relationships`` / ``extension_proof_sessions.project_id`` at
+# session creation and finalization — they never write project metadata. The
+# defense workspace therefore supplements the merged metadata with the
+# canonical, owner-confirmed project edges (the SAME rows the Project Report
+# reads), so Project Defense, the Report, and the Passport all resolve one
+# identical evidence package. See ``canonical_project_evidence`` for the
+# resolver contract.
+
+# Website sessions in these states have a finished recording; anything earlier
+# (created / recording / abandoned) is honestly NOT usable website evidence.
+_USABLE_WEBSITE_SESSION_STATUSES = {"completed"}
+
+
+def _degraded_website_summary(db: Any, user_id: str, session_id: str) -> dict[str, Any] | None:
+    """Honest summary for an attached, finished session with no analysis row.
+
+    Returns ``None`` unless the session is owned by ``user_id`` and its
+    recording actually completed — an abandoned or in-flight session must not
+    surface as attached website evidence.
+    """
+    if isinstance(db, dict):
+        row = db.get("extension_proof_sessions", {}).get(str(session_id))
+    else:
+        result = (
+            db.table("extension_proof_sessions")
+            .select("id,user_id,student_id,status,website_url")
+            .eq("id", session_id)
+            .execute()
+        )
+        rows = getattr(result, "data", []) or []
+        row = rows[0] if rows else None
+    if not isinstance(row, dict):
+        return None
+    owner = str(row.get("user_id") or row.get("student_id") or "")
+    if owner != str(user_id):
+        return None
+    status = str(row.get("status") or "").strip().lower()
+    if status not in _USABLE_WEBSITE_SESSION_STATUSES:
+        return None
+    return {
+        "proof_session_id": str(session_id),
+        "target_website": str(row.get("website_url") or "")[:200],
+        "workflow_confidence": None,
+        "supported_skills": [],
+        "status": "analysis_pending",
+    }
+
+
+def _supplement_attached_proofs_with_canonical(
+    db: Any, group: list[dict[str, Any]], metadata: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge the canonical, owner-confirmed project edges into ``metadata``.
+
+    * GitHub — a metadata summary contradicting the project's own repository
+      identity is dropped (read gate for legacy wrong attachments); when no
+      valid summary remains, the canonical resolver picks the attached proof
+      deterministically.
+    * Documents / Websites — canonical edges missing from metadata are
+      rebuilt with the SAME safe summary builders the attach flow uses.
+    """
+    user_id = str(next((p.get("user_id") for p in group if p.get("user_id")), "") or "")
+    project_ids = [str(p.get("id") or "") for p in group if p.get("id")]
+    if not user_id or not project_ids:
+        return metadata
+    identity = next((project_repo_identity(p) for p in group if project_repo_identity(p)), "")
+
+    attached_raw = metadata.get("attached_proofs")
+    attached = dict(attached_raw) if isinstance(attached_raw, dict) else {}
+
+    github = attached.get("github_proof")
+    if isinstance(github, dict) and github_identity_conflict(identity, github.get("repo_url")):
+        attached.pop("github_proof", None)
+        github = None
+    if not isinstance(github, dict) or not github.get("repo_url"):
+        canonical_github = resolve_canonical_github_summary(
+            db,
+            user_id=user_id,
+            project_ids=project_ids,
+            project_identity=identity,
+            build_summary=_github_proof_summary,
+        )
+        if canonical_github is not None:
+            attached["github_proof"] = canonical_github
+
+    known_docs = {
+        str(d.get("document_evidence_id") or "")
+        for d in (attached.get("documents") or [])
+        if isinstance(d, dict)
+    }
+    for doc_id in canonical_proof_ids_for_projects(
+        db, user_id=user_id, project_ids=project_ids, proof_type="document"
+    ):
+        if doc_id in known_docs:
+            continue
+        try:
+            summaries = _document_summaries(db, user_id, [doc_id])
+        except ValueError:
+            continue
+        for summary in summaries:
+            summary["relationship_source"] = "canonical_direct"
+        attached["documents"] = _merge_summaries_by_key(
+            attached.get("documents"), summaries, "document_evidence_id"
+        )
+        known_docs.add(doc_id)
+
+    known_sessions = {
+        str(w.get("proof_session_id") or "")
+        for w in (attached.get("website_proofs") or [])
+        if isinstance(w, dict)
+    }
+    for session_id in canonical_website_session_ids(
+        db, user_id=user_id, project_ids=project_ids
+    ):
+        if session_id in known_sessions:
+            continue
+        summary = get_website_proof_summary(db, user_id, session_id)
+        if summary is None:
+            summary = _degraded_website_summary(db, user_id, session_id)
+        if summary is None:
+            continue
+        summary["relationship_source"] = "canonical_direct"
+        attached["website_proofs"] = _merge_summaries_by_key(
+            attached.get("website_proofs"), [summary], "proof_session_id"
+        )
+        known_sessions.add(session_id)
+
+    metadata["attached_proofs"] = attached
+    return metadata
+
+
+def merge_group_metadata_with_canonical(
+    db: Any, group: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """THE merged evidence package for one logical project (a duplicate group).
+
+    Metadata merge across the group first, then canonical relationship
+    supplementation — the single resolver output that context, eligible cards,
+    question generation, and the Project Report all consume. When no duplicate
+    carries explicit claimed skills, the merged view exposes the deterministic
+    evidence-derived skill list (see :func:`effective_claimed_skills`) so the
+    skill dimension of questions/analysis/sync never silently degrades to [].
+    """
+    merged = _supplement_attached_proofs_with_canonical(db, group, _merge_group_metadata(group))
+    merged["claimed_skills"] = effective_claimed_skills(merged)
+    return merged
+
+
 def _find_project_group(db: Any, user_id: str, project_id: str) -> list[dict[str, Any]]:
     """All project rows sharing the canonical identity of ``project_id``.
 
@@ -1017,7 +1245,7 @@ def merge_owned_project(db: Any, user_id: str, project: dict[str, Any]) -> dict[
     weaker duplicate that happens to be missing GitHub.
     """
     group = _find_project_group(db, user_id, str(project["id"])) or [project]
-    return {**project, "metadata": _merge_group_metadata(group)}
+    return {**project, "metadata": merge_group_metadata_with_canonical(db, group)}
 
 
 def list_eligible_projects(db: Any, user_id: str) -> list[dict[str, Any]]:
@@ -1049,7 +1277,7 @@ def build_eligible_project_summary(db: Any, project: dict[str, Any]) -> dict[str
         "id": str(project["id"]),
         "title": project.get("title") or "",
         "description": str(metadata.get("description") or ""),
-        "claimed_skills": _clean_list(metadata.get("claimed_skills") or []),
+        "claimed_skills": effective_claimed_skills(metadata),
         "repo_full_name": project.get("repo_full_name"),
         "defense_status": defense_status,
         "report_ready": _report_ready(defense_status),
@@ -1067,7 +1295,7 @@ def build_merged_eligible_summary(db: Any, group: list[dict[str, Any]]) -> dict[
     with the combined evidence rather than a near-empty duplicate.
     """
     canonical = _pick_canonical_project(db, group)
-    merged_metadata = _merge_group_metadata(group)
+    merged_metadata = merge_group_metadata_with_canonical(db, group)
     defense_status = _group_defense_status(db, group)
     return {
         "id": str(canonical["id"]),
@@ -1111,12 +1339,28 @@ def build_project_defense_context(db: Any, project: dict[str, Any], user_id: str
     else:
         group = [project]
 
-    metadata = _merge_group_metadata(group)
+    metadata = merge_group_metadata_with_canonical(db, group)
     defense_status = _group_defense_status(db, group)
 
     session = get_active_session(db, str(project["id"]))
     session_id = str(session["id"]) if session is not None else None
     questions = list_session_questions(db, session_id) if session_id else []
+
+    # Stale-question invalidation: stored questions must always reflect the
+    # CURRENT canonical evidence package. While the active session is still
+    # unstarted (``created``), a drift between the stored questions and the
+    # deterministic specs the current evidence produces (e.g. a Website Proof
+    # attached after "missing live demo" questions were generated) regenerates
+    # them in place. Once a recording has started, questions are a historical
+    # record of what was actually asked and are never rewritten.
+    if session is not None and str(session.get("status") or "") == "created" and questions:
+        merged_project = {**project, "metadata": metadata}
+        expected = [spec["question_text"] for spec in build_defense_question_specs(merged_project)]
+        if [str(q.get("question_text") or "") for q in questions] != expected:
+            _delete_session_questions(db, session["id"])
+            questions = _write_session_questions(
+                db, str(session["id"]), build_defense_question_specs(merged_project)
+            )
 
     return {
         "evidence": _evidence_summary(metadata),
@@ -1166,7 +1410,14 @@ def attach_proofs_to_project(
 
     github_proof_id = (getattr(attached, "github_proof_id", None) or "").strip() or None
     if github_proof_id:
-        existing["github_proof"] = _github_proof_summary(db, user_id, github_proof_id)
+        summary = _github_proof_summary(db, user_id, github_proof_id)
+        # Repository-identity integrity gate (same rule the canonical
+        # finalization boundary enforces): a GitHub proof for a different
+        # repository than the project's own declared repository is a
+        # contradiction and is rejected loudly, never silently hidden later.
+        if github_identity_conflict(project_repo_identity(project), summary.get("repo_url")):
+            raise ValueError("github_proof_repo_mismatch")
+        existing["github_proof"] = summary
 
     website_ids = _clean_list(getattr(attached, "website_proof_session_ids", None))
     if website_ids:
@@ -1381,12 +1632,19 @@ def generate_defense_questions(db: Any, project: dict[str, Any]) -> tuple[str, l
 
     _delete_session_questions(db, session["id"])
 
-    specs = build_defense_question_specs(project)
+    inserted = _write_session_questions(db, str(session["id"]), build_defense_question_specs(project))
+    return str(session["id"]), inserted
+
+
+def _write_session_questions(
+    db: Any, session_id: str, specs: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Insert deterministic question rows for ``session_id`` from ``specs``."""
     now = _now()
     rows = [
         {
             "id": str(uuid4()),
-            "session_id": session["id"],
+            "session_id": session_id,
             "sort_order": sort_order,
             "question_text": spec["question_text"],
             "target_ref": spec["target_ref"],
@@ -1397,9 +1655,7 @@ def generate_defense_questions(db: Any, project: dict[str, Any]) -> tuple[str, l
         }
         for sort_order, spec in enumerate(specs)
     ]
-
-    inserted = _insert_questions(db, rows)
-    return str(session["id"]), inserted
+    return _insert_questions(db, rows)
 
 
 def create_new_defense_session(db: Any, project: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -1586,7 +1842,11 @@ def _mark_questions_answered(db: Any, question_ids: set[str]) -> None:
 
 
 def submit_defense_answers(
-    db: Any, session: dict[str, Any], project: dict[str, Any], body: SubmitDefenseAnswersRequest
+    db: Any,
+    session: dict[str, Any],
+    project: dict[str, Any],
+    body: SubmitDefenseAnswersRequest,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Save pasted/manual defense answers as a transcript + segments and analyze.
 
@@ -1595,6 +1855,11 @@ def submit_defense_answers(
     ``vbr_transcription.transcribe_session``) as the analysis source, if one
     exists. Raises ``ValueError("no_answers_provided")`` if neither manual
     text nor an auto-generated transcript is available.
+
+    When ``user_id`` is provided, the analysis grounds in the SAME merged
+    canonical evidence package (claimed skills + attached proofs across the
+    project's duplicate group) that the workspace and question generation use —
+    never only the session's own row, which may be a near-empty duplicate.
     """
     session_id = str(session["id"])
     questions = list_session_questions(db, session_id)
@@ -1659,8 +1924,9 @@ def submit_defense_answers(
         transcript_id = str(auto_transcript["id"])
         full_text = auto_transcript.get("full_text") or ""
 
-    metadata = project.get("metadata") or {}
-    claimed_skills = _clean_list(metadata.get("claimed_skills") or [])
+    read_project = merge_owned_project(db, user_id, project) if user_id else project
+    metadata = read_project.get("metadata") or {}
+    claimed_skills = effective_claimed_skills(metadata)
     attached = metadata.get("attached_proofs") or {}
     if not isinstance(attached, dict):
         attached = {}

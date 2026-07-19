@@ -9,8 +9,10 @@
  */
 
 export const WEBSITE_PROOF_RECORDER_SCHEMA_VERSION = 1 as const
-export const WEBSITE_PROOF_RECORDER_BUILD_VERSION = "0.2.0" as const
+export const WEBSITE_PROOF_RECORDER_BUILD_VERSION = "0.2.1" as const
 
+export const RECORDER_BRIDGE_PING = "VERIBRIDGE_RECORDER_BRIDGE_PING" as const
+export const RECORDER_BRIDGE_PONG = "VERIBRIDGE_RECORDER_BRIDGE_PONG" as const
 export const RECORDER_INIT_REQUEST = "VERIBRIDGE_RECORDER_INIT_REQUEST" as const
 export const RECORDER_INIT_ACK = "VERIBRIDGE_RECORDER_INIT_ACK" as const
 export const RECORDER_INIT_NACK = "VERIBRIDGE_RECORDER_INIT_NACK" as const
@@ -47,6 +49,7 @@ export type WebsiteProofRecorderConfig = {
 export type RecorderProtocolErrorCode =
   | "extension_not_detected"
   | "extension_version_incompatible"
+  | "extension_worker_unreachable"
   | "initialization_timeout"
   | "invalid_config"
   | "invalid_api_base"
@@ -65,6 +68,44 @@ export type RecorderProtocolErrorCode =
   | "replay_not_retained"
   | "extension_context_invalidated"
   | "unknown_error"
+
+export type RecorderBridgePing = {
+  request_id: string
+}
+
+/**
+ * Answered synchronously by the content-script bridge WITHOUT involving the
+ * background service worker. Lets the page distinguish "no content script at
+ * all" from "bridge present but the worker is unreachable" and detect a stale
+ * extension build before any timeout elapses.
+ */
+export type RecorderBridgePong = {
+  request_id: string
+  schema_version: number
+  build_version: string
+  /** False when the extension was reloaded and this content script is orphaned. */
+  context_valid: boolean
+  /** True when the current page qualifies as a trusted VeriBridge app origin. */
+  bridge_trusted: boolean
+}
+
+/**
+ * Every window-message type the CURRENT extension build may post with
+ * source "veribridge-extension". The page uses this to classify any other
+ * extension-sourced message type as a stale/incompatible build instead of
+ * silently waiting for a timeout that can never succeed.
+ */
+export const RECORDER_KNOWN_EXTENSION_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  RECORDER_BRIDGE_PONG,
+  RECORDER_INIT_ACK,
+  RECORDER_INIT_NACK,
+  RECORDER_AUTH_REFRESH_ACK,
+  RECORDER_TARGET_OPEN_ACK,
+  RECORDER_TARGET_READY,
+  RECORDER_START_ACK,
+  "VERIBRIDGE_EXTENSION_STATE",
+  "VERIBRIDGE_PROOF_UPLOAD_STARTED",
+])
 
 export type RecorderInitRequest = {
   request_id: string
@@ -136,6 +177,33 @@ export type RecorderConfigSelection = {
 }
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
+
+const TRUSTED_APP_PATH_PREFIXES = [
+  "/student",
+  "/dashboard",
+  "/passport",
+  "/admin",
+  "/vbr",
+] as const
+
+/**
+ * True when a page location belongs to the trusted VeriBridge app surface that
+ * may exchange recorder messages (including the auth handoff) with the
+ * extension. Shared by the page and the content script so both sides agree.
+ *
+ * IMPORTANT: single-page navigations change the pathname without re-running
+ * the content script, so callers MUST evaluate this per message — never cache
+ * the result from script-load time.
+ */
+export function isTrustedVeriBridgeAppLocation(
+  location: { hostname: string; pathname: string },
+): boolean {
+  if (location.hostname.endsWith("veribridge.ai")) return true
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+    return TRUSTED_APP_PATH_PREFIXES.some(prefix => location.pathname.startsWith(prefix))
+  }
+  return false
+}
 const SENSITIVE_URL_PARAMS = new Set([
   "token", "access_token", "id_token", "refresh_token", "api_key", "key",
   "secret", "password", "code", "auth", "authorization", "session", "jwt",

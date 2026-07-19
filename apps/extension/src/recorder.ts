@@ -7,16 +7,20 @@
 // video bytes.
 //
 // Flow:
-//   1. User clicks "Start Recording" in the popup → popup auto-opens this tab.
-//   2. User clicks "Start Screen Capture" → user gesture → getDisplayMedia().
-//   3. Browser screen-share picker → user selects Entire Screen or Window.
+//   1. User clicks "Start Recording" in the popup/proof page → recorder tab opens.
+//   2. User clicks "Start Screen Recording" → user gesture → getDisplayMedia().
+//   3. Browser screen-share picker → the ACTUAL selected surface (tab / window /
+//      entire screen) is detected via MediaStreamTrack.getSettings().displaySurface
+//      and shown as the capture scope. Tab/window selections require an explicit
+//      confirmation because they cannot capture other windows.
 //   4. MediaRecorder starts → WebM chunks accumulate in memory.
-//   5. User minimises this tab, enters fullscreen on another tab.
-//   6. Recording continues (this tab's JS runs in background).
-//   7. User exits fullscreen, returns here, clicks "Stop Screen Capture".
-//   8. MediaRecorder stops → WebM blob assembled → uploaded to /workflow/video.
-//   9. Upload result reported back to background via RECORDER_VIDEO_UPLOADED.
-//  10. User goes to popup → Stop Recording → Send Proof.
+//   5. Recording continues while the user works (this tab's JS runs in background).
+//   6. Stop (from this tab, the floating bar via the background finalize request,
+//      or Chrome's native "Stop sharing") runs the durable finalize pipeline:
+//      final chunk flush → blob validation → IndexedDB persistence → upload with
+//      a stable idempotency key → backend acknowledgment.
+//   7. Failures keep the recording recoverable (IndexedDB) and offer Retry with
+//      the SAME session + upload id. A reloaded tab resumes the pending upload.
 //
 // Why getDisplayMedia instead of captureVisibleTab:
 //   captureVisibleTab returns black frames for hardware-decoded fullscreen video
@@ -24,12 +28,32 @@
 //   getDisplayMedia at OS level captures what is actually displayed on screen.
 
 import type { RecorderPrivateState } from "./types"
+import {
+  RecorderFinalizeMachine,
+  awaitMediaFinalization,
+  classifyDisplaySurface,
+  uploadRecordingOnce,
+  validateRecordingBlob,
+  WPR_RECOVERY_DATA_MISSING,
+  WPR_SESSION_MISMATCH,
+  finalizeRequestMatchesSession,
+  shouldResetRecorderSessionState,
+  type CaptureScopeInfo,
+  type PendingVideoUpload,
+  type VideoUploadResult,
+  type WprDiagnosticCode,
+} from "./recorderFinalize"
+import {
+  deletePendingVideoUpload,
+  loadPendingVideoUpload,
+  savePendingVideoUpload,
+} from "./recorderMediaStore"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 /** Maximum recording duration in ms (5 minutes) after which capture auto-stops. */
 const MAX_RECORDING_MS = 5 * 60 * 1000
-/** Maximum video size accepted by the backend (100 MB). */
-const MAX_VIDEO_BYTES = 100 * 1024 * 1024
+/** Keep the MV3 service worker awake while an upload is in flight. */
+const UPLOAD_KEEPALIVE_MS = 5000
 
 // ── MediaRecorder MIME type selection ────────────────────────────────────────
 function chooseMimeType(): string {
@@ -46,6 +70,8 @@ function chooseMimeType(): string {
 
 // ── Module state ──────────────────────────────────────────────────────────────
 let displayStream: MediaStream | null = null
+/** Stream selected in the picker but awaiting scope confirmation (tab/window). */
+let pendingStream: MediaStream | null = null
 let mediaRecorder: MediaRecorder | null = null
 let videoChunks: Blob[] = []
 let videoMimeType = "video/webm"
@@ -55,12 +81,29 @@ let autoStopTimer: ReturnType<typeof setTimeout> | null = null
 
 let isRecordingActive = false   // background recording is active
 let currentSessionId = ""
+/** Session the finalize/upload state in this tab belongs to — unlike
+ *  currentSessionId it does NOT follow the background's active session, so a
+ *  stale tab can be detected and reset when a new session takes over. */
+let boundSessionId = ""
 let currentApiUrl = ""
 let currentAuthToken = ""
 
 let isUploading = false
 let uploadDone = false
 let uploadError: string | null = null
+let uploadErrorCode: WprDiagnosticCode | null = null
+let lastKeyframeCount = 0
+
+/** Detected capture scope of the active/pending display stream. */
+let captureScope: CaptureScopeInfo | null = null
+/** Durable finalize pipeline state for the current recording. */
+let finalizeMachine: RecorderFinalizeMachine | null = null
+/** Finished recording awaiting (or having failed) backend acknowledgment. */
+let pendingUpload: { record: PendingVideoUpload; blob: Blob } | null = null
+/** Deduplicates concurrent finalize/retry triggers (button, message, track-end). */
+let inFlightFinalize: Promise<VideoUploadResult> | null = null
+let uploadKeepaliveTimer: ReturnType<typeof setInterval> | null = null
+let recoveryChecked = false
 
 let statePoll: ReturnType<typeof setInterval> | null = null
 let contextInvalidated = false
@@ -72,6 +115,13 @@ function el<T extends HTMLElement>(id: string): T {
 
 const btnStart      = el<HTMLButtonElement>("btnStart")
 const btnStop       = el<HTMLButtonElement>("btnStop")
+const btnRetry      = el<HTMLButtonElement>("btnRetry")
+const btnConfirmScope = el<HTMLButtonElement>("btnConfirmScope")
+const btnReselect   = el<HTMLButtonElement>("btnReselect")
+const confirmRow    = el("confirmRow")
+const scopeRow      = el("scopeRow")
+const scopeLabelEl  = el("scopeLabel")
+const scopeWarnEl   = el("scopeWarn")
 const recDot        = el("recDot")
 const recStatusEl   = el("recStatus")
 const recSessionEl  = el("recSession")
@@ -93,7 +143,7 @@ function setMsg(text: string, variant: MsgVariant = "default"): void {
 function updateStreamUI(active: boolean): void {
   if (active) {
     streamIndEl.textContent = "🔴"
-    streamLblEl.textContent = "Screen capture active — minimise this tab and enter fullscreen"
+    streamLblEl.textContent = "Screen capture active — you can minimise this tab"
     streamLblEl.className = "stream-label active"
     instructionsEl.classList.add("visible")
   } else {
@@ -102,6 +152,28 @@ function updateStreamUI(active: boolean): void {
     streamLblEl.className = "stream-label"
     instructionsEl.classList.remove("visible")
   }
+}
+
+function renderCaptureScope(): void {
+  if (!captureScope) {
+    scopeRow.style.display = "none"
+    scopeWarnEl.style.display = "none"
+    return
+  }
+  scopeRow.style.display = ""
+  scopeLabelEl.textContent = `Capture scope: ${captureScope.label}`
+  if (captureScope.warning) {
+    scopeWarnEl.style.display = ""
+    scopeWarnEl.textContent = `⚠ ${captureScope.warning}`
+  } else {
+    scopeWarnEl.style.display = "none"
+    scopeWarnEl.textContent = ""
+  }
+}
+
+function showRetryButton(visible: boolean): void {
+  btnRetry.style.display = visible ? "" : "none"
+  btnRetry.disabled = !visible
 }
 
 function formatDuration(ms: number): string {
@@ -144,186 +216,323 @@ function applyRecordingState(state: RecorderPrivateState): void {
   currentApiUrl      = (state.apiUrl || "").replace(/\/$/, "")
   currentAuthToken   = state.authToken ?? ""
 
+  // A new session took over while this tab still holds the previous session's
+  // finalize/upload state — reset it so this tab can never report the old
+  // upload as the new session's recording.
+  const sessionBusy =
+    isUploading ||
+    inFlightFinalize !== null ||
+    displayStream !== null ||
+    pendingStream !== null ||
+    (mediaRecorder !== null && mediaRecorder.state === "recording")
+  if (shouldResetRecorderSessionState(boundSessionId, currentSessionId, sessionBusy)) {
+    resetSessionScopedState()
+  }
+  if (!boundSessionId && currentSessionId) boundSessionId = currentSessionId
+
   if (state.isRecording) {
     recDot.className = "status-dot recording"
     recStatusEl.textContent = `Recording active · ${state.eventCount} event(s)`
   } else if (state.status === "stopped") {
     recDot.className = "status-dot stopped"
-    recStatusEl.textContent = "Recording stopped — send proof from popup"
+    recStatusEl.textContent = "Recording stopped — send proof from the proof page or popup"
   } else if (state.status === "uploaded") {
     recDot.className = "status-dot"
     recStatusEl.textContent = "Proof uploaded ✓"
   } else {
     recDot.className = "status-dot"
-    recStatusEl.textContent = "No active recording — start one in the extension popup"
+    recStatusEl.textContent = "No active recording — start one from the Website Proof page"
   }
 
   recSessionEl.textContent = currentSessionId ? currentSessionId.slice(0, 16) + "…" : ""
 
   // Buttons: Start enabled only when recording active and no capture in progress
-  const capturing = displayStream !== null || isUploading
-  btnStart.disabled = !isRecordingActive || capturing
+  const capturing = displayStream !== null || pendingStream !== null || isUploading
+  btnStart.disabled = !isRecordingActive || capturing || uploadDone
   btnStop.disabled  = displayStream === null || isUploading
 
-  // If recording stopped from popup while screen capture is active, warn
-  if (wasRecording && !isRecordingActive && displayStream) {
-    setMsg(
-      "Background recording stopped. Stop screen capture here too.",
-      "warn",
-    )
+  // If recording stopped from popup/floating bar while screen capture is still
+  // running, finalize the video automatically instead of only warning.
+  if (wasRecording && !isRecordingActive && displayStream && !inFlightFinalize) {
+    setMsg("Background recording stopped — finishing and uploading the screen recording…")
+    void stopAndFinalize("background_recording_stopped")
   }
 
   if (!isRecordingActive && !displayStream && !isUploading) {
     if (uploadDone && !uploadError) {
-      setMsg("✓ Video uploaded. Return to extension popup → Stop Recording → Send Proof.", "ok")
+      setMsg("✓ Video uploaded. Return to the Website Proof page to send your proof.", "ok")
     } else if (uploadError) {
       setMsg(`Video upload failed: ${uploadError}`, "err")
-    } else {
-      setMsg('Start a recording session in the extension popup first, then click "Start Screen Capture" here.')
+    } else if (!pendingUpload) {
+      setMsg('Start a recording session from the Website Proof page first, then click "Start Screen Recording" here.')
     }
+  }
+
+  // One-time recovery: a finished recording persisted before a tab reload /
+  // browser restart resumes its upload as soon as the session is known.
+  if (!recoveryChecked && currentSessionId) {
+    recoveryChecked = true
+    void recoverPendingUpload()
   }
 }
 
-// ── Video upload ───────────────────────────────────────────────────────────────
+// ── Durable finalize / upload pipeline ────────────────────────────────────────
 
-async function uploadVideo(blob: Blob): Promise<void> {
-  isUploading = true
-  uploadDone  = false
+/** A different session took over this tab — its finalize/upload state is
+ *  stale. The previous session's persisted recording (if any) stays safe in
+ *  IndexedDB under its own session id; only in-memory state resets here. */
+function resetSessionScopedState(): void {
+  uploadDone = false
   uploadError = null
+  uploadErrorCode = null
+  lastKeyframeCount = 0
+  pendingUpload = null
+  finalizeMachine = null
+  boundSessionId = ""
+  recoveryChecked = false   // recovery re-runs for the new session id
+  showRetryButton(false)
   updateDurationBadge()
-  setMsg(`Uploading recording (${(blob.size / 1024 / 1024).toFixed(1)} MB) to backend…`, "default")
+}
+
+function beginUploadKeepalive(): void {
+  if (uploadKeepaliveTimer) return
+  uploadKeepaliveTimer = setInterval(() => {
+    if (contextInvalidated) return
+    try {
+      chrome.runtime.sendMessage({ type: "RECORDER_VIDEO_UPLOAD_PROGRESS" }, () => {
+        if (chrome.runtime.lastError) { /* worker may be restarting */ }
+      })
+    } catch { /* extension context may be gone */ }
+  }, UPLOAD_KEEPALIVE_MS)
+}
+
+function endUploadKeepalive(): void {
+  if (uploadKeepaliveTimer) { clearInterval(uploadKeepaliveTimer); uploadKeepaliveTimer = null }
+}
+
+function failureMessage(result: Extract<VideoUploadResult, { ok: false }>): string {
+  return `${result.message} [${result.code}]`
+}
+
+/**
+ * Stop capture (if running), flush the final MediaRecorder chunks, validate the
+ * blob, persist it, and upload — an explicit, observable pipeline. Concurrent
+ * triggers (Stop button, background finalize request, Chrome's "Stop sharing",
+ * auto-stop) share one in-flight promise.
+ */
+function stopAndFinalize(trigger: string): Promise<VideoUploadResult> {
+  if (inFlightFinalize) return inFlightFinalize
+  const run = doStopAndFinalize(trigger).finally(() => { inFlightFinalize = null })
+  inFlightFinalize = run
+  return run
+}
+
+async function doStopAndFinalize(trigger: string): Promise<VideoUploadResult> {
+  if (uploadDone) {
+    return {
+      ok: true,
+      keyframe_count: lastKeyframeCount,
+      video_analysis_status: "already_uploaded",
+      message: "Recording already uploaded.",
+    }
+  }
+
+  const machine = finalizeMachine ?? new RecorderFinalizeMachine("recording")
+  finalizeMachine = machine
+
+  const recorder = mediaRecorder
+  if (recorder) {
+    if (machine.phase === "recording") machine.to("stop_requested")
+    setMsg("Stopping — flushing the final video chunks…")
+    if (machine.phase === "stop_requested") machine.to("flushing_final_chunks")
+    const finalized = await awaitMediaFinalization(recorder)
+    if (durationTimer) { clearInterval(durationTimer); durationTimer = null }
+    if (autoStopTimer) { clearTimeout(autoStopTimer);  autoStopTimer  = null }
+    if (!finalized.ok) {
+      machine.to("upload_failed")
+      uploadError = finalized.message
+      uploadErrorCode = finalized.code
+      cleanupStreamTracks()
+      updateDurationBadge()
+      setMsg(`Recording could not be finalized: ${finalized.message} [${finalized.code}]`, "err")
+      notifyBackground(false, `${finalized.message} [${finalized.code}]`, 0)
+      return { ok: false, code: finalized.code, message: finalized.message, retryable: false }
+    }
+  }
+  cleanupStreamTracks()
+
+  // Build + validate the blob from every flushed chunk (final one included).
+  const blob = new Blob(videoChunks, { type: videoMimeType })
+  videoChunks = []
+  mediaRecorder = null
+  const validation = validateRecordingBlob(blob)
+  if (!validation.ok) {
+    if (machine.phase !== "upload_failed") machine.to("upload_failed")
+    uploadError = validation.message
+    uploadErrorCode = validation.code
+    updateDurationBadge()
+    setMsg(`${validation.message} [${validation.code}] (trigger: ${trigger})`, "err")
+    notifyBackground(false, `${validation.message} [${validation.code}]`, 0)
+    return { ok: false, code: validation.code, message: validation.message, retryable: false }
+  }
+  machine.to("media_finalized")
+
+  const record: PendingVideoUpload = {
+    session_id: currentSessionId,
+    upload_id: crypto.randomUUID(),
+    mime_type: videoMimeType,
+    duration_ms: Math.max(0, Date.now() - recordingStartMs),
+    display_surface: captureScope?.scope ?? null,
+    created_at: new Date().toISOString(),
+    attempt_count: 0,
+  }
+  pendingUpload = { record, blob }
+
+  // Persist BEFORE uploading so a tab close / crash cannot lose the recording.
+  try {
+    await savePendingVideoUpload({ ...record, blob })
+  } catch (err) {
+    console.warn("VeriBridge recorder: could not persist recording before upload:", err)
+  }
+  machine.to("ready_to_upload")
+
+  return runUploadAttempt()
+}
+
+/** One upload attempt for the pending recording. Reuses the same upload id. */
+async function runUploadAttempt(): Promise<VideoUploadResult> {
+  const pending = pendingUpload
+  const machine = finalizeMachine
+  if (!pending || !machine) {
+    const message = "No recorded video is available to upload. Start a new screen recording."
+    return { ok: false, code: WPR_RECOVERY_DATA_MISSING, message, retryable: false }
+  }
+
+  if (!pending.record.session_id) pending.record.session_id = currentSessionId
+  pending.record.attempt_count += 1
+
+  machine.to("uploading")
+  isUploading = true
+  uploadError = null
+  uploadErrorCode = null
+  showRetryButton(false)
+  updateDurationBadge()
+  setMsg(
+    `Uploading recording (${(pending.blob.size / 1024 / 1024).toFixed(1)} MB, attempt ${pending.record.attempt_count})…`,
+  )
   btnStop.disabled = true
   btnStart.disabled = true
-
-  const sessionId = currentSessionId
-  const apiUrl    = currentApiUrl
-  const authToken = currentAuthToken
-  const missingAuthMessage =
-    "Recording isn't signed in. Open the VeriBridge Website Proof page while signed in, then restart the recording from there."
-
-  if (!sessionId) {
-    uploadError = "No session ID — cannot upload video"
-    isUploading = false
-    updateDurationBadge()
-    setMsg(`Upload skipped: ${uploadError}`, "warn")
-    notifyBackground(false, uploadError, 0)
-    return
-  }
-
-  if (!apiUrl) {
-    uploadError = "No API base is configured for this Website Proof session"
-    isUploading = false
-    updateDurationBadge()
-    setMsg(`Upload skipped: ${uploadError}`, "warn")
-    notifyBackground(false, uploadError, 0)
-    return
-  }
-
-  if (!authToken) {
-    uploadError = missingAuthMessage
-    isUploading = false
-    uploadDone = false
-    updateDurationBadge()
-    setMsg(`Video upload failed: ${uploadError}`, "err")
-    notifyBackground(false, uploadError, 0)
-    return
-  }
-
-  if (blob.size > MAX_VIDEO_BYTES) {
-    uploadError = `Video too large (${(blob.size / 1024 / 1024).toFixed(0)} MB > 100 MB limit)`
-    isUploading = false
-    updateDurationBadge()
-    setMsg(`Upload failed: ${uploadError}`, "err")
-    notifyBackground(false, uploadError, 0)
-    return
-  }
-
   notifyUploadStarted()
+  beginUploadKeepalive()
 
-  const ext  = videoMimeType.includes("mp4") ? "mp4" : "webm"
-  const form = new FormData()
-  form.append("video", blob, `recording.${ext}`)
+  const result = await uploadRecordingOnce({
+    apiBaseUrl: currentApiUrl,
+    authToken: currentAuthToken,
+    record: pending.record,
+    blob: pending.blob,
+    fetchFn: fetch.bind(globalThis),
+  })
 
-  const url = `${apiUrl}/api/v1/student/extension-proof/sessions/${sessionId}/workflow/video`
-  const headers: HeadersInit = {}
-  if (authToken) headers["Authorization"] = `Bearer ${authToken}`
+  endUploadKeepalive()
+  isUploading = false
 
-  try {
-    const resp = await fetch(url, { method: "POST", headers, body: form })
-    const bodyText = await resp.text().catch(() => "")
-
-    if (!resp.ok) {
-      // Parse backend error detail for exact reason
-      let reason = `HTTP ${resp.status}`
-      try {
-        const parsed = JSON.parse(bodyText) as { detail?: string | { message?: string } }
-        const d = parsed?.detail
-        reason = (typeof d === "string" ? d : d?.message) ?? reason
-      } catch { /* keep HTTP status */ }
-      reason = reason.slice(0, 200)
-      if (resp.status === 401) {
-        // Backend failed closed on a missing/expired token. Point the user at
-        // the recovery path instead of the raw backend auth message.
-        reason = missingAuthMessage
-      }
-
-      uploadError = reason
-      isUploading = false
-      uploadDone  = false
-      updateDurationBadge()
-      setMsg(`Video upload failed: ${reason}`, "err")
-      notifyBackground(false, reason, 0)
-      return
-    }
-
-    // Parse success response for keyframe count
-    let keyframeCount = 0
-    let uploadMsg = "Video uploaded."
-    let replayRetained = false
-    try {
-      const parsed = JSON.parse(bodyText) as {
-        keyframe_count?: number
-        video_analysis_status?: string
-        message?: string
-        replay_retained?: boolean
-      }
-      replayRetained = parsed.replay_retained === true
-      keyframeCount = parsed?.keyframe_count ?? 0
-      const status  = parsed?.video_analysis_status ?? "unknown"
-      const kfStr   = keyframeCount > 0 ? `${keyframeCount} keyframe(s) extracted.` : "Keyframe extraction pending."
-      uploadMsg = `✓ Video uploaded (${status}). ${kfStr}`
-    } catch { /* keep default */ }
-
-    if (!replayRetained) {
-      const reason = "The recording could not be retained for replay. Retry the upload before sending proof."
-      uploadError = reason
-      isUploading = false
-      uploadDone = false
-      updateDurationBadge()
-      setMsg(`Video upload failed: ${reason}`, "err")
-      notifyBackground(false, reason, 0)
-      return
-    }
-
-    uploadDone  = true
-    isUploading = false
+  if (result.ok) {
+    machine.to("upload_acknowledged")
+    machine.to("completed")
+    uploadDone = true
     uploadError = null
+    uploadErrorCode = null
+    lastKeyframeCount = result.keyframe_count
+    pendingUpload = null
+    try {
+      await deletePendingVideoUpload(pending.record.session_id)
+    } catch { /* stale entry is harmless — it is keyed by session */ }
     updateDurationBadge()
-    setMsg(uploadMsg + " Return to popup → Stop Recording → Send Proof.", "ok")
-    notifyBackground(true, null, keyframeCount)
-
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Network error — check your connection."
-    uploadError = msg.slice(0, 200)
-    isUploading = false
+    const kfStr = result.keyframe_count > 0
+      ? `${result.keyframe_count} keyframe(s) extracted.`
+      : "Keyframe extraction pending."
+    setMsg(`${result.message} ${kfStr} Return to the Website Proof page to send your proof.`, "ok")
+    showRetryButton(false)
+    notifyBackground(true, null, result.keyframe_count, pending.record.session_id)
+  } else {
+    machine.to("upload_failed")
+    uploadError = result.message
+    uploadErrorCode = result.code
     updateDurationBadge()
-    setMsg(`Video upload failed: ${uploadError}`, "err")
-    notifyBackground(false, uploadError, 0)
+    setMsg(
+      `Video upload failed: ${failureMessage(result)}` +
+      (result.retryable ? " Your recording is saved — click Retry Upload." : ""),
+      "err",
+    )
+    showRetryButton(true)
+    notifyBackground(false, failureMessage(result), 0, pending.record.session_id)
   }
 
-  // Re-evaluate button states
-  btnStart.disabled = !isRecordingActive || displayStream !== null
+  btnStart.disabled = !isRecordingActive || displayStream !== null || uploadDone
   btnStop.disabled  = displayStream === null
+  return result
+}
+
+/** Retry the pending upload — same session, same upload id, no duplicate media. */
+function retryUpload(): Promise<VideoUploadResult> {
+  if (inFlightFinalize) return inFlightFinalize
+  const run = doRetryUpload().finally(() => { inFlightFinalize = null })
+  inFlightFinalize = run
+  return run
+}
+
+async function doRetryUpload(): Promise<VideoUploadResult> {
+  if (uploadDone) {
+    return {
+      ok: true,
+      keyframe_count: lastKeyframeCount,
+      video_analysis_status: "already_uploaded",
+      message: "Recording already uploaded.",
+    }
+  }
+  if (!pendingUpload) {
+    // The tab may have been reloaded — recover the persisted recording.
+    try {
+      const stored = await loadPendingVideoUpload(currentSessionId)
+      if (stored) {
+        const { blob, ...record } = stored
+        pendingUpload = { record, blob }
+        finalizeMachine = new RecorderFinalizeMachine("ready_to_upload")
+      }
+    } catch (err) {
+      console.warn("VeriBridge recorder: pending-upload recovery failed:", err)
+    }
+  }
+  if (!pendingUpload) {
+    const message =
+      "The recording data for this session is no longer available. " +
+      "Start a new screen recording."
+    uploadError = message
+    uploadErrorCode = WPR_RECOVERY_DATA_MISSING
+    setMsg(`${message} [${WPR_RECOVERY_DATA_MISSING}]`, "err")
+    showRetryButton(false)
+    return { ok: false, code: WPR_RECOVERY_DATA_MISSING, message, retryable: false }
+  }
+  if (!finalizeMachine || finalizeMachine.phase === "completed") {
+    finalizeMachine = new RecorderFinalizeMachine("ready_to_upload")
+  } else if (finalizeMachine.phase === "upload_failed") {
+    // upload_failed → uploading happens inside runUploadAttempt
+  }
+  return runUploadAttempt()
+}
+
+/** Resume a persisted, unacknowledged upload after a tab reload / restart. */
+async function recoverPendingUpload(): Promise<void> {
+  if (uploadDone || displayStream || pendingStream || inFlightFinalize || pendingUpload) return
+  let stored
+  try {
+    stored = await loadPendingVideoUpload(currentSessionId)
+  } catch {
+    return
+  }
+  if (!stored) return
+  setMsg("Found a finished recording that was not uploaded yet — resuming the upload…", "warn")
+  void retryUpload()
 }
 
 /**
@@ -335,20 +544,35 @@ function notifyStreamState(active: boolean): void {
   if (contextInvalidated) return
   const type = active ? "RECORDER_STREAM_STARTED" : "RECORDER_STREAM_STOPPED"
   try {
-    chrome.runtime.sendMessage({ type }, () => {
-      if (chrome.runtime.lastError) { /* context may have been invalidated */ }
-    })
+    chrome.runtime.sendMessage(
+      { type, payload: { display_surface: captureScope?.scope ?? null } },
+      () => {
+        if (chrome.runtime.lastError) { /* context may have been invalidated */ }
+      },
+    )
   } catch { /* extension context may be gone */ }
 }
 
 /** Inform the background service worker about the upload result. */
-function notifyBackground(ok: boolean, error: string | null, keyframeCount: number): void {
+function notifyBackground(
+  ok: boolean,
+  error: string | null,
+  keyframeCount: number,
+  sessionId?: string,
+): void {
   if (contextInvalidated) return
   try {
     chrome.runtime.sendMessage(
       {
         type: "RECORDER_VIDEO_UPLOADED",
-        payload: { ok, error, keyframe_count: keyframeCount },
+        payload: {
+          ok,
+          error,
+          keyframe_count: keyframeCount,
+          // Session this upload result actually belongs to — the background
+          // ignores results for a session other than its active one.
+          session_id: sessionId ?? boundSessionId ?? null,
+        },
       },
       () => { if (chrome.runtime.lastError) { /* ignore */ } },
     )
@@ -359,7 +583,7 @@ function notifyUploadStarted(): void {
   if (contextInvalidated) return
   try {
     chrome.runtime.sendMessage(
-      { type: "RECORDER_VIDEO_UPLOAD_STARTED" },
+      { type: "RECORDER_VIDEO_UPLOAD_STARTED", payload: { session_id: boundSessionId || null } },
       () => { if (chrome.runtime.lastError) { /* ignore */ } },
     )
   } catch { /* extension context may be gone */ }
@@ -371,6 +595,7 @@ function startMediaRecorder(stream: MediaStream): void {
   videoChunks    = []
   videoMimeType  = chooseMimeType()
   recordingStartMs = Date.now()
+  finalizeMachine = new RecorderFinalizeMachine("recording")
 
   const options: MediaRecorderOptions = {
     mimeType: videoMimeType,
@@ -389,49 +614,58 @@ function startMediaRecorder(stream: MediaStream): void {
     if (e.data && e.data.size > 0) videoChunks.push(e.data)
   }
 
-  mediaRecorder.onstop = () => {
-    if (durationTimer) { clearInterval(durationTimer); durationTimer = null }
-    if (autoStopTimer) { clearTimeout(autoStopTimer);  autoStopTimer  = null }
-    const blob = new Blob(videoChunks, { type: videoMimeType })
-    videoChunks = []
-    if (blob.size < 100) {
-      // Near-empty blob — nothing was captured
-      setMsg("Recording stopped with no video data. Was the stream active?", "warn")
-      updateDurationBadge()
-      return
-    }
-    void uploadVideo(blob)
-  }
-
-  // 2-second timeslice — chunks arrive frequently so onstop gets data quickly
+  // 2-second timeslice — chunks arrive frequently so finalization is fast
   mediaRecorder.start(2000)
 
-  // Duration counter
-  durationTimer = setInterval(updateDurationBadge, 1000)
+  // Duration counter + video-track liveness watchdog: if the captured surface
+  // disappears (window closed, screen unplugged) without an `ended` event,
+  // finalize instead of silently recording nothing.
+  durationTimer = setInterval(() => {
+    updateDurationBadge()
+    const track = displayStream?.getVideoTracks()[0]
+    if (track && track.readyState === "ended" && !inFlightFinalize) {
+      setMsg("Screen capture ended unexpectedly — finalizing the recording…", "warn")
+      void stopAndFinalize("track_ended_watchdog")
+    }
+  }, 1000)
 
   // Safety cap: auto-stop after MAX_RECORDING_MS
   autoStopTimer = setTimeout(() => {
-    stopCapture()
-    setMsg(`Auto-stopped after ${formatDuration(MAX_RECORDING_MS)} (max recording duration).`, "warn")
+    setMsg(`Auto-stopping after ${formatDuration(MAX_RECORDING_MS)} (max recording duration)…`, "warn")
+    void stopAndFinalize("auto_stop")
   }, MAX_RECORDING_MS)
 }
 
 // ── Start / stop capture ───────────────────────────────────────────────────────
 
+const PRE_PICKER_GUIDANCE =
+  "Choose what to share. If your workflow spans more than one window " +
+  "(e.g. your deployed app AND GitHub), select “Entire Screen” — a single tab " +
+  "or window records only itself."
+
 async function startCapture(): Promise<void> {
-  if (displayStream) return
+  if (displayStream || pendingStream) return
   btnStart.disabled = true
-  setMsg("Opening screen picker… select Entire Screen or your Window.", "default")
+  setMsg(PRE_PICKER_GUIDANCE)
 
   let stream: MediaStream
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia({
+    // displaySurface:"monitor" asks Chrome to promote "Entire Screen" in the
+    // picker (a hint — the user stays in control). selfBrowserSurface:"exclude"
+    // hides this recorder tab from the choices; surfaceSwitching:"include"
+    // lets the user re-target a shared tab via Chrome's own UI.
+    const constraints = {
       video: {
         frameRate: { ideal: 15, max: 30 },
+        displaySurface: "monitor",
         // No width/height constraints — let the OS pick native resolution
       },
       audio: false,  // Audio recording would require system permissions; skip for now
-    })
+      selfBrowserSurface: "exclude",
+      surfaceSwitching: "include",
+      monitorTypeSurfaces: "include",
+    } as MediaStreamConstraints
+    stream = await navigator.mediaDevices.getDisplayMedia(constraints)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.toLowerCase().includes("permission denied") || msg.includes("NotAllowedError")) {
@@ -443,41 +677,85 @@ async function startCapture(): Promise<void> {
     return
   }
 
+  // Detect what the user ACTUALLY selected (tab / window / entire screen).
+  const track = stream.getVideoTracks()[0]
+  const settings = (track?.getSettings() ?? {}) as { displaySurface?: string }
+  captureScope = classifyDisplaySurface(settings.displaySurface)
+  renderCaptureScope()
+
+  if (!captureScope.capturesOtherWindows) {
+    // Tab/window scope cannot follow the user to another window. Recording is
+    // NOT started until the user explicitly confirms the limitation (or
+    // re-selects Entire Screen) — no silent missing evidence.
+    pendingStream = stream
+    confirmRow.style.display = "grid"
+    btnStart.disabled = true
+    btnStop.disabled = true
+    setMsg(
+      `You selected a ${captureScope.label.toLowerCase()}. Other windows will NOT be recorded. ` +
+      "Confirm to continue with this limitation, or re-select and share your Entire Screen.",
+      "warn",
+    )
+    // If the user dismisses via Chrome's "Stop sharing" while deciding:
+    stream.getVideoTracks().forEach((t) => {
+      t.addEventListener("ended", () => {
+        if (pendingStream === stream) discardPendingStream("Screen selection ended. Click Start to try again.")
+      })
+    })
+    return
+  }
+
+  beginConfirmedCapture(stream)
+}
+
+function discardPendingStream(message: string): void {
+  if (pendingStream) {
+    pendingStream.getTracks().forEach((t) => t.stop())
+    pendingStream = null
+  }
+  captureScope = null
+  renderCaptureScope()
+  confirmRow.style.display = "none"
+  btnStart.disabled = !isRecordingActive
+  btnStop.disabled = true
+  setMsg(message)
+}
+
+/** Start recording on a stream whose capture scope the user has accepted. */
+function beginConfirmedCapture(stream: MediaStream): void {
+  pendingStream = null
+  confirmRow.style.display = "none"
   displayStream = stream
   uploadDone    = false
   uploadError   = null
+  uploadErrorCode = null
+  showRetryButton(false)
 
   // Notify background so popup shows ONE unified status (no duplicate indicators)
   notifyStreamState(true)
 
   updateStreamUI(true)
   updateDurationBadge()
-  setMsg("✓ Recording started! Minimise this tab and go fullscreen. Return here when done.", "ok")
+  const scopeNote = captureScope?.capturesOtherWindows
+    ? "Everything on your screen is being recorded."
+    : `Only the selected ${captureScope?.label.toLowerCase() ?? "surface"} is being recorded — stay inside it.`
+  setMsg(`✓ Recording started. ${scopeNote} Return here (or use the floating bar) when done.`, "ok")
 
   btnStart.disabled = true
   btnStop.disabled  = false
 
   startMediaRecorder(stream)
 
-  // Auto-stop when user clicks browser "Stop sharing" button
+  // Chrome's native "Stop sharing" button ends the track → run the SAME durable
+  // finalize pipeline (final chunk flush → persist → upload), never a bare cleanup.
   stream.getVideoTracks().forEach((track) => {
     track.addEventListener("ended", () => {
-      // MediaRecorder.stop() triggers onstop → uploadVideo
-      cleanupStream()
+      if (!inFlightFinalize) void stopAndFinalize("browser_stop_sharing")
     })
   })
 }
 
-/** Stop the MediaRecorder (which triggers onstop → uploadVideo), then clean up stream. */
-function stopCapture(): void {
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
-    // Requesting final chunk, then onstop fires
-    mediaRecorder.stop()
-  }
-  cleanupStream()
-}
-
-function cleanupStream(): void {
+function cleanupStreamTracks(): void {
   if (durationTimer)  { clearInterval(durationTimer); durationTimer = null }
   if (autoStopTimer)  { clearTimeout(autoStopTimer);  autoStopTimer  = null }
   const hadStream = displayStream !== null
@@ -485,7 +763,6 @@ function cleanupStream(): void {
     displayStream.getTracks().forEach((t) => t.stop())
     displayStream = null
   }
-  mediaRecorder = null
   // Notify background that screen capture ended (popup can re-enable Stop/Send)
   if (hadStream) notifyStreamState(false)
   updateStreamUI(false)
@@ -496,7 +773,103 @@ function cleanupStream(): void {
 // ── Button handlers ────────────────────────────────────────────────────────────
 
 btnStart.addEventListener("click", () => { void startCapture() })
-btnStop.addEventListener("click",  stopCapture)
+btnStop.addEventListener("click",  () => { void stopAndFinalize("user_stop_button") })
+btnRetry.addEventListener("click", () => { void retryUpload() })
+btnConfirmScope.addEventListener("click", () => {
+  const stream = pendingStream
+  if (stream) beginConfirmedCapture(stream)
+})
+btnReselect.addEventListener("click", () => {
+  discardPendingStream("Re-opening the screen picker — select “Entire Screen”.")
+  void startCapture()
+})
+
+// ── Background finalize requests ──────────────────────────────────────────────
+// The background sends RECORDER_FINALIZE_REQUEST when the user stops/sends the
+// proof from the floating bar or popup while this tab still holds the capture
+// or a failed upload. Responding only after the upload settles lets sendProof
+// wait for a real acknowledgment instead of hard-failing.
+
+interface FinalizeRequestResponse {
+  ok: boolean
+  has_media: boolean
+  keyframe_count: number
+  code?: WprDiagnosticCode
+  message?: string
+  retryable?: boolean
+}
+
+async function handleFinalizeRequest(): Promise<FinalizeRequestResponse> {
+  if (uploadDone) {
+    return { ok: true, has_media: true, keyframe_count: lastKeyframeCount }
+  }
+  if (inFlightFinalize) {
+    const settled = await inFlightFinalize
+    return toFinalizeResponse(settled)
+  }
+  if (pendingStream) {
+    // Awaiting scope confirmation — nothing was recorded yet.
+    discardPendingStream("Screen selection discarded before recording started.")
+    return {
+      ok: false,
+      has_media: false,
+      keyframe_count: 0,
+      code: WPR_RECOVERY_DATA_MISSING,
+      message: "Screen capture never started recording. Click Start Screen Recording in the recorder tab.",
+      retryable: false,
+    }
+  }
+  if (displayStream) {
+    return toFinalizeResponse(await stopAndFinalize("background_finalize_request"))
+  }
+  if (pendingUpload) {
+    return toFinalizeResponse(await retryUpload())
+  }
+  // Tab reloaded with a persisted recording? retryUpload() recovers it.
+  const recovered = await retryUpload()
+  if (recovered.ok || recovered.code !== WPR_RECOVERY_DATA_MISSING) {
+    return toFinalizeResponse(recovered)
+  }
+  return {
+    ok: false,
+    has_media: false,
+    keyframe_count: 0,
+    code: WPR_RECOVERY_DATA_MISSING,
+    message:
+      "No screen recording exists for this session. Open the recorder tab and " +
+      "click Start Screen Recording before sending proof.",
+    retryable: false,
+  }
+}
+
+function toFinalizeResponse(result: VideoUploadResult): FinalizeRequestResponse {
+  if (result.ok) {
+    return { ok: true, has_media: true, keyframe_count: result.keyframe_count }
+  }
+  return {
+    ok: false,
+    has_media: result.code !== WPR_RECOVERY_DATA_MISSING && result.code !== WPR_SESSION_MISMATCH,
+    keyframe_count: 0,
+    code: result.code,
+    message: result.message,
+    retryable: result.retryable,
+  }
+}
+
+chrome.runtime.onMessage.addListener(
+  (
+    msg: { type?: string; payload?: { session_id?: string } },
+    _sender,
+    sendResponse: (response: unknown) => void,
+  ) => {
+    if (msg?.type !== "RECORDER_FINALIZE_REQUEST") return undefined
+    // A tab bound to a different session stays silent so the target session's
+    // recorder tab (or a definitive no-listener result) answers instead.
+    if (!finalizeRequestMatchesSession(msg.payload?.session_id, boundSessionId)) return undefined
+    void handleFinalizeRequest().then(sendResponse)
+    return true  // async sendResponse
+  },
+)
 
 // ── State polling ──────────────────────────────────────────────────────────────
 
@@ -509,7 +882,9 @@ function safeSendGet(): void {
         if (m.includes("Extension context invalidated")) contextInvalidated = true
         return
       }
-      if (resp) applyRecordingState(resp)
+      if (resp && typeof (resp as { isRecording?: unknown }).isRecording === "boolean") {
+        applyRecordingState(resp)
+      }
     })
   } catch { /* context may be gone */ }
 }
@@ -519,8 +894,10 @@ safeSendGet()
 // Poll every 1.5 s to keep recording status in sync
 statePoll = setInterval(safeSendGet, 1500)
 
-// Cleanup on page unload
+// Cleanup on page unload — the recording (if finalized) is already persisted in
+// IndexedDB, so closing this tab never loses an unacknowledged upload.
 window.addEventListener("unload", () => {
   if (statePoll) clearInterval(statePoll)
-  cleanupStream()
+  endUploadKeepalive()
+  cleanupStreamTracks()
 })

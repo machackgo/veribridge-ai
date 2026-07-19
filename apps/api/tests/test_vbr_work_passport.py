@@ -2510,12 +2510,12 @@ def test_grouped_project_preserves_card_behavior_in_skill_intelligence(
     """Verify that grouped project card aggregation is preserved when combined
     with Skill Intelligence aggregation. Project cards and Skill Intelligence
     should be in sync."""
-    # Create two attempts of the same project
+    # Create two attempts of the same project — they share the default title and
+    # repository, so they group as one logical project. (Overriding
+    # repo_full_name to a repo that contradicts the attached GitHub proof would
+    # trip the repository-identity read gate and hide the GitHub source chip.)
     project_1_id = _make_full_project(client, mem_store)
-    mem_store["vbr_projects"][project_1_id]["repo_full_name"] = "test/preserve-card-repo"
-
     project_2_id = _make_full_project(client, mem_store)
-    mem_store["vbr_projects"][project_2_id]["repo_full_name"] = "test/preserve-card-repo"
 
     body = _get_private(client).json()
 

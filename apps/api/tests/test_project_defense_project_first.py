@@ -346,6 +346,7 @@ def test_context_excludes_unsafe_legacy_attached_proof_fields(
         "target_website",
         "workflow_confidence",
         "supported_skills",
+        "status",
     }
 
     # No unsafe legacy value or key anywhere in the serialized response.
@@ -382,7 +383,14 @@ def test_context_owner_only_returns_404_for_other_users_project(
 
 def test_attach_owned_proofs_to_project_updates_evidence(client: TestClient, mem_store: dict) -> None:
     project_id = _seed_project(mem_store)
-    gh_proof = _seed_github_proof(mem_store)
+    # The attached GitHub proof must match the project's own repository —
+    # a contradictory pair is rejected by the identity gate (tested below).
+    gh_proof = _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/octocat/Hello-World",
+        repo_owner="octocat",
+        repo_name="Hello-World",
+    )
     doc = _seed_document_evidence(mem_store)
 
     res = client.post(
@@ -393,7 +401,7 @@ def test_attach_owned_proofs_to_project_updates_evidence(client: TestClient, mem
     evidence = res.json()["evidence"]
 
     assert evidence["github_proof"]["attached"] is True
-    assert evidence["github_proof"]["label"] == "machackgo/boston-smart-accident-risk-rerouting-google-cloud"
+    assert evidence["github_proof"]["label"] == "octocat/Hello-World"
     assert evidence["documents"]["attached"] is True
     assert evidence["documents"]["count"] == 1
 
@@ -1329,7 +1337,7 @@ def test_attach_response_returns_safe_dto_scrubbing_legacy_metadata(
     for doc in attached["documents"]:
         assert set(doc.keys()) == {"title", "source_type", "status", "skills"}
     for web in attached["website_proofs"]:
-        assert set(web.keys()) == {"target_website", "workflow_confidence", "supported_skills"}
+        assert set(web.keys()) == {"target_website", "workflow_confidence", "supported_skills", "status"}
         assert web["target_website"] == "https://storage.example.com"
 
     # The hostile legacy document title is scrubbed to the safe fallback.

@@ -140,6 +140,15 @@ _PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
 # [REDACTED]                 = backend mask_sensitive() masked a key
 _REDACTED_MARKER_RE = re.compile(r"\[REDACTED(?:_SENSITIVE_FIELD)?\]")
 
+# Percent-encoded form of the redaction placeholder.  The extension redacts URL
+# params via URL.searchParams.set(k, "[REDACTED]") and URL.toString() encodes
+# the brackets, so captured URLs legitimately contain %5BREDACTED%5D.  Hex
+# digits are case-insensitive per RFC 3986; the placeholder word itself is
+# always emitted uppercase, so it stays case-sensitive — a lowercase or
+# malformed variant is not a placeholder the pipeline produces and must still
+# be scanned as a live value.
+_ENCODED_REDACTED_RE = re.compile(r"%5[Bb](REDACTED(?:_SENSITIVE_FIELD)?)%5[Dd]")
+
 # URL parameter that was already redacted: ?foo=[REDACTED] or &foo=[REDACTED]
 _REDACTED_URL_PARAM_RE = re.compile(r"[?&][^=&\s]+=\[REDACTED\]")
 
@@ -180,6 +189,11 @@ def scan_proof_data(proof_data: dict[str, Any]) -> PrivacyScanResult:
         text = json.dumps(proof_data, ensure_ascii=False, default=str)
     except Exception:  # pragma: no cover
         text = str(proof_data)
+
+    # Normalize percent-encoded redaction placeholders to their literal form so
+    # they are recognized as already-redacted instead of flagged as live values.
+    # Unrecognized/malformed encodings are left untouched and scanned as-is.
+    text = _ENCODED_REDACTED_RE.sub(r"[\1]", text)
 
     risk_flags: list[str] = []
 

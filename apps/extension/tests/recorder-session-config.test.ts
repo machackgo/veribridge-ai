@@ -32,7 +32,7 @@ function config(overrides: Partial<WebsiteProofRecorderConfig> = {}): WebsitePro
 
 test("schema and extension build versions are explicit", () => {
   assert.equal(WEBSITE_PROOF_RECORDER_SCHEMA_VERSION, 1)
-  assert.equal(WEBSITE_PROOF_RECORDER_BUILD_VERSION, "0.2.0")
+  assert.equal(WEBSITE_PROOF_RECORDER_BUILD_VERSION, "0.2.1")
 })
 
 test("normalizes the required localhost:8128 API origin", () => {

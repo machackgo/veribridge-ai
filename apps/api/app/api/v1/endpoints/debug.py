@@ -123,6 +123,11 @@ def debug_config() -> dict[str, Any]:
     "/bootstrap-demo-user",
     status_code=status.HTTP_200_OK,
     summary="Create demo user row in public.users (dev only)",
+    # Run the production guard as a route-level dependency so it executes
+    # BEFORE the get_db / get_current_user_id parameter dependencies. Otherwise
+    # a production deployment without Supabase configured would fail resolving
+    # get_db (RuntimeError) before the endpoint could return its 403.
+    dependencies=[Depends(_block_in_production)],
 )
 def bootstrap_demo_user(
     user_id: str = Depends(get_current_user_id),
@@ -136,10 +141,8 @@ def bootstrap_demo_user(
     pointing to ``users.id``.
 
     In development, this is safe to call multiple times — it is idempotent.
-    Returns 403 in production.
+    Returns 403 in production (enforced by the route-level dependency above).
     """
-    _block_in_production()
-
     service = StudentProfileService(db)
 
     try:

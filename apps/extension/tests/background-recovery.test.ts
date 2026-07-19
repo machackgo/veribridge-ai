@@ -34,6 +34,7 @@ type Harness = {
   stored: Record<string, unknown>
   sessionStored: Record<string, unknown>
   sentToTabs: Array<{ tabId: number; message: { type?: string } }>
+  reloadedTabs: number[]
   send: (type: string, payload?: unknown, sender?: Record<string, unknown>) => Promise<Record<string, unknown>>
 }
 
@@ -43,9 +44,11 @@ async function bootBackground(
   sessionStored: Record<string, unknown>,
 ): Promise<Harness> {
   const sentToTabs: Array<{ tabId: number; message: { type?: string } }> = []
+  const reloadedTabs: number[] = []
   const tabs = new Map<number, Record<string, unknown>>([
     [7, { id: 7, url: "http://localhost:3000/student/proofs/website", active: true, windowId: 1 }],
     [40, { id: 40, url: "https://wikitok.io/", active: true, windowId: 1 }],
+    [55, { id: 55, url: "chrome-extension://extension-under-test/recorder.html", active: false, windowId: 1 }],
   ])
   let nextTabId = 90
   const noopListener = { addListener: () => undefined }
@@ -94,6 +97,10 @@ async function bootBackground(
         tabs.set(tabId, tab)
         return tab
       },
+      reload: (tabId: number, _options: Record<string, unknown>, callback?: () => void) => {
+        reloadedTabs.push(tabId)
+        callback?.()
+      },
       captureVisibleTab: async () => "data:image/jpeg;base64," + "a".repeat(1600),
       onCreated: noopListener,
       onUpdated: noopListener,
@@ -125,7 +132,7 @@ async function bootBackground(
     }
   })
 
-  return { stored, sessionStored, sentToTabs, send }
+  return { stored, sessionStored, sentToTabs, reloadedTabs, send }
 }
 
 test("recording-phase restart restores events and re-broadcasts capture", async () => {
@@ -139,6 +146,7 @@ test("recording-phase restart restores events and re-broadcasts capture", async 
       phase: "recording",
       originalTabId: 40,
       proofBuilderTabId: 7,
+      recorderTabId: 55,
       videoUploadStatus: "none",
     },
   }
@@ -161,6 +169,11 @@ test("recording-phase restart restores events and re-broadcasts capture", async 
     h.sentToTabs.some((entry) => entry.message.type === "START_CAPTURING"),
     true,
     "recording restore must re-broadcast START_CAPTURING",
+  )
+  assert.deepEqual(
+    h.reloadedTabs,
+    [55],
+    "recording restore must refresh the retained recorder tab from the invalidated extension context",
   )
 })
 

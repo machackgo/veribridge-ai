@@ -81,6 +81,12 @@ describe("Website Proof lifecycle state machine", () => {
       .toBe("INITIALIZING_EXTENSION")
   })
 
+  it("reinitializes the recorder bridge for the same restored recording", () => {
+    const recording = run(["RESTORE_RECORDING"])
+    expect(transitionWebsiteProofLifecycle(recording, "INITIALIZATION_REQUESTED").state)
+      .toBe("INITIALIZING_EXTENSION")
+  })
+
   it("restores only an explicitly selected created session", () => {
     expect(run(["RESTORE_CREATED"]).state).toBe("INITIALIZING_EXTENSION")
   })
@@ -91,9 +97,44 @@ describe("Website Proof lifecycle state machine", () => {
     expect(run(["RESTORE_SAVED"]).state).toBe("SAVED")
   })
 
+  it("follows an extension-driven upload retry out of FAILED_RETRYABLE", () => {
+    // A failed proof upload (e.g. the screen recording was not finalized yet)
+    // parks the page in FAILED_RETRYABLE. Clicking Retry on the floating bar
+    // re-runs SEND_PROOF, which re-emits upload signals — the page must follow
+    // the recovered upload rather than throw.
+    const failed = run(["RESTORE_RECORDING", "RETRYABLE_FAILURE"])
+    expect(failed.state).toBe("FAILED_RETRYABLE")
+    const uploading = transitionWebsiteProofLifecycle(failed, "UPLOAD_STARTED")
+    expect(uploading.state).toBe("UPLOADING")
+    const processing = transitionWebsiteProofLifecycle(uploading, "UPLOAD_ACCEPTED")
+    expect(processing.state).toBe("PROCESSING")
+    // An acceptance broadcast that arrives without the started signal (page was
+    // refreshed mid-retry) is equally valid.
+    expect(transitionWebsiteProofLifecycle(failed, "UPLOAD_ACCEPTED").state).toBe("PROCESSING")
+    // Stop from the floating bar while parked in failure is also a retry path.
+    expect(transitionWebsiteProofLifecycle(failed, "STOP_REQUESTED").state).toBe("STOPPING")
+  })
+
+  it("follows late-arriving upload/analysis truth after a stale recording restore", () => {
+    // A page restored from a stale resume candidate still believes the session
+    // is recording, but the extension may have already finished the upload and
+    // analysis may complete before any stop/upload signal reaches the page.
+    const restored = run(["RESTORE_RECORDING"])
+    expect(restored.state).toBe("RECORDING")
+    expect(transitionWebsiteProofLifecycle(restored, "UPLOAD_ACCEPTED").state).toBe("PROCESSING")
+    expect(transitionWebsiteProofLifecycle(restored, "ANALYSIS_COMPLETED").state).toBe("ANALYSIS_COMPLETE")
+    // The same truth must be accepted from the stop/upload phases.
+    const stopping = transitionWebsiteProofLifecycle(restored, "STOP_REQUESTED")
+    expect(transitionWebsiteProofLifecycle(stopping, "ANALYSIS_COMPLETED").state).toBe("ANALYSIS_COMPLETE")
+    const uploading = transitionWebsiteProofLifecycle(restored, "UPLOAD_STARTED")
+    expect(transitionWebsiteProofLifecycle(uploading, "ANALYSIS_COMPLETED").state).toBe("ANALYSIS_COMPLETE")
+  })
+
   it("forbids duplicate save from SAVED", () => {
     const saved = run(["RESTORE_SAVED"])
-    expect(() => transitionWebsiteProofLifecycle(saved, "SAVE_REQUESTED")).toThrow()
+    const reconciling = transitionWebsiteProofLifecycle(saved, "SAVE_REQUESTED")
+    expect(reconciling.state).toBe("SAVING")
+    expect(transitionWebsiteProofLifecycle(reconciling, "SAVE_COMPLETED").state).toBe("SAVED")
   })
 
   it("allows reset from every non-new phase", () => {

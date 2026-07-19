@@ -19,6 +19,7 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
   const stored: Record<string, unknown> = {}
   const sessionStored: Record<string, unknown> = {}
   const sentToTabs: Array<{ tabId: number; message: unknown }> = []
+  const reloadedTabs: number[] = []
   const tabs = new Map<number, Record<string, unknown>>([
     [7, { id: 7, url: "http://localhost:3000/student/proofs/website", active: true, windowId: 1 }],
   ])
@@ -64,6 +65,10 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
         const tab = { ...(tabs.get(tabId) ?? { id: tabId }), ...patch }
         tabs.set(tabId, tab)
         return tab
+      },
+      reload: (tabId: number, _options: Record<string, unknown>, callback?: () => void) => {
+        reloadedTabs.push(tabId)
+        callback?.()
       },
       captureVisibleTab: async () => "data:image/jpeg;base64," + "a".repeat(1600),
       onCreated: noopListener,
@@ -154,13 +159,19 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
   assert.equal(stale.ok, false)
   assert.equal(stale.error_code, "stale_config")
 
+  // Simulate a recorder tab retained from an earlier extension context. The
+  // real regression left this tab focused but stale, so its Start button never
+  // observed the newly initialized session.
+  const recorderTab = await send("OPEN_RECORDER_TAB", {})
+  assert.equal(recorderTab.tabId, 40)
+
   const opened = await send(RECORDER_TARGET_OPEN_REQUEST, {
     request_id: "target-1",
     session_id: config.session_id,
     config_revision: config.config_revision,
   })
   assert.equal(opened.ok, true)
-  assert.equal(opened.target_tab_id, 40)
+  assert.equal(opened.target_tab_id, 41)
 
   const prematureStart = await send(RECORDER_START_REQUEST, {
     request_id: "start-too-soon",
@@ -172,7 +183,7 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
 
   const targetReady = await send("RECORDER_TARGET_CONTENT_READY", {
     page_url: "https://wikitok.io/",
-  }, { tab: tabs.get(40) })
+  }, { tab: tabs.get(41) })
   assert.equal(targetReady.ok, true)
   assert.equal(targetReady.api_base_url, "http://localhost:8128")
   assert.deepEqual(targetReady.claimed_skills, ["React", "TypeScript"])
@@ -189,6 +200,18 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
   assert.equal(started.ready, true)
   assert.equal(started.idempotent, false)
   assert.equal(typeof started.started_at, "string")
+  assert.deepEqual(reloadedTabs, [40], "a non-capturing retained recorder tab must refresh before reuse")
+
+  await send("RECORDER_STREAM_STARTED", { display_surface: "tab" }, {
+    url: "chrome-extension://extension-under-test/recorder.html",
+  })
+  const focusedActiveRecorder = await send("OPEN_RECORDER_TAB", {})
+  assert.equal(focusedActiveRecorder.tabId, 40)
+  assert.deepEqual(reloadedTabs, [40], "an active MediaRecorder stream must never be refreshed")
+
+  await send("RECORDER_STREAM_STOPPED", {}, {
+    url: "chrome-extension://extension-under-test/recorder.html",
+  })
 
   const duplicateStart = await send(RECORDER_START_REQUEST, {
     request_id: "start-duplicate",
@@ -198,6 +221,7 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
   assert.equal(duplicateStart.ok, true)
   assert.equal(duplicateStart.idempotent, true)
   assert.equal(duplicateStart.started_at, started.started_at)
+  assert.deepEqual(reloadedTabs, [40, 40], "a same-session retry must reconnect a recorder page whose stream was lost")
 
   const foreignInit = await send(RECORDER_INIT_REQUEST, {
     ...initPayload,
@@ -212,7 +236,7 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
     timestamp: "2026-07-14T12:00:01Z",
     page_url: "https://wikitok.io/",
     page_title: "WikiTok",
-  }, { tab: tabs.get(40) })
+  }, { tab: tabs.get(41) })
   await send("VISIBLE_EVIDENCE_EVENT", {
     event_type: "page_load",
     timestamp_ms: 1000,
@@ -224,7 +248,7 @@ test("background owns the acknowledged config, target, and start lifecycle", asy
     result_like_blocks: [],
     input_snapshot: {},
     action_snapshot: {},
-  }, { tab: tabs.get(40) })
+  }, { tab: tabs.get(41) })
   await send("RECORDER_VIDEO_UPLOADED", { ok: true, keyframe_count: 3 }, {
     url: "chrome-extension://extension-under-test/recorder.html",
   })

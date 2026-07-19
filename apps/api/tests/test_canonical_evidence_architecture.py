@@ -302,8 +302,26 @@ def test_website_finalization_is_shared_idempotent_and_propagates_everywhere(
     assert session["metadata"]["canonical_finalization_service"] == "finalize_proof_evidence"
     assert session["metadata"]["canonical_finalized_project_id"] == project["id"]
 
+    # Finalization is the canonical Skill Graph write boundary.  Website
+    # workflow evidence must be present without a separate client-side sync
+    # request, and an idempotent re-finalize must not duplicate artifacts.
+    react_pipeline = next(
+        row
+        for row in pipeline_db["skill_evidence_pipelines"].values()
+        if row["student_id"] == USER_ID and row["skill_name"] == "React"
+    )
+    website_artifacts = [
+        row
+        for row in pipeline_db["skill_evidence_artifacts"].values()
+        if row["pipeline_id"] == react_pipeline["id"]
+        and (row.get("artifact_data") or {}).get("proof_session_id") == REAL_SESSION_ID
+    ]
+    assert website_artifacts
+    assert [row["source_type"] for row in website_artifacts] == ["workflow"]
+
     project_report = build_student_vbr_report(mem_store, pipeline_db, project, USER_ID)
     assert project_report["evidence_package"]["website_proofs_count"] == 1
+    assert project_report["website_skill_evidence"][0]["skills"][0]["skill_name"] == "React"
     passport = build_private_passport(mem_store, pipeline_db, USER_ID)
     passport_project = next(row for row in passport["projects"] if row["project_id"] == project["id"])
     assert "Website Proof" in passport_project["evidence_sources"]
@@ -317,6 +335,27 @@ def test_website_finalization_is_shared_idempotent_and_propagates_everywhere(
     website_items = [item for item in vault_items if item["proof_type"] == "Website Proof"]
     assert website_items
     assert all(project["id"] in item["attached_project_ids"] for item in website_items)
+
+
+def test_website_finalization_carries_explicit_session_claims_to_project_reports(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    project = _project(mem_store, title="Claim recovery", repo="demo/claim-recovery")
+    project["metadata"]["claimed_skills"] = []
+    _website_fixture(mem_store, project_id=None, objective="Demonstrate the React workflow")
+
+    finalize_proof_evidence(
+        mem_store,
+        user_id=USER_ID,
+        proof_type="website",
+        proof_id=REAL_SESSION_ID,
+        project_id=project["id"],
+        pipeline_db=pipeline_db,
+    )
+
+    assert project["metadata"]["claimed_skills"] == ["React"]
+    report = build_student_vbr_report(mem_store, pipeline_db, project, USER_ID)
+    assert report["website_skill_evidence"][0]["skills"][0]["skill_name"] == "React"
 
 
 def test_website_finalization_rejects_foreign_session_and_project_without_leakage(

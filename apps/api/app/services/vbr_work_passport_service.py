@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 from datetime import UTC, datetime
 from typing import Any
@@ -75,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 _PASSPORTS_TABLE = "vbr_work_passports"
 _PROJECTS_TABLE = "vbr_projects"
+_RELATIONSHIPS_TABLE = "proof_project_relationships"
 _ONBOARDING_TABLE = "student_onboarding_profiles"
 _STUDENT_PROFILES_TABLE = "student_profiles"
 
@@ -1250,13 +1252,61 @@ def _dedupe_preserve(values: list[str]) -> list[str]:
     return out
 
 
+def _latest_direct_evidence_by_project(db: Any, user_id: str) -> dict[str, str]:
+    """Raw project id → most recent ``directly_linked`` proof attachment stamp.
+
+    ``proof_project_relationships`` rows are written only by the canonical
+    finalization boundary, so their timestamps are the truthful "this project's
+    attached evidence changed" signal. ``vbr_projects.updated_at`` alone misses
+    canonical finalizations (they never touch the project row), which let a
+    grouped card's representative — and therefore every report link on the card —
+    stay pinned to an older attempt while a newer attempt actually carried the
+    freshly attached proof. Missing table / lookup errors return ``{}`` (grouping
+    then falls back to project-row recency alone).
+    """
+    try:
+        if isinstance(db, dict):
+            rows = [
+                row
+                for row in db.get(_RELATIONSHIPS_TABLE, {}).values()
+                if isinstance(row, dict)
+                and str(row.get("owner_user_id") or "") == str(user_id)
+            ]
+        else:
+            response = (
+                db.table(_RELATIONSHIPS_TABLE)
+                .select("project_id,relationship_state,updated_at,created_at")
+                .eq("owner_user_id", user_id)
+                .eq("relationship_state", "directly_linked")
+                .execute()
+            )
+            rows = [row for row in (getattr(response, "data", []) or []) if isinstance(row, dict)]
+    except Exception:  # pragma: no cover - relationship table availability is additive
+        return {}
+    latest: dict[str, str] = {}
+    for row in rows:
+        if row.get("relationship_state") != "directly_linked":
+            continue
+        pid = str(row.get("project_id") or "")
+        stamp = str(row.get("updated_at") or row.get("created_at") or "")
+        if pid and stamp and stamp > latest.get(pid, ""):
+            latest[pid] = stamp
+    return latest
+
+
 def _group_project_pairs(
     pairs: list[tuple[dict[str, Any], dict[str, Any]]],
+    evidence_recency: dict[str, str] | None = None,
 ) -> list[list[tuple[dict[str, Any], dict[str, Any]]]]:
     """Group (project, report) pairs by identity, preserving first-seen order.
 
     Within each group, members are ordered so the representative (first) is the
-    one with an active public report token, else the most recently updated.
+    one with an active public report token, else the one with the most recent
+    activity — where activity is the LATER of the project row's own update and
+    its newest canonical proof attachment (``evidence_recency``). Attaching a
+    proof therefore deterministically promotes that attempt to representative,
+    so the card's report links land on the report that actually contains the
+    newly attached proof.
     """
     groups: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
     order: list[str] = []
@@ -1269,7 +1319,9 @@ def _group_project_pairs(
 
     def _recency(pair: tuple[dict[str, Any], dict[str, Any]]) -> str:
         project, _ = pair
-        return project.get("updated_at") or project.get("created_at") or ""
+        row_stamp = str(project.get("updated_at") or project.get("created_at") or "")
+        evidence_stamp = (evidence_recency or {}).get(str(project.get("id") or ""), "")
+        return max(row_stamp, evidence_stamp)
 
     result: list[list[tuple[dict[str, Any], dict[str, Any]]]] = []
     for key in order:
@@ -1359,6 +1411,34 @@ def get_passport_status(db: Any, user_id: str) -> dict[str, Any]:
 # ── Private passport (owner-only) ────────────────────────────────────────────
 
 
+def _build_report_pairs(
+    db: Any, pipeline_db: Any, projects: list[dict[str, Any]], user_id: str
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """(project, report) for each project — reports built CONCURRENTLY.
+
+    Each ``build_student_vbr_report`` is independent and read-only, and its cost
+    is dominated by database round-trip latency, so a passport with many
+    projects used to pay (projects × report latency) sequentially — tens of
+    seconds on a real account. A small thread pool collapses that to roughly the
+    slowest single report. Order is preserved.
+    """
+    if len(projects) <= 1:
+        return [
+            (p, build_student_vbr_report(db, pipeline_db, p, user_id, include_cross_proof=False))
+            for p in projects
+        ]
+    with ThreadPoolExecutor(max_workers=min(8, len(projects))) as pool:
+        reports = list(
+            pool.map(
+                lambda project: build_student_vbr_report(
+                    db, pipeline_db, project, user_id, include_cross_proof=False
+                ),
+                projects,
+            )
+        )
+    return list(zip(projects, reports))
+
+
 def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str, Any]:
     """Build the owner-only private Work Passport (full evidence wallet)."""
     passport_row = _get_passport_by_user(db, user_id)
@@ -1371,11 +1451,10 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     # vault scan. Skip it so the passport doesn't pay a whole-vault scan PER
     # project (the dominant cost when a student has many projects). The Student
     # Proof Vault dashboard below already surfaces every owned proof once.
-    pairs = [
-        (project, build_student_vbr_report(db, pipeline_db, project, user_id, include_cross_proof=False))
-        for project in projects
-    ]
-    groups = _group_project_pairs(pairs)
+    pairs = _build_report_pairs(db, pipeline_db, projects, user_id)
+    groups = _group_project_pairs(
+        pairs, evidence_recency=_latest_direct_evidence_by_project(db, user_id)
+    )
 
     # RAW ``vbr_projects`` row id → the grouped project's REPRESENTATIVE id (the
     # single card it collapses into on this passport). Vault proofs are attached to
@@ -1770,11 +1849,12 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     # Only projects with an active public report token are shown publicly, and
     # duplicate rows of the same project are collapsed into a single card so a
     # recruiter never sees the same report featured twice.
-    published_pairs = [
-        (project, build_student_vbr_report(db, pipeline_db, project, owner_id, include_cross_proof=False))
-        for project in projects
-        if project.get("public_report_token")
-    ]
+    published_pairs = _build_report_pairs(
+        db,
+        pipeline_db,
+        [project for project in projects if project.get("public_report_token")],
+        owner_id,
+    )
 
     featured_summaries: list[dict[str, Any]] = []
     featured_groups = _group_project_pairs(published_pairs)

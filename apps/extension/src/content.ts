@@ -3,17 +3,10 @@
 
 import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./types"
 import {
-  RECORDER_AUTH_REFRESH_REQUEST,
-  RECORDER_AUTH_REFRESH_ACK,
-  RECORDER_INIT_ACK,
-  RECORDER_INIT_NACK,
-  RECORDER_INIT_REQUEST,
-  RECORDER_START_ACK,
-  RECORDER_START_REQUEST,
-  RECORDER_TARGET_OPEN_ACK,
-  RECORDER_TARGET_OPEN_REQUEST,
   RECORDER_TARGET_READY,
+  isTrustedVeriBridgeAppLocation,
 } from "../../../packages/shared/websiteProofRecorderContract"
+import { createRecorderBridgeHandler } from "./recorderBridge"
 
 // ── Debug flag — set to false to silence visible evidence logs in production ──
 const DEBUG_VISIBLE_EVIDENCE = false
@@ -155,18 +148,11 @@ function isVeriBridgeInternal(): boolean {
  * token into — or read one from — the extension.
  */
 function isVeriBridgeAppOrigin(): boolean {
-  const { hostname, pathname } = location
-  if (hostname.endsWith("veribridge.ai")) return true
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    return (
-      pathname.startsWith("/student") ||
-      pathname.startsWith("/dashboard") ||
-      pathname.startsWith("/passport") ||
-      pathname.startsWith("/admin") ||
-      pathname.startsWith("/vbr")
-    )
-  }
-  return false
+  // Delegates to the shared contract helper so the page and the content script
+  // can never disagree about which locations are trusted. Single-page
+  // navigations change location.pathname without re-running this script, so
+  // this MUST be re-evaluated per message — never cached at load time.
+  return isTrustedVeriBridgeAppLocation(location)
 }
 
 /** Collect a safe snapshot of current non-sensitive form input values. */
@@ -296,6 +282,8 @@ interface StateSnapshot {
   dismissedForSessionId: string
   /** True while the recorder tab has an active getDisplayMedia stream (screen capturing). */
   recorderTabStreamActive?: boolean
+  /** Detected screen-capture scope: "tab" | "window" | "screen" | "unknown" | null. */
+  captureSurface?: string | null
   /** Target website URL for website proof sessions. */
   targetWebsiteUrl?: string | null
   liveCoach?: LiveCoachState | null
@@ -571,7 +559,7 @@ async function safeSendMessage<T = unknown>(message: unknown): Promise<T | null>
 function handleContextInvalidated(): void {
   if (contextInvalidated) return
   contextInvalidated = true
-  console.warn("VeriBridge extension was updated. Refresh this page and start a fresh proof session.")
+  console.warn("VeriBridge extension was updated. Refresh this page and retry recorder initialization for the same proof session.")
 
   // Stop bar poll, dashboard poll, and auto-dismiss timer immediately
   if (barPoll) { clearInterval(barPoll); barPoll = null }
@@ -614,7 +602,7 @@ function handleContextInvalidated(): void {
 </style>
 <div class="ctx-warn">
   <span style="font-size:18px;flex-shrink:0">⚠</span>
-  <span style="flex:1">VeriBridge extension updated. Refresh this page and start a fresh proof session.</span>
+  <span style="flex:1">VeriBridge extension updated. Refresh this page and retry recorder initialization for the same proof session.</span>
   <button class="ctx-close" id="vb-ctx-close">✕</button>
 </div>`
 
@@ -994,50 +982,29 @@ if (!isVeriBridgeAppOrigin()) {
 // token here via a same-origin window message. We relay it to the background so
 // the recorder attaches Authorization: Bearer on its direct-to-backend uploads.
 //
-// SECURITY: only wired up on trusted VeriBridge app origins, and each message is
-// validated to be same-window + same-origin and tagged by the app. The external
-// target website being recorded is a different origin — it never receives the
-// token (postMessage is origin-pinned) and cannot forge this handoff here.
-if (isVeriBridgeAppOrigin()) {
-  window.addEventListener("message", (event: MessageEvent) => {
-    if (event.source !== window) return
-    if (event.origin !== location.origin) return
-    const data = event.data as
-      | {
-          source?: string
-          type?: string
-          payload?: Record<string, unknown>
-        }
-      | null
-    if (!data || data.source !== "veribridge-app") return
-    if (
-      data.type !== RECORDER_INIT_REQUEST &&
-      data.type !== RECORDER_AUTH_REFRESH_REQUEST &&
-      data.type !== RECORDER_TARGET_OPEN_REQUEST &&
-      data.type !== RECORDER_START_REQUEST
-    ) return
-    void safeSendMessage<RecorderBridgeResponse>({
-      type: data.type,
-      payload: data.payload ?? {},
-    }).then((response) => {
-      if (!response) return
-      const responseType = data.type === RECORDER_INIT_REQUEST
-        ? (response.ok ? RECORDER_INIT_ACK : RECORDER_INIT_NACK)
-        : data.type === RECORDER_TARGET_OPEN_REQUEST
-          ? (response.ok ? RECORDER_TARGET_OPEN_ACK : RECORDER_INIT_NACK)
-          : data.type === RECORDER_START_REQUEST
-            ? (response.ok ? RECORDER_START_ACK : RECORDER_INIT_NACK)
-          : (response.ok ? RECORDER_AUTH_REFRESH_ACK : RECORDER_INIT_NACK)
-      // The background response is an allowlisted safe ACK/NACK and never
-      // includes the auth credential from the request config.
-      window.postMessage({
-        source: "veribridge-extension",
-        type: responseType,
-        payload: response,
-      }, window.location.origin)
-    })
+// SECURITY: the listener is attached on every page, but each message is gated
+// on isVeriBridgeAppOrigin() AT MESSAGE TIME, validated to be same-window +
+// same-origin, and tagged by the app. The gate must run per message (not at
+// script load) because the app is a single-page application: a tab that first
+// loaded on "/" or "/login" keeps the same content script after client-side
+// navigation to /student/proofs/website. Load-time gating silently dropped
+// every recorder request on such tabs (WPR-INITIALIZATION-TIMEOUT). The
+// external target website being recorded is a different origin — it never
+// receives the token (postMessage is origin-pinned) and cannot forge this
+// handoff here.
+const recorderBridgeHandler = createRecorderBridgeHandler({
+  getLocation: () => location,
+  isContextInvalidated: () => contextInvalidated,
+  sendToBackground: (message) => safeSendMessage<RecorderBridgeResponse>(message),
+  postToPage: (message) => window.postMessage(message, window.location.origin),
+})
+window.addEventListener("message", (event: MessageEvent) => {
+  recorderBridgeHandler({
+    origin: event.origin,
+    data: event.data,
+    same_window: event.source === window,
   })
-}
+})
 
 // On init, check if recording is already active (handles page navigation during a session).
 void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
@@ -1141,6 +1108,15 @@ const BAR_CSS = `
 .b-icon:hover{color:#d1d5db}
 `
 
+/** HTML-escape backend-provided text before it is interpolated into the bar. */
+function escapeBarText(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
 function buildBarHTML(s: StateSnapshot | null): string {
   const status = s?.status ?? "idle"
   const rec    = s?.isRecording ?? false
@@ -1166,8 +1142,7 @@ function buildBarHTML(s: StateSnapshot | null): string {
     acts = `<button class="btn b-dismiss" id="vb-dismiss">Dismiss</button>`
 
   } else if (status === "upload_failed" || status === "error") {
-    const reason = (s?.lastUploadError ?? "Unknown error").slice(0, 40)
-    info = `<span class="msg er">Failed: ${reason}</span>`
+    info = `<span class="msg er">Upload failed</span>`
     acts = `
       <button class="btn b-send" id="vb-send">Retry</button>
       <button class="btn b-dismiss" id="vb-dismiss">Dismiss</button>
@@ -1204,6 +1179,22 @@ function buildBarHTML(s: StateSnapshot | null): string {
     ? "📸 Screenshot attempted on exit. Need a frame? Open popup → Capture Screen Now."
     : ""
 
+  // Failure detail row — wraps, so the actionable reason is never truncated to
+  // an unreadable fragment.
+  const failText = (status === "upload_failed" || status === "error")
+    ? `✗ ${escapeBarText((s?.lastUploadError ?? "Unknown error").slice(0, 220))}`
+    : ""
+
+  // Capture-scope warning: a tab/window selection records ONLY itself. Warn
+  // during recording so navigating to another window never silently drops
+  // evidence.
+  const surface = s?.captureSurface ?? null
+  const scopeWarnText =
+    (status === "recording" || rec) && (surface === "tab" || surface === "window")
+      ? `⚠ Recording your selected ${surface === "tab" ? "browser tab" : "window"} ONLY — other windows are not captured. ` +
+        `Stay inside it, or restart capture and share your Entire Screen.`
+      : ""
+
   return `<div class="bar">
     <div class="bar-row">
       <div class="logo">VB</div>
@@ -1211,6 +1202,8 @@ function buildBarHTML(s: StateSnapshot | null): string {
       <div class="acts">${acts}</div>
       <button class="b-icon" id="vb-minimize" title="Minimize">−</button>
     </div>
+    ${failText ? `<div class="bar-sub">${failText}</div>` : ""}
+    ${scopeWarnText ? `<div class="bar-sub">${scopeWarnText}</div>` : ""}
     ${fsWarnText ? `<div class="bar-sub">${fsWarnText}</div>` : ""}
   </div>`
 }

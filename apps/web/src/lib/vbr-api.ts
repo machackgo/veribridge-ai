@@ -699,6 +699,8 @@ export type ProjectDefenseContextResponse = {
   report_ready: boolean
   session_id: string | null
   questions: VBRSessionQuestionResponse[]
+  /** True when the active session's defense evidence is already on the Skill Graph. */
+  skill_graph_synced?: boolean
 }
 
 export type AttachProofsResponse = {

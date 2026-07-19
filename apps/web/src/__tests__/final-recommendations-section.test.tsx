@@ -373,7 +373,8 @@ describe("Final report consistency", () => {
     )
     expect(screen.getByText("Live Website Check — Complete")).toBeInTheDocument()
     expect(screen.getByText("Site is publicly reachable")).toBeInTheDocument()
-    expect(screen.getByText("Live Website Score: 90/100")).toBeInTheDocument()
+    // Qualitative evidence labels only — numeric scores are not recruiter-facing.
+    expect(screen.getByText("Live Website Score: strong evidence")).toBeInTheDocument()
   })
 
   it("renders local private live website check as a neutral not-applicable card", () => {
@@ -487,7 +488,8 @@ describe("Final report consistency", () => {
       />,
     )
 
-    expect(screen.getByText("Project Defense Score: 73/100")).toBeInTheDocument()
+    // Qualitative evidence labels only — numeric scores are not recruiter-facing.
+    expect(screen.getByText("Project Defense Score: strong evidence")).toBeInTheDocument()
     expect(screen.queryByText("Defense Score")).not.toBeInTheDocument()
     expect(screen.queryByText("40/100")).not.toBeInTheDocument()
   })

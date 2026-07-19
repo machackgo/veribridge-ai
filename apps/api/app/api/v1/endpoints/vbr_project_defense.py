@@ -48,6 +48,7 @@ from app.schemas.vbr_project_defense import (
 )
 from app.schemas.vbr_public_project_report import ProjectReportPublishStatusResponse
 from app.schemas.vbr_student_report import VBRStudentProjectReportResponse
+from app.services.project_defense_artifact_sync_service import ProjectDefenseArtifactSyncService
 from app.services.vbr_project_defense import (
     attach_proofs_to_project,
     build_project_defense_context,
@@ -100,6 +101,13 @@ _CREATE_ERROR_DETAILS: dict[str, tuple[int, str, str]] = {
         "vbr_skill_pipeline_not_found",
         "One or more attached skill pipelines were not found for the current user.",
     ),
+    "github_proof_repo_mismatch": (
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "vbr_github_proof_repo_mismatch",
+        "This GitHub proof's repository does not match the project's repository. "
+        "Attach the GitHub proof for the project's own repository, or select/create "
+        "the project that matches this proof.",
+    ),
 }
 
 
@@ -127,9 +135,18 @@ def get_project_defense_context_route(
     project_id: str,
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
 ) -> ProjectDefenseContextResponse:
     project = get_owned_vbr_project_or_404(db, project_id, user_id)
     context = build_project_defense_context(db, project, user_id)
+
+    # Honest Skill Graph state on reload: the workspace's "Saved / Not saved"
+    # indicator reflects whether this session's defense evidence artifact
+    # already exists, instead of always resetting to "Not saved".
+    skill_graph_synced = False
+    if context["session_id"]:
+        sync_svc = ProjectDefenseArtifactSyncService(db=db, pipeline_db=pipeline_db)
+        skill_graph_synced = sync_svc.artifact_exists_for_session(user_id, context["session_id"])
     # Allowlisted metadata only — the raw stored ``metadata.attached_proofs`` may
     # contain legacy unsafe fields (raw provider JSON, storage paths, signed
     # URLs, private IDs, numeric scores) that must never reach the workspace UI.
@@ -144,6 +161,7 @@ def get_project_defense_context_route(
         report_ready=context["report_ready"],
         session_id=context["session_id"],
         questions=[_to_question_response(row) for row in context["questions"]],
+        skill_graph_synced=skill_graph_synced,
     )
 
 
@@ -299,7 +317,9 @@ def submit_defense_answers_route(
     session, project = get_owned_vbr_session_or_404(db, session_id, user_id)
 
     try:
-        result = submit_defense_answers(db, session, project, body)
+        # user_id grounds the analysis in the merged canonical evidence package
+        # (claimed skills + attached proofs across the duplicate group).
+        result = submit_defense_answers(db, session, project, body, user_id=user_id)
     except ValueError as exc:
         if str(exc) == "no_answers_provided":
             raise HTTPException(

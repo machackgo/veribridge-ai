@@ -271,7 +271,8 @@ describe("initializeWebsiteProofRecorder", () => {
     vi.spyOn(window, "postMessage").mockImplementation(() => undefined)
 
     const pending = initializeWebsiteProofRecorder(recorderInput)
-    await vi.advanceTimersByTimeAsync(7_100)
+    // The initialization deadline is 10s; advance past it.
+    await vi.advanceTimersByTimeAsync(10_100)
 
     await expect(pending).resolves.toMatchObject({ ok: false, error_code: "extension_not_detected" })
   })

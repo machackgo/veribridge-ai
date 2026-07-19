@@ -522,6 +522,60 @@ async def upload_workflow_video(
         session_id, user_id, video.filename, video.content_type,
     )
 
+    # ── 0. Idempotent duplicate delivery ───────────────────────────────────────
+    # The extension retries a failed/ack-lost upload with the SAME session and
+    # upload id. If a retained replay already exists for this session, the first
+    # delivery is canonical: skip re-extraction so a retry can never duplicate
+    # keyframes or re-trigger analysis.
+    existing_replays = [
+        row
+        for row in proof_artifact_service.list_artifacts_for_proof(
+            db,
+            proof_type="website",
+            proof_id=session_id,
+            artifact_type="website_replay_video",
+            retained_only=True,
+        )
+        if str(row.get("owner_user_id") or "") == str(user_id)
+    ]
+    if existing_replays:
+        replay_artifact = existing_replays[-1]
+        try:
+            _kf_resp = (
+                db.table("workflow_visual_frame_evidence")
+                .select("id")
+                .eq("user_id", user_id)
+                .eq("proof_session_id", session_id)
+                .eq("frame_type", "video_keyframe")
+                .execute()
+            )
+            existing_kf_count = len(getattr(_kf_resp, "data", None) or [])
+        except Exception:
+            existing_kf_count = 0
+        logger.info(
+            "[WorkflowVideo] Duplicate delivery for session=%s — replay already "
+            "retained; returning idempotent acknowledgment (keyframes=%d)",
+            session_id, existing_kf_count,
+        )
+        return VideoUploadResponse(
+            session_id=session_id,
+            video_analysis_status=VIDEO_STATUS_ANALYZED if existing_kf_count else "already_uploaded",
+            keyframe_count=existing_kf_count,
+            selected_frame_timestamps_ms=[],
+            extraction_method="already_uploaded",
+            duration_ms=None,
+            frames_stored=0,
+            frames_queued_for_visual_analysis=0,
+            limitations=[
+                "A recording was already uploaded for this session; the first retained replay remains canonical.",
+            ],
+            message="Recording already uploaded for this session — duplicate delivery ignored (idempotent).",
+            replay_retained=True,
+            replay_artifact_id=(
+                str(replay_artifact.get("id")) if replay_artifact.get("id") else None
+            ),
+        )
+
     # ── 1. Read video bytes (bounded by MAX_VIDEO_SIZE_BYTES + 1 byte) ─────────
     # Read one byte more than the limit so we can detect oversized files without
     # loading the entire file into memory first.
@@ -553,22 +607,8 @@ async def upload_workflow_video(
 
     public = result.to_public_dict()
     replay_artifact: dict[str, Any] | None = None
-    existing_replays = [
-        row
-        for row in proof_artifact_service.list_artifacts_for_proof(
-            db,
-            proof_type="website",
-            proof_id=session_id,
-            artifact_type="website_replay_video",
-            retained_only=True,
-        )
-        if str(row.get("owner_user_id") or "") == str(user_id)
-    ]
-    if existing_replays:
-        # Duplicate recorder delivery is idempotent: the first retained replay
-        # remains the exact canonical artifact for this proof session.
-        replay_artifact = existing_replays[-1]
-    elif result.video_analysis_status not in {"limit_exceeded", "unsupported_format"}:
+    # (Duplicate deliveries returned above — no retained replay exists here.)
+    if result.video_analysis_status not in {"limit_exceeded", "unsupported_format"}:
         replay_artifact = proof_artifact_service.register_artifact_with_bytes(
             db,
             owner_user_id=user_id,

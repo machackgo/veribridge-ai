@@ -441,6 +441,58 @@ def _mark_website_finalized(
     return finalized_at
 
 
+def _merge_website_claimed_skills_into_project(
+    db: Any,
+    *,
+    project: dict[str, Any],
+    session: dict[str, Any],
+) -> None:
+    """Carry the student's explicit Website Proof skill claims onto the project.
+
+    Project Report and Work Passport map runtime proof only to skills claimed on
+    that project.  Website Proof creation stores those explicit selections on
+    the proof session, so dropping them at finalization makes analyzed evidence
+    appear merely project-level on downstream surfaces.  Merge them
+    idempotently; analyzer-derived supported skills are deliberately excluded.
+    """
+    metadata = project.get("metadata") if isinstance(project.get("metadata"), dict) else {}
+    existing = [str(s).strip() for s in (metadata.get("claimed_skills") or []) if str(s).strip()]
+    selected = [str(s).strip() for s in (session.get("claimed_skills") or []) if str(s).strip()]
+    merged: list[str] = []
+    seen: set[str] = set()
+    for skill in [*existing, *selected]:
+        key = _norm_skill(skill)
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(skill)
+    if merged == existing:
+        return
+    updated = {**metadata, "claimed_skills": merged}
+    now = _now()
+    if isinstance(db, dict):
+        project["metadata"] = updated
+        project["updated_at"] = now
+        return
+    try:
+        response = (
+            db.table("vbr_projects")
+            .update({"metadata": updated, "updated_at": now})
+            .eq("id", project["id"])
+            .eq("user_id", project["user_id"])
+            .execute()
+        )
+        if not (getattr(response, "data", []) or []):
+            raise CanonicalEvidenceNotFoundError(str(project.get("id") or ""))
+        project["metadata"] = updated
+        project["updated_at"] = now
+    except CanonicalEvidenceNotFoundError:
+        raise
+    except Exception as exc:
+        raise CanonicalEvidencePersistenceError(
+            "Could not persist the Website Proof's claimed skills on the selected project."
+        ) from exc
+
+
 def _norm_skill(name: str) -> str:
     return " ".join(str(name or "").strip().lower().split())
 
@@ -551,6 +603,32 @@ def _conflicting_direct_relationship(
         ):
             return row
     return None
+
+
+def _downgrade_identity_invalid_relationship(db: Any, row: dict[str, Any]) -> None:
+    """Downgrade a provably-wrong directly_linked edge to ``mismatched_project``.
+
+    A legacy relationship recorded before the repository-identity write gate can
+    attach a GitHub proof to a project whose own declared repository contradicts
+    the proof's repository. Such an edge is excluded by every canonical read
+    path already; downgrading it (state ``mismatched_project``, the 058 schema's
+    state for exactly this) stops it from permanently blocking the proof's REAL
+    project at the finalization boundary while keeping the row for audit.
+    """
+    patch = {
+        "relationship_state": "mismatched_project",
+        "confirmed_by_user": False,
+        "provenance": {
+            **(row.get("provenance") if isinstance(row.get("provenance"), dict) else {}),
+            "downgraded_reason": "repo_identity_conflict",
+            "downgraded_at": _now(),
+        },
+        "updated_at": _now(),
+    }
+    if isinstance(db, dict):
+        row.update(patch)
+        return
+    db.table("proof_project_relationships").update(patch).eq("id", row["id"]).execute()
 
 
 def _stamp_artifact_project(
@@ -788,6 +866,9 @@ def finalize_proof_evidence(
     ]
 
     if proof_type == "website":
+        website_session = _owned_row(
+            db, "extension_proof_sessions", proof_id, user_id, user_key="user_id"
+        )
         relationship = confirm_project_relationship(
             db, user_id=user_id, proof_type="website", proof_id=proof_id, project_id=project_id
         )
@@ -823,6 +904,31 @@ def finalize_proof_evidence(
             counted_quality="supporting",
             link_reason="The recorded workflow demonstrates this skill at runtime (identity-validated at read time).",
             pending_reason="Website analysis has not mapped this claimed skill yet.",
+        )
+        # Canonical Website Proof finalization is also the write boundary for
+        # the student's Skill Graph.  The dedicated sync endpoint remains
+        # useful for repair/replay, but requiring the client to make a second
+        # best-effort request left successfully finalized proofs absent from
+        # skill_evidence_pipelines.  Run the idempotent sync here so a single
+        # Save action cannot report success with a stale Skill Graph.
+        if pipeline_db is not None and analysis_rows and supported:
+            from app.services.website_proof_artifact_sync_service import (
+                WebsiteProofArtifactSyncService,
+            )
+
+            sync_result = WebsiteProofArtifactSyncService(
+                db=db,
+                pipeline_db=pipeline_db,
+            ).sync(user_id=user_id, proof_session_id=proof_id)
+            if sync_result.errors:
+                raise CanonicalEvidencePersistenceError(
+                    "Could not sync the finalized Website Proof to the Skill Graph: "
+                    + "; ".join(sync_result.errors)
+                )
+        _merge_website_claimed_skills_into_project(
+            db,
+            project=project,
+            session=website_session,
         )
     elif proof_type == "document":
         from app.services.optional_evidence_service import OptionalEvidenceService
@@ -913,9 +1019,39 @@ def finalize_proof_evidence(
         if not rows:
             raise CanonicalEvidenceNotFoundError(proof_id)
         proof = rows[0]
+        # Repository-identity integrity gate: a GitHub Proof may only be
+        # finalized against a project whose declared repository it matches.
+        # Without this, attaching proof A while typing project repo B silently
+        # records a contradictory edge that leaks an unrelated repository into
+        # the project's defense/report/passport views.
+        from app.services.canonical_project_evidence import (
+            github_identity_conflict,
+            project_repo_identity,
+        )
+
+        if github_identity_conflict(project_repo_identity(project), proof.get("repo_url")):
+            raise CanonicalEvidencePreconditionError(
+                "This GitHub Proof's repository does not match the selected project's "
+                "repository. Attach the GitHub Proof for the project's own repository, "
+                "or select/create the project that matches this proof."
+            )
         conflict = _conflicting_direct_relationship(
             db, user_id=user_id, proof_type="github", proof_id=proof_id, project_id=project_id
         )
+        if conflict is not None:
+            # A legacy directly_linked edge that contradicts ITS OWN project's
+            # repository identity (recorded before the identity write gate) is
+            # provably wrong — downgrade it instead of letting it permanently
+            # block this proof's real project.
+            conflict_project_rows = _table_rows(
+                db, "vbr_projects", {"id": str(conflict.get("project_id") or ""), "user_id": user_id}
+            )
+            conflict_project = conflict_project_rows[0] if conflict_project_rows else {}
+            if github_identity_conflict(
+                project_repo_identity(conflict_project), proof.get("repo_url")
+            ):
+                _downgrade_identity_invalid_relationship(db, conflict)
+                conflict = None
         if conflict is not None:
             raise CanonicalEvidenceConflictError(
                 "This GitHub Proof already has a direct relationship to another project."

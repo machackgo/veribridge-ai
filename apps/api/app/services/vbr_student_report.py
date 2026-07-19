@@ -1934,6 +1934,16 @@ def collect_project_defense_traces(
         summary = _scrub_score_fragments(
             str(analysis.get("recruiter_summary") or analysis.get("transcript_summary") or "")
         )
+        ownership_score = int(analysis.get("ownership_signal_score") or 0)
+        ownership_established = ownership_score >= 60
+        defense_detail = (
+            "Process/contribution evidence: the candidate described their contribution and project decisions."
+            if ownership_established
+            else (
+                "Project-understanding evidence: the candidate discussed the project, but personal "
+                "ownership was not established by this defense."
+            )
+        )
         attach(
             {
                 "trace_id": "project-defense",
@@ -1942,11 +1952,14 @@ def collect_project_defense_traces(
                 "skill_names": defense_skills,
                 "qualitative_status": _PARTIALLY_DEMONSTRATED if explained else _SUPPORTING_EVIDENCE,
                 "safe_summary": _trace_text(
-                    summary or "The candidate explained their own work and approach during the Project Defense."
+                    summary
+                    or (
+                        "The candidate described their contribution and approach during the Project Defense."
+                        if ownership_established
+                        else "The candidate discussed the project during the Project Defense; personal ownership was not established."
+                    )
                 ),
-                "safe_detail": (
-                    "Process/ownership evidence: the candidate explained how and why they built the project."
-                ),
+                "safe_detail": defense_detail,
                 "evidence_anchor": "project-defense",
                 "location_type": "defense_overview",
                 "location_label": "overall explanation",
@@ -2291,51 +2304,40 @@ def _build_real_unmapped_proof_context(
 
 def _owned_rows(db: Any, table: str, user_id: str, *, user_key: str = "user_id") -> list[dict[str, Any]]:
     """Best-effort owner-scoped bulk read for canonical relationship hydration."""
-    try:
-        if isinstance(db, dict):
-            return [
-                row
-                for row in db.get(table, {}).values()
-                if isinstance(row, dict) and str(row.get(user_key) or "") == str(user_id)
-            ]
-        response = db.table(table).select("*").eq(user_key, user_id).execute()
-        return [row for row in (getattr(response, "data", []) or []) if isinstance(row, dict)]
-    except Exception:  # pragma: no cover - migration/table availability is additive
-        return []
+    from app.services.canonical_project_evidence import owned_rows
+
+    return owned_rows(db, table, user_id, user_key=user_key)
 
 
 def _canonical_website_proofs_for_project(
-    db: Any, *, user_id: str, project_id: str
+    db: Any, *, user_id: str, project_ids: list[str]
 ) -> list[dict[str, Any]]:
-    """Analyzed Website Proofs with a deterministic direct project edge."""
-    session_ids: set[str] = set()
-    for session in _owned_rows(db, "extension_proof_sessions", user_id):
-        metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
-        pid = str(session.get("project_id") or metadata.get("project_id") or "")
-        if pid == str(project_id) and session.get("id"):
-            session_ids.add(str(session["id"]))
-    for artifact in _owned_rows(db, "proof_artifacts", user_id, user_key="owner_user_id"):
-        if (
-            artifact.get("proof_type") == "website"
-            and str(artifact.get("project_id") or "") == str(project_id)
-            and artifact.get("proof_id")
-        ):
-            session_ids.add(str(artifact["proof_id"]))
-    for relation in _owned_rows(
-        db, "proof_project_relationships", user_id, user_key="owner_user_id"
-    ):
-        if (
-            relation.get("proof_type") == "website"
-            and relation.get("relationship_state") == "directly_linked"
-            and str(relation.get("project_id") or "") == str(project_id)
-            and relation.get("proof_id")
-        ):
-            session_ids.add(str(relation["proof_id"]))
+    """Analyzed Website Proofs with a deterministic direct project edge.
+
+    ``project_ids`` is the duplicate group of ONE logical project, so a proof
+    the owner attached to any duplicate row still surfaces on this report.
+    """
+    from app.services.canonical_project_evidence import canonical_website_session_ids
+
+    session_ids = set(
+        canonical_website_session_ids(db, user_id=user_id, project_ids=project_ids)
+    )
     if not session_ids:
         return []
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for row in _owned_rows(db, "workflow_analysis_results", user_id):
+    # Deterministic attachment order: oldest analysis first, session id as the
+    # tiebreak. The bulk read has no ordering guarantee, and an unordered result
+    # would let a project with several attached Website Proofs render them (and
+    # pick "first" anywhere downstream) in a different order per request.
+    analysis_rows = sorted(
+        _owned_rows(db, "workflow_analysis_results", user_id),
+        key=lambda row: (
+            str(row.get("created_at") or ""),
+            str(row.get("proof_session_id") or ""),
+        ),
+    )
+    for row in analysis_rows:
         sid = str(row.get("proof_session_id") or "")
         if not sid or sid not in session_ids or sid in seen:
             continue
@@ -2356,75 +2358,50 @@ def _canonical_website_proofs_for_project(
 
 
 def _canonical_proof_ids_for_project(
-    db: Any, *, user_id: str, project_id: str, proof_type: str
+    db: Any, *, user_id: str, project_ids: list[str], proof_type: str
 ) -> list[str]:
     """Proof ids of ``proof_type`` with a deterministic direct edge to this project.
 
-    Reads only the explicit finalization writes the Website fallback already
-    trusts: normalized ``proof_project_relationships`` rows (``directly_linked``)
-    and retained ``proof_artifacts`` project stamps. Both are written exclusively
-    by the shared canonical finalization boundary from an owner-confirmed
-    attachment — nothing here is inferred from titles, repos, filenames, or
-    skill text.
+    Delegates to the shared canonical resolver (see
+    ``canonical_project_evidence``): explicit finalization writes only, scoped
+    by owner + the exact project ids, deterministically ordered.
     """
-    ids: list[str] = []
-    seen: set[str] = set()
-    for relation in _owned_rows(
-        db, "proof_project_relationships", user_id, user_key="owner_user_id"
-    ):
-        if (
-            relation.get("proof_type") == proof_type
-            and relation.get("relationship_state") == "directly_linked"
-            and str(relation.get("project_id") or "") == str(project_id)
-            and relation.get("proof_id")
-        ):
-            proof_id = str(relation["proof_id"])
-            if proof_id not in seen:
-                seen.add(proof_id)
-                ids.append(proof_id)
-    for artifact in _owned_rows(db, "proof_artifacts", user_id, user_key="owner_user_id"):
-        if (
-            artifact.get("proof_type") == proof_type
-            and str(artifact.get("project_id") or "") == str(project_id)
-            and artifact.get("proof_id")
-        ):
-            proof_id = str(artifact["proof_id"])
-            if proof_id not in seen:
-                seen.add(proof_id)
-                ids.append(proof_id)
-    return ids
+    from app.services.canonical_project_evidence import canonical_proof_ids_for_projects
+
+    return canonical_proof_ids_for_projects(
+        db, user_id=user_id, project_ids=project_ids, proof_type=proof_type
+    )
 
 
 def _canonical_github_proof_for_project(
-    db: Any, *, user_id: str, project_id: str
+    db: Any, *, user_id: str, project_ids: list[str], project_identity: str
 ) -> dict[str, Any] | None:
     """Attached GitHub Proof summary recovered from canonical relationship rows.
 
     Read-time parity with :func:`_canonical_website_proofs_for_project`: a
     GitHub Proof the owner explicitly finalized against this project must not
     disappear just because the legacy ``vbr_projects.metadata.attached_proofs``
-    write was missed. The summary is rebuilt by the SAME safe builder the
-    attach flow uses (safe fields only, never raw ``repo_metadata``); any
-    lookup problem returns ``None`` so behaviour degrades to metadata-only.
+    write was missed. Selection is the shared deterministic rule (identity gate
+    → analysis-complete first → newest edge); the summary is rebuilt by the
+    SAME safe builder the attach flow uses (never raw ``repo_metadata``).
     """
-    for proof_id in _canonical_proof_ids_for_project(
-        db, user_id=user_id, project_id=project_id, proof_type="github"
-    ):
-        try:
-            # Lazy import mirrors the existing attach-flow pattern and avoids a
-            # service import cycle.
-            from app.services.vbr_project_defense import _github_proof_summary
+    from app.services.canonical_project_evidence import resolve_canonical_github_summary
 
-            summary = _github_proof_summary(db, user_id, proof_id)
-        except Exception:  # pragma: no cover - canonical hydration is best-effort
-            continue
-        summary["relationship_source"] = "canonical_direct"
-        return summary
-    return None
+    # Lazy import mirrors the existing attach-flow pattern and avoids a
+    # service import cycle.
+    from app.services.vbr_project_defense import _github_proof_summary
+
+    return resolve_canonical_github_summary(
+        db,
+        user_id=user_id,
+        project_ids=project_ids,
+        project_identity=project_identity,
+        build_summary=_github_proof_summary,
+    )
 
 
 def _canonical_documents_for_project(
-    db: Any, *, user_id: str, project_id: str, known_document_ids: set[str]
+    db: Any, *, user_id: str, project_ids: list[str], known_document_ids: set[str]
 ) -> list[dict[str, Any]]:
     """Attached Document Proof summaries recovered from canonical rows.
 
@@ -2436,7 +2413,7 @@ def _canonical_documents_for_project(
     """
     out: list[dict[str, Any]] = []
     for proof_id in _canonical_proof_ids_for_project(
-        db, user_id=user_id, project_id=project_id, proof_type="document"
+        db, user_id=user_id, project_ids=project_ids, proof_type="document"
     ):
         if proof_id in known_document_ids:
             continue
@@ -2529,7 +2506,34 @@ def build_student_vbr_report(
 
     claimed_skills: list[str] = [str(s) for s in (metadata.get("claimed_skills") or [])]
 
+    # One logical project can span several duplicate ``vbr_projects`` rows (one
+    # per proof form the student started from). Canonical evidence resolution
+    # covers the whole duplicate group so a proof the owner attached to any
+    # duplicate row still surfaces on this report — the SAME grouping the
+    # Project Defense workspace uses.
+    project_group_ids = [str(project.get("id") or "")]
+    try:
+        from app.services.vbr_project_defense import _find_project_group
+
+        group = _find_project_group(db, user_id, str(project.get("id") or ""))
+        if group:
+            project_group_ids = [str(p.get("id") or "") for p in group if p.get("id")]
+    except Exception:  # pragma: no cover - grouping is a read-time widening only
+        pass
+
+    from app.services.canonical_project_evidence import (
+        github_identity_conflict,
+        project_repo_identity,
+    )
+
+    identity = project_repo_identity(project)
+
     github_proof = attached.get("github_proof") if isinstance(attached.get("github_proof"), dict) else None
+    # Repository-identity read gate: a legacy metadata summary whose repository
+    # contradicts the project's own declared repository must not leak an
+    # unrelated repository into this report (see canonical resolver rule 4).
+    if github_proof is not None and github_identity_conflict(identity, github_proof.get("repo_url")):
+        github_proof = None
     documents_raw = list(attached.get("documents")) if isinstance(attached.get("documents"), list) else []
     website_proofs_raw = list(attached.get("website_proofs")) if isinstance(attached.get("website_proofs"), list) else []
     # Canonical direct links are equally authoritative for GitHub and Document
@@ -2540,7 +2544,7 @@ def build_student_vbr_report(
     # helpers read only ``directly_linked`` finalization rows.
     if github_proof is None:
         github_proof = _canonical_github_proof_for_project(
-            db, user_id=user_id, project_id=str(project.get("id") or "")
+            db, user_id=user_id, project_ids=project_group_ids, project_identity=identity
         )
     known_document_ids = {
         str((doc or {}).get("document_evidence_id") or "")
@@ -2551,7 +2555,7 @@ def build_student_vbr_report(
         _canonical_documents_for_project(
             db,
             user_id=user_id,
-            project_id=str(project.get("id") or ""),
+            project_ids=project_group_ids,
             known_document_ids=known_document_ids,
         )
     )
@@ -2565,7 +2569,7 @@ def build_student_vbr_report(
         if isinstance(row, dict)
     }
     for canonical_wp in _canonical_website_proofs_for_project(
-        db, user_id=user_id, project_id=str(project.get("id") or "")
+        db, user_id=user_id, project_ids=project_group_ids
     ):
         canonical_sid = str(canonical_wp.get("proof_session_id") or "")
         if canonical_sid in known_website_sessions:
@@ -2791,15 +2795,35 @@ def build_student_vbr_report(
     # artifact project_id, or confirmed relationship). It therefore counts by
     # default. The fail-closed exception is a strong cross-project conflict: the
     # recorded app identity exactly names another owned project.
+    # A duplicate row of THIS logical project is not "another project" — it
+    # shares the title/repo by construction and must never demote evidence the
+    # owner attached to the same logical project.
     other_projects = [
         row
         for row in _owned_rows(db, "vbr_projects", user_id)
-        if str(row.get("id") or "") != str(project.get("id") or "")
+        if str(row.get("id") or "") not in set(project_group_ids)
     ]
     extension_sessions = {
         str(row.get("id") or ""): row
         for row in _owned_rows(db, "extension_proof_sessions", user_id)
         if row.get("id")
+    }
+    # Proof ids the owner EXPLICITLY confirmed belong to THIS project through
+    # the canonical finalization boundary. An explicit user confirmation is the
+    # strongest identity signal we have — it must never be demoted by the fuzzy
+    # cross-project conflict heuristics below (two owned projects legitimately
+    # sharing a repo URL or similar titles would otherwise exclude the proof
+    # from the very project the owner attached it to).
+    user_confirmed_proof_ids: set[str] = {
+        str(relation.get("proof_id"))
+        for relation in _owned_rows(
+            db, "proof_project_relationships", user_id, user_key="owner_user_id"
+        )
+        if relation.get("proof_type") == "website"
+        and relation.get("relationship_state") == "directly_linked"
+        and str(relation.get("project_id") or "") in set(project_group_ids)
+        and bool(relation.get("confirmed_by_user"))
+        and relation.get("proof_id")
     }
     for entry, wse in zip(website_entries, website_skill_evidence):
         session_context = extension_sessions.get(str(entry.get("proof_session_id") or "")) or {}
@@ -2836,7 +2860,12 @@ def build_student_vbr_report(
             ),
             None,
         )
-        if conflicting_project:
+        if str(entry.get("proof_session_id") or "") in user_confirmed_proof_ids:
+            state = "matched_direct"
+            reasons = [
+                "The student explicitly confirmed this Website Proof belongs to this project."
+            ]
+        elif conflicting_project:
             conflicting_title = str(conflicting_project.get("title") or "another project")
             state = "mismatched"
             reasons = [
@@ -3110,7 +3139,16 @@ def build_student_vbr_report(
         "deployed_url": project.get("deployed_url") or None,
         "student_role": metadata.get("student_role") or "",
         "claimed_skills": claimed_skills,
-        "project_status": project.get("status") or "draft",
+        # The persisted project workflow status may legitimately remain
+        # ``questions_ready`` after answers were analyzed because Defense keeps
+        # its completion marker in metadata.  The report must describe the
+        # evidence state it is currently rendering, not expose that stale
+        # internal workflow cursor.
+        "project_status": (
+            "defense complete"
+            if project_defense_completed
+            else (project.get("status") or "draft")
+        ),
         "session_id": str(session["id"]) if session else None,
         "generated_at": _now_iso(),
         "evidence_package": {

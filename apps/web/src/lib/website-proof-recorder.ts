@@ -5,9 +5,12 @@ import { PUBLIC_API_BASE } from "@/lib/api-base"
 import {
   RECORDER_AUTH_REFRESH_REQUEST,
   RECORDER_AUTH_REFRESH_ACK,
+  RECORDER_BRIDGE_PING,
+  RECORDER_BRIDGE_PONG,
   RECORDER_INIT_ACK,
   RECORDER_INIT_NACK,
   RECORDER_INIT_REQUEST,
+  RECORDER_KNOWN_EXTENSION_MESSAGE_TYPES,
   RECORDER_START_ACK,
   RECORDER_START_REQUEST,
   RECORDER_TARGET_OPEN_ACK,
@@ -18,6 +21,7 @@ import {
   normalizeWebsiteProofRecorderConfig,
   normalizeWebsiteProofApiBase,
   safeRecorderDiagnostic,
+  type RecorderBridgePong,
   type RecorderInitAck,
   type RecorderInitRequest,
   type RecorderProtocolErrorCode,
@@ -30,8 +34,14 @@ import {
 
 const APP_MESSAGE_SOURCE = "veribridge-app"
 const EXTENSION_MESSAGE_SOURCE = "veribridge-extension"
-const INIT_RETRY_MS = [0, 250, 750, 1500, 3000] as const
-const INIT_TIMEOUT_MS = 7_000
+const INIT_RETRY_MS = [0, 250, 750, 1500, 3000, 5000] as const
+const BRIDGE_PING_RETRY_MS = [0, 400, 1200, 2500, 4500] as const
+const INIT_TIMEOUT_MS = 10_000
+// A response observed shortly before the deadline earns one extension: the
+// bridge is alive and the worker may still be waking, so a late ACK remains
+// relevant and must not be discarded because a timer fired first.
+const INIT_LATE_SIGNAL_WINDOW_MS = 2_500
+const INIT_DEADLINE_EXTENSION_MS = 4_000
 const TARGET_TIMEOUT_MS = 12_000
 const START_TIMEOUT_MS = 6_000
 
@@ -96,6 +106,7 @@ export function recorderFailureMessage(result: RecorderHandshakeFailure): string
   const messages: Record<RecorderProtocolErrorCode, string> = {
     extension_not_detected: "VeriBridge Recorder was not detected. Reload the unpacked extension and refresh this proof page.",
     extension_version_incompatible: "The loaded VeriBridge Recorder is out of date. Reload the extension from this worktree, then retry.",
+    extension_worker_unreachable: "The recorder's background worker did not answer. Retry — if it keeps failing, reload the extension and refresh this page.",
     initialization_timeout: "Recorder initialization timed out. Keep this page open and retry.",
     invalid_config: "The recorder rejected this session configuration.",
     invalid_api_base: "The Website Proof API address is invalid.",
@@ -165,6 +176,10 @@ export async function initializeWebsiteProofRecorder(
   return await new Promise<RecorderHandshakeResult>((resolve) => {
     let settled = false
     let sawExtensionMessage = false
+    let bridgePongSeen = false
+    let workerUnreachableSeen = false
+    let lastSignalAtMs = 0
+    let deadlineExtended = false
     const timers: number[] = []
     const finish = (result: RecorderHandshakeResult) => {
       if (settled) return
@@ -178,15 +193,50 @@ export async function initializeWebsiteProofRecorder(
       const data = event.data as { source?: unknown; type?: unknown; payload?: unknown } | null
       if (data?.source !== EXTENSION_MESSAGE_SOURCE) return
       sawExtensionMessage = true
+      lastSignalAtMs = Date.now()
       if (data.type === "VERIBRIDGE_RECORDER_AUTH_APPLIED") {
         diagnostic("extension_init_rejected", config, "extension_version_incompatible")
         finish(failure("extension_version_incompatible", "A legacy recorder build answered the compatibility probe."))
+        return
+      }
+      if (typeof data.type === "string" && !RECORDER_KNOWN_EXTENSION_MESSAGE_TYPES.has(data.type)) {
+        // Any extension-sourced message type the current protocol does not
+        // emit means a stale/foreign build is loaded. Waiting longer can never
+        // succeed — fail fast with the actionable diagnostic.
+        diagnostic("extension_init_rejected", config, "extension_version_incompatible")
+        finish(failure("extension_version_incompatible", "An unrecognized recorder build is loaded in this browser."))
+        return
+      }
+      if (data.type === RECORDER_BRIDGE_PONG) {
+        const pong = data.payload as Partial<RecorderBridgePong>
+        if (pong.request_id !== correlationId) return
+        if (
+          pong.schema_version !== WEBSITE_PROOF_RECORDER_SCHEMA_VERSION ||
+          pong.build_version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION
+        ) {
+          diagnostic("extension_init_rejected", config, "extension_version_incompatible")
+          finish(failure("extension_version_incompatible", "The recorder bridge reported an incompatible build."))
+          return
+        }
+        if (pong.context_valid === false) {
+          diagnostic("extension_init_rejected", config, "extension_context_invalidated")
+          finish(failure("extension_context_invalidated", "The recorder bridge belongs to a reloaded extension."))
+          return
+        }
+        bridgePongSeen = true
         return
       }
       if (data.type === RECORDER_INIT_NACK) {
         const nack = data.payload as Partial<RecorderProtocolNack>
         if (nack.request_id !== correlationId) return
         const code = nack.error_code ?? "unknown_error"
+        if (code === "extension_worker_unreachable") {
+          // The bridge exists but the MV3 worker didn't answer this attempt.
+          // Retries are already scheduled — record the signal and keep waiting
+          // instead of failing while the worker may still be waking up.
+          workerUnreachableSeen = true
+          return
+        }
         diagnostic("extension_init_rejected", config, code)
         finish(failure(code, nack.message ?? "The extension rejected initialization."))
         return
@@ -214,9 +264,33 @@ export async function initializeWebsiteProofRecorder(
       diagnostic("extension_init_acknowledged", config)
       finish({ ok: true, config, acknowledgement: ack as RecorderInitAck })
     }
+    const onDeadline = () => {
+      // A signal that arrived moments ago means an ACK may still be in flight
+      // (SW cold start). Extend once rather than discarding a viable handshake.
+      if (!deadlineExtended && Date.now() - lastSignalAtMs <= INIT_LATE_SIGNAL_WINDOW_MS) {
+        deadlineExtended = true
+        timers.push(window.setTimeout(onDeadline, INIT_DEADLINE_EXTENSION_MS))
+        timers.push(window.setTimeout(() => postToExtension(RECORDER_INIT_REQUEST, request), 0))
+        return
+      }
+      const code: RecorderProtocolErrorCode = !sawExtensionMessage
+        ? "extension_not_detected"
+        : workerUnreachableSeen || bridgePongSeen
+          ? "extension_worker_unreachable"
+          : "initialization_timeout"
+      diagnostic("extension_init_failed", config, code)
+      finish(failure(code, "No matching recorder acknowledgement arrived before the deadline."))
+    }
     window.addEventListener("message", onMessage)
     for (const delayMs of INIT_RETRY_MS) {
       timers.push(window.setTimeout(() => postToExtension(RECORDER_INIT_REQUEST, request), delayMs))
+    }
+    // Bridge liveness probe — answered synchronously by the content script.
+    for (const delayMs of BRIDGE_PING_RETRY_MS) {
+      timers.push(window.setTimeout(
+        () => postToExtension(RECORDER_BRIDGE_PING, { request_id: correlationId }),
+        delayMs,
+      ))
     }
     // Compatibility probe: a pre-schema extension responds to this legacy
     // shape, allowing a stale build to be distinguished from a missing one.
@@ -227,11 +301,7 @@ export async function initializeWebsiteProofRecorder(
       authToken: config.auth.access_token,
       claimedSkills: config.claimed_skills,
     }), 2_000))
-    timers.push(window.setTimeout(() => {
-      const code = sawExtensionMessage ? "initialization_timeout" : "extension_not_detected"
-      diagnostic("extension_init_failed", config, code)
-      finish(failure(code, "No matching recorder acknowledgement arrived before the deadline."))
-    }, INIT_TIMEOUT_MS))
+    timers.push(window.setTimeout(onDeadline, INIT_TIMEOUT_MS))
   })
 }
 

@@ -4341,6 +4341,11 @@ def test_website_derived_skill_does_not_leak_to_unrelated_project(
 
     gh = _seed_github_proof(
         mem_store,
+        # Must match the project's declared repository — a contradictory pair
+        # is rejected by the canonical repository-identity gate.
+        repo_url="https://github.com/octocat/Boston",
+        repo_owner="octocat",
+        repo_name="Boston",
         detected_skills=["Machine Learning"],
         analysis_snapshot={
             "skill_code_evidence": [

@@ -190,6 +190,9 @@ class SafeAttachedWebsiteProofSummary(BaseModel):
     target_website: str = ""
     workflow_confidence: str | None = None
     supported_skills: list[str] = Field(default_factory=list)
+    # Closed-vocabulary attachment status (``analysis_pending`` when the
+    # attached session finished recording but its analysis has not landed).
+    status: str | None = None
 
 
 class SafeAttachedProofsSummary(BaseModel):
@@ -229,6 +232,10 @@ class ProjectDefenseContextResponse(BaseModel):
     report_ready: bool = False
     session_id: str | None = None
     questions: list[VBRSessionQuestionResponse] = Field(default_factory=list)
+    # True when the active session's explanation evidence has already been
+    # saved to the Skill Graph — so a reloaded workspace shows the honest
+    # "Saved" state instead of always resetting to "Not saved".
+    skill_graph_synced: bool = False
 
 
 class AttachProofsResponse(BaseModel):
