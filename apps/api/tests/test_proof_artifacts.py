@@ -295,3 +295,43 @@ def test_skill_report_reflects_document_retention_without_paths(client, mem_stor
         assert card["document_artifact_id"]
         assert card["can_download_document"] is True
         assert card["document_open_url"].startswith("/api/v1/proofs/artifacts/")
+
+
+# ── Website Proof replay storage config (Gate 14 blocker C) ───────────────────
+#
+# Gate 13 found Website Proof replay uploads failing in production with
+# WPR-UPLOAD-REJECTED / replay_storage_unavailable, because the Render service
+# had no SUPABASE_PROOF_ARTIFACT_BUCKET set (settings default ""), so
+# storage_available() returned False and register_artifact_with_bytes() refused
+# to retain the replay. The bucket `proof-artifacts` existed all along.
+#
+# These tests pin the config contract: retention is gated purely on the bucket
+# setting for a real (non-dict) Supabase client. The fix is operational (set the
+# env var on Render), not a code change — so we assert the exact env alias and
+# the enable/disable behaviour rather than hardcoding a bucket in source.
+
+class TestReplayStorageConfig:
+    def test_env_var_alias_is_exact(self):
+        # The deploy runbook / Render env change depends on this exact name.
+        field = type(artifacts.settings).model_fields["supabase_proof_artifact_bucket"]
+        assert field.alias == "SUPABASE_PROOF_ARTIFACT_BUCKET"
+
+    def test_default_bucket_is_empty_not_hardcoded(self):
+        # Source must NOT hardcode a production bucket; it stays configurable.
+        field = type(artifacts.settings).model_fields["supabase_proof_artifact_bucket"]
+        assert field.default == ""
+
+    def test_retention_disabled_when_bucket_unset(self, monkeypatch):
+        # Real (non-dict) client + no bucket → honest disable (Gate 13 prod state).
+        monkeypatch.setattr(artifacts.settings, "supabase_proof_artifact_bucket", "")
+        real_client = object()  # anything that is not a dict
+        assert artifacts.storage_available(real_client) is False
+
+    def test_retention_enabled_when_bucket_configured(self, monkeypatch):
+        # Setting the bucket (as the Render fix does) enables retention.
+        monkeypatch.setattr(
+            artifacts.settings, "supabase_proof_artifact_bucket", "proof-artifacts"
+        )
+        real_client = object()
+        assert artifacts.storage_available(real_client) is True
+        assert artifacts._bucket() == "proof-artifacts"
