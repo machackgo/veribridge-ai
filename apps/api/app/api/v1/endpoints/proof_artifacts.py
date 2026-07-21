@@ -11,7 +11,11 @@ Routes (mounted under ``/api/v1/proofs``):
 
 Access model (enforced in ``proof_artifact_service.can_access_artifact``):
   • owner → full access to their retained artifacts
-  • authenticated non-owner → only ``recruiter_safe`` / ``public_safe``
+  • privileged non-owner (recruiter / admin / reviewer) → ``recruiter_safe`` /
+    ``public_safe``
+  • plain authenticated non-owner (another student) → only ``public_safe``
+    (treated like anonymous, so one student can never pull another student's
+    recruiter-safe media by guessing its id)
   • anonymous → only ``public_safe``
   • unknown / not-retained / denied → the SAME indistinct 404, so a caller
     can never probe which private artifacts exist
@@ -32,9 +36,16 @@ from pydantic import BaseModel
 
 from app.api.deps import get_db, get_optional_user_id
 from app.services import proof_artifact_service as artifacts
+from app.services.permission_service import PermissionService
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Roles allowed to view another user's ``recruiter_safe`` artifacts. A plain
+# ``student`` (or the default student fallback) is deliberately excluded.
+_PRIVILEGED_ARTIFACT_ROLES = frozenset(
+    {"recruiter", "admin", "support", "reviewer", "faculty_reviewer", "company_reviewer"}
+)
 
 _NOT_FOUND = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
@@ -45,8 +56,22 @@ _NOT_FOUND = HTTPException(
 )
 
 
-def _get_gated_artifact(db: Any, artifact_id: str, caller_user_id: str | None) -> dict[str, Any]:
-    artifact = artifacts.get_accessible_artifact(db, artifact_id, caller_user_id)
+def _caller_is_privileged(db: Any, caller_user_id: str | None) -> bool:
+    """True when the caller holds a recruiter/admin/reviewer role (never a plain student)."""
+    if caller_user_id is None:
+        return False
+    try:
+        return PermissionService(db).has_role(caller_user_id, _PRIVILEGED_ARTIFACT_ROLES)
+    except Exception:  # pragma: no cover - fail closed on any role-lookup issue
+        return False
+
+
+def _get_gated_artifact(
+    db: Any, artifact_id: str, caller_user_id: str | None, *, caller_is_privileged: bool = False
+) -> dict[str, Any]:
+    artifact = artifacts.get_accessible_artifact(
+        db, artifact_id, caller_user_id, caller_is_privileged=caller_is_privileged
+    )
     if artifact is None:
         raise _NOT_FOUND
     return artifact
@@ -85,7 +110,9 @@ def view_artifact(
     user_id: str | None = Depends(get_optional_user_id),
     db: Any = Depends(get_db),
 ) -> Response:
-    artifact = _get_gated_artifact(db, artifact_id, user_id)
+    artifact = _get_gated_artifact(
+        db, artifact_id, user_id, caller_is_privileged=_caller_is_privileged(db, user_id)
+    )
     return _stream(db, artifact, as_attachment=False)
 
 
@@ -103,7 +130,9 @@ def download_artifact(
     user_id: str | None = Depends(get_optional_user_id),
     db: Any = Depends(get_db),
 ) -> Response:
-    artifact = _get_gated_artifact(db, artifact_id, user_id)
+    artifact = _get_gated_artifact(
+        db, artifact_id, user_id, caller_is_privileged=_caller_is_privileged(db, user_id)
+    )
     return _stream(db, artifact, as_attachment=True)
 
 
@@ -131,7 +160,9 @@ def artifact_signed_url(
     user_id: str | None = Depends(get_optional_user_id),
     db: Any = Depends(get_db),
 ) -> SignedUrlResponse:
-    artifact = _get_gated_artifact(db, artifact_id, user_id)
+    artifact = _get_gated_artifact(
+        db, artifact_id, user_id, caller_is_privileged=_caller_is_privileged(db, user_id)
+    )
     url, ttl = artifacts.create_short_lived_signed_url(db, artifact, expires_in)
     if not url:
         raise HTTPException(
@@ -165,7 +196,12 @@ def website_replay(
     rows = artifacts.list_artifacts_for_proof(
         db, proof_type="website", proof_id=proof_id, artifact_type="website_replay_video"
     )
-    accessible = [r for r in rows if artifacts.can_access_artifact(r, user_id)]
+    privileged = _caller_is_privileged(db, user_id)
+    accessible = [
+        r
+        for r in rows
+        if artifacts.can_access_artifact(r, user_id, caller_is_privileged=privileged)
+    ]
     if not accessible:
         raise _NOT_FOUND
     return _stream(db, accessible[-1], as_attachment=False)
