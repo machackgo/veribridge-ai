@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from app.core.serialization import make_json_safe
 from app.schemas.admin_quality_review import (
     AdminQualityReviewCaseCreate,
     AdminQualityReviewCaseResponse,
@@ -414,6 +415,7 @@ class AdminQualityReviewService:
         return rows[0] if rows else None
 
     def _insert(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(table, {})[str(row["id"])] = row
             return row
@@ -424,6 +426,7 @@ class AdminQualityReviewService:
         return rows[0]
 
     def _save(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(table, {})[str(row["id"])] = row
             return row
