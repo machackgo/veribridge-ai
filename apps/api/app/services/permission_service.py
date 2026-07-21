@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.core.serialization import make_json_safe
 from app.schemas.permissions import (
     CurrentUserPermissionsResponse,
     DashboardAccess,
@@ -374,6 +375,7 @@ class PermissionService:
         return rows[0] if rows else None
 
     def _save(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(table, {})[str(row["id"])] = row
             return row
@@ -384,6 +386,7 @@ class PermissionService:
         return rows[0]
 
     def _insert(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(table, {})[str(row["id"])] = row
             return row

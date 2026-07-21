@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
+from app.core.serialization import make_json_safe
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.public_work_passport_service import (
     EvidenceAccessDeniedError,
@@ -400,6 +401,7 @@ class WorkPassportExportService:
         return rows[0] if rows else None
 
     def _insert(self, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(_EXPORTS, {})[str(row["id"])] = row
             return row

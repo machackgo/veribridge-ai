@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from app.core.serialization import make_json_safe
 from app.schemas.public_work_passport import (
     AccessRequestCreate,
     AccessRequestDecision,
@@ -919,6 +920,7 @@ class PublicWorkPassportService:
         return str((data or {}).get("email") or "")
 
     def _upsert_passport(self, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             return self._save(_PASSPORTS, row)
         result = (
@@ -932,6 +934,7 @@ class PublicWorkPassportService:
         return rows[0]
 
     def _insert(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(table, {})[str(row["id"])] = row
             return row
@@ -942,6 +945,7 @@ class PublicWorkPassportService:
         return rows[0]
 
     def _save(self, table: str, row: dict[str, Any]) -> dict[str, Any]:
+        row = make_json_safe(row)
         if isinstance(self._client, dict):
             self._client.setdefault(table, {})[str(row["id"])] = row
             return row
