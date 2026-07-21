@@ -30,15 +30,20 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import os
+import tempfile
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_user_id, get_db
 from app.core.config import settings
 from app.services.video_keyframe_extractor_service import (
     VideoKeyframeExtractorService,
+    VideoKeyframeResult,
     VIDEO_STATUS_ANALYZED,
     VIDEO_STATUS_NOT_AVAILABLE,
     VIDEO_STATUS_FAILED,
@@ -64,6 +69,14 @@ from app.services import proof_artifact_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Upload streaming chunk size — bounds per-read memory for video uploads.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+# Process-wide gate: at most one keyframe extraction at a time. Serializing
+# extraction bounds peak memory on small instances (concurrent decodes killed
+# the 512 Mi production instance).
+_VIDEO_PROCESSING_GATE = threading.BoundedSemaphore(1)
 
 
 # ── Request / Response schemas ─────────────────────────────────────────────────
@@ -576,16 +589,10 @@ async def upload_workflow_video(
             ),
         )
 
-    # ── 1. Read video bytes (bounded by MAX_VIDEO_SIZE_BYTES + 1 byte) ─────────
-    # Read one byte more than the limit so we can detect oversized files without
-    # loading the entire file into memory first.
-    limit_bytes = settings.max_video_size_bytes
-    raw = await video.read(limit_bytes + 1)
-
+    # ── 1. Reject unsupported MIME types early (before touching the body) ──────
     mime_type    = (video.content_type or "application/octet-stream").split(";")[0].strip()
     filename_val = video.filename or "recording.webm"
 
-    # ── 2. Reject unsupported MIME types early (before extraction) ─────────────
     if mime_type not in _ALLOWED_CONTENT_TYPES:
         ext = filename_val.rsplit(".", 1)[-1].lower() if "." in filename_val else ""
         if f".{ext}" not in {".webm", ".mp4", ".mkv", ".ogg", ".ogv", ".avi"}:
@@ -597,24 +604,57 @@ async def upload_workflow_video(
                 ),
             )
 
-    # ── 3. Extract keyframes ────────────────────────────────────────────────────
-    extractor = VideoKeyframeExtractorService()
-    result    = extractor.extract_keyframes(
-        video_bytes=raw,
-        filename=filename_val,
-        mime_type=mime_type,
-    )
+    # ── 2. Stream the body to disk in bounded chunks ───────────────────────────
+    # NEVER `await video.read(limit + 1)`: CPython preallocates the full
+    # requested buffer (the 100 MB limit!) regardless of the actual body size —
+    # on a 512 Mi instance that preallocation alone OOM-killed the service.
+    limit_bytes = settings.max_video_size_bytes
+    total_bytes = 0
+    tmp_suffix  = "." + filename_val.rsplit(".", 1)[-1].lower() if "." in filename_val else ".webm"
+    tmp = tempfile.NamedTemporaryFile(suffix=tmp_suffix, delete=False)
+    tmp_path = tmp.name
+    oversized = False
+    try:
+        with tmp:
+            while True:
+                chunk = await video.read(_UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > limit_bytes:
+                    oversized = True
+                    break
+                tmp.write(chunk)
 
-    public = result.to_public_dict()
-    replay_artifact: dict[str, Any] | None = None
-    # (Duplicate deliveries returned above — no retained replay exists here.)
-    if result.video_analysis_status not in {"limit_exceeded", "unsupported_format"}:
-        replay_artifact = proof_artifact_service.register_artifact_with_bytes(
+        if oversized:
+            limit_mb = limit_bytes // (1024 * 1024)
+            return VideoUploadResponse(
+                session_id=session_id,
+                video_analysis_status="limit_exceeded",
+                keyframe_count=0,
+                selected_frame_timestamps_ms=[],
+                extraction_method="none",
+                duration_ms=None,
+                frames_stored=0,
+                frames_queued_for_visual_analysis=0,
+                limitations=[
+                    f"Video exceeds the {limit_mb} MB limit. "
+                    "Please record a shorter workflow demonstration."
+                ],
+                message="Video exceeds the size limit — not stored.",
+                replay_retained=False,
+                replay_artifact_id=None,
+            )
+
+        # ── 3. Durable-first: retain the replay BEFORE any processing ──────────
+        # If extraction fails or the process dies, the media is already safe and
+        # a client retry lands on the idempotent already-uploaded path above.
+        replay_artifact: dict[str, Any] | None = proof_artifact_service.register_artifact_with_file(
             db,
             owner_user_id=user_id,
             proof_type="website",
             artifact_type="website_replay_video",
-            data=raw,
+            file_path=tmp_path,
             file_name=filename_val,
             mime_type=mime_type,
             proof_id=session_id,
@@ -627,18 +667,62 @@ async def upload_workflow_video(
                 )
             ),
             access_policy="owner_only",
-            duration_seconds=(result.duration_ms / 1000) if result.duration_ms is not None else None,
+            duration_seconds=None,  # backfilled after extraction (if it succeeds)
         )
-    if replay_artifact is None:
-        logger.error(
-            "[WebsiteProofRecorder] event=replay_retention_failed session_id=%s state=recording error_code=replay_storage_unavailable",
-            session_id,
-        )
-    else:
-        logger.info(
-            "[WebsiteProofRecorder] event=replay_retained session_id=%s state=recording",
-            session_id,
-        )
+        if replay_artifact is None:
+            logger.error(
+                "[WebsiteProofRecorder] event=replay_retention_failed session_id=%s state=recording error_code=replay_storage_unavailable",
+                session_id,
+            )
+        else:
+            logger.info(
+                "[WebsiteProofRecorder] event=replay_retained session_id=%s state=recording",
+                session_id,
+            )
+
+        # ── 4. Extract keyframes — file-based, serialized, memory-bounded ──────
+        # Runs in a worker thread (never blocks the event loop) and behind a
+        # process-wide gate so concurrent uploads cannot multiply peak memory.
+        # Extraction failure is honest-degraded, never a 500: the replay is
+        # already durable, so the upload as a whole has succeeded.
+        def _extract_bounded() -> VideoKeyframeResult:
+            with _VIDEO_PROCESSING_GATE:
+                return VideoKeyframeExtractorService().extract_keyframes(
+                    video_bytes=None,
+                    filename=filename_val,
+                    mime_type=mime_type,
+                    video_path=tmp_path,
+                )
+
+        try:
+            result = await run_in_threadpool(_extract_bounded)
+        except Exception as exc:
+            logger.error(
+                "[WorkflowVideo] Keyframe extraction crashed (non-fatal, replay retained): session=%s error=%s",
+                session_id, exc,
+            )
+            result = VideoKeyframeResult(
+                video_analysis_status="failed",
+                keyframe_count=0,
+                selected_frame_timestamps_ms=[],
+                extraction_method="none",
+                duration_ms=None,
+                frame_width=None,
+                frame_height=None,
+                limitations=[f"Keyframe extraction failed unexpectedly: {str(exc)[:200]}"],
+            )
+
+        if replay_artifact is not None and result.duration_ms is not None:
+            proof_artifact_service.update_artifact_duration(
+                db, str(replay_artifact.get("id")), result.duration_ms / 1000,
+            )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    public = result.to_public_dict()
     frames_stored   = 0
     queued_for_analysis = 0
 

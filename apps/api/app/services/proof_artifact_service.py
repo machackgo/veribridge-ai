@@ -31,6 +31,7 @@ table lives under ``db["proof_artifacts"]`` and object bytes under
 from __future__ import annotations
 
 import logging
+import os
 import re
 
 from datetime import UTC, datetime
@@ -289,6 +290,116 @@ def register_artifact_with_bytes(
         owner_user_id,
     )
     return inserted
+
+
+def register_artifact_with_file(
+    db: Any,
+    *,
+    owner_user_id: str,
+    proof_type: str,
+    artifact_type: str,
+    file_path: str,
+    file_name: str | None,
+    mime_type: str,
+    proof_id: str | None = None,
+    report_id: str | None = None,
+    project_id: str | None = None,
+    access_policy: str = "owner_only",
+    redacted: bool = False,
+    duration_seconds: float | None = None,
+    page_count: int | None = None,
+) -> dict[str, Any] | None:
+    """Like register_artifact_with_bytes, but streams from a file on disk.
+
+    The media is never materialised as a whole in Python memory — the storage
+    client streams the open file handle. Use this for large uploads (video).
+    """
+    if proof_type not in PROOF_TYPES or artifact_type not in ARTIFACT_TYPES:
+        logger.warning("[ProofArtifact] Rejected unknown type %s/%s", proof_type, artifact_type)
+        return None
+    if access_policy not in ACCESS_POLICIES:
+        logger.warning("[ProofArtifact] Rejected unknown access policy %s", access_policy)
+        return None
+    if not storage_available(db):
+        logger.info("[ProofArtifact] Storage not configured — refusing to register %s", artifact_type)
+        return None
+
+    try:
+        size_bytes = os.path.getsize(file_path)
+    except OSError as exc:
+        logger.warning("[ProofArtifact] Cannot stat %s: %s", file_path, exc)
+        return None
+
+    artifact_id = str(uuid4())
+    storage_path = build_storage_path(owner_user_id, proof_type, artifact_id, file_name)
+
+    if isinstance(db, dict):
+        with open(file_path, "rb") as fh:
+            db.setdefault(_OBJECTS_TABLE, {})[storage_path] = fh.read()
+    else:
+        try:
+            with open(file_path, "rb") as fh:
+                db.storage.from_(_bucket()).upload(
+                    storage_path,
+                    fh,
+                    file_options={"content-type": mime_type},
+                )
+        except Exception as exc:
+            logger.warning("[ProofArtifact] Streamed upload failed for artifact object: %s", exc)
+            return None
+
+    row = {
+        "id": artifact_id,
+        "owner_user_id": owner_user_id,
+        "proof_type": proof_type,
+        "artifact_type": artifact_type,
+        "proof_id": proof_id,
+        "report_id": report_id,
+        "project_id": project_id,
+        "storage_bucket": None if isinstance(db, dict) else _bucket(),
+        "storage_path": storage_path,
+        "retained": True,
+        "public_safe": access_policy == "public_safe",
+        "redacted": redacted,
+        "access_policy": access_policy,
+        "mime_type": mime_type,
+        "file_name": safe_filename(file_name),
+        "size_bytes": size_bytes,
+        "duration_seconds": duration_seconds,
+        "page_count": page_count,
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+    inserted = _insert_row(db, row)
+    if inserted is None:
+        return None
+    logger.info(
+        "[ProofArtifact] Retained %s (%s, %d bytes, streamed) for user %s",
+        artifact_type,
+        artifact_id,
+        size_bytes,
+        owner_user_id,
+    )
+    return inserted
+
+
+def update_artifact_duration(
+    db: Any, artifact_id: str, duration_seconds: float | None
+) -> None:
+    """Best-effort duration backfill after deferred extraction. Never raises."""
+    if duration_seconds is None:
+        return
+    try:
+        if isinstance(db, dict):
+            row = db.get(_TABLE, {}).get(artifact_id)
+            if row is not None:
+                row["duration_seconds"] = duration_seconds
+            return
+        db.table(_TABLE).update(
+            {"duration_seconds": duration_seconds, "updated_at": _now()}
+        ).eq("id", artifact_id).execute()
+    except Exception as exc:
+        logger.warning("[ProofArtifact] Duration backfill failed (non-fatal): %s", exc)
 
 
 # ── Access control (single source of truth) ────────────────────────────────────

@@ -66,6 +66,7 @@ import type {
 } from "@/lib/api"
 import {
   createWebsiteProofLifecycle,
+  recorderStatusLabel,
   websiteProofLifecycleReducer,
   type WebsiteProofLifecycleEvent,
 } from "@/lib/website-proof-lifecycle"
@@ -8558,7 +8559,7 @@ export function ExtensionProofPanel({
             <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
               <span style={{ fontSize: 11, color: "var(--muted)", minWidth: 70, flexShrink: 0 }}>Recorder</span>
               <span style={{ fontSize: 12, color: recorderReady ? "#166534" : "var(--ink)", fontWeight: recorderReady ? 700 : 500 }}>
-                {recorderReady ? "Recorder ready" : recorderLifecycle.state.replaceAll("_", " ")}
+                {recorderStatusLabel(recorderLifecycle, recorderReady)}
               </span>
             </div>
           </div>
