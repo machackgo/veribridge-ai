@@ -29,14 +29,22 @@ export async function proxy(request: NextRequest) {
 
   const { pathname } = request.nextUrl
 
-  // Paths that never require auth (add more as the app grows)
+  // Paths that never require auth (add more as the app grows).
+  // Tokenized/slug public share routes are gated by the token/slug itself and
+  // by the backend (which only serves published, recruiter-safe projections),
+  // so a recruiter must be able to open them while logged out:
+  //   /vbr/report/<token> — published Verified Build Report
+  //   /r/<token>          — legacy public report
+  //   /p/<slug>[/skills/<skill>] — published public Work Passport + Skill Report
   const isPublic =
     pathname === "/" ||
     pathname === "/login" ||
     pathname.startsWith("/auth/") ||
     pathname.startsWith("/recruiter") ||
     pathname.startsWith("/university") ||
-    pathname.startsWith("/r/")
+    pathname.startsWith("/r/") ||
+    pathname.startsWith("/vbr/report/") ||
+    pathname.startsWith("/p/")
 
   if (isPublic) {
     // If the user is already logged in, bounce them away from /login

@@ -671,3 +671,78 @@ class TestRouteRegistration:
     def test_post_complete_route_in_openapi(self, client: TestClient) -> None:
         paths = client.get("/openapi.json").json()["paths"]
         assert "/api/v1/student/extension-proof/sessions/{session_id}/complete" in paths
+
+
+# ── Migration 061 RLS guarantees (Gate 14 repair) ─────────────────────────────
+#
+# Root cause (Gate 13): extension_proof_sessions / extension_proof_uploads had
+# RLS enabled but their only policy was an ALL policy on the `public` role with
+# USING(true), so the anon key could read AND write every row across all users.
+# Migration 061 replaces it with owner-only (authenticated) + explicit
+# service-role policies. These assertions guard that contract at the SQL level
+# so the permissive policy cannot be reintroduced.
+
+from pathlib import Path  # noqa: E402
+
+_MIGRATION_061 = (
+    Path(__file__).resolve().parents[1]
+    / "app" / "db" / "migrations"
+    / "061_extension_proof_sessions_rls_owner_only.sql"
+)
+
+
+@pytest.fixture(scope="module")
+def migration_061_sql() -> str:
+    return _MIGRATION_061.read_text(encoding="utf-8").lower()
+
+
+class TestMigration061Rls:
+    def test_migration_file_exists(self) -> None:
+        assert _MIGRATION_061.exists()
+
+    def test_enables_rls_on_both_tables(self, migration_061_sql: str) -> None:
+        assert (
+            "alter table public.extension_proof_sessions enable row level security"
+            in migration_061_sql
+        )
+        assert (
+            "alter table public.extension_proof_uploads enable row level security"
+            in migration_061_sql
+        )
+
+    def test_drops_permissive_public_policy(self, migration_061_sql: str) -> None:
+        # The exact over-permissive policies observed in production must be dropped.
+        assert (
+            'drop policy if exists "allow service role full access to extension proof sessions"'
+            in migration_061_sql
+        )
+        assert (
+            'drop policy if exists "allow service role full access to extension proof uploads"'
+            in migration_061_sql
+        )
+
+    def test_no_public_or_anon_grant_policy(self, migration_061_sql: str) -> None:
+        # No policy may target the anon or the catch-all `public` role. Owner
+        # access is `to authenticated`; backend access is `to service_role`.
+        assert "to anon" not in migration_061_sql
+        assert "to public" not in migration_061_sql
+        # A CREATE POLICY ... USING (true) is only allowed for service_role.
+        assert "for all\n  to public" not in migration_061_sql
+
+    def test_sessions_owner_only_policies(self, migration_061_sql: str) -> None:
+        # Owner-only select/insert/update keyed on the ::text-cast comparison
+        # (tolerates the production `text` user_id column).
+        for verb in ("select", "insert", "update"):
+            assert f'"ext_proof_sessions: own row {verb}"' in migration_061_sql
+        assert "to authenticated" in migration_061_sql
+        assert "(user_id)::text = ((select auth.uid()))::text" in migration_061_sql
+
+    def test_explicit_service_role_policies(self, migration_061_sql: str) -> None:
+        assert '"ext_proof_sessions: service role all"' in migration_061_sql
+        assert '"ext_proof_uploads: service role all"' in migration_061_sql
+        assert "to service_role" in migration_061_sql
+
+    def test_uploads_has_no_authenticated_policy(self, migration_061_sql: str) -> None:
+        # extension_proof_uploads is legacy/empty with no user_id column: it is
+        # locked to service_role only (default-deny for anon + authenticated).
+        assert '"ext_proof_uploads: own row' not in migration_061_sql
