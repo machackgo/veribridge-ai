@@ -185,8 +185,8 @@ def test_extraction_crash_is_degraded_not_500_and_replay_is_durable():
     assert artifacts[0]["owner_user_id"] == OWNER
 
 
-def test_retry_after_extraction_crash_hits_idempotent_path():
-    """After a crash-with-retained-replay, a retry must be acknowledged idempotently."""
+def test_retry_after_extraction_crash_repairs_without_duplicate_artifact():
+    """A retry after crash re-attempts extraction (repair) but never duplicates the artifact."""
     client = TestClient(app)
     db = _mock_db("retry-session")
     _override(db)
@@ -215,11 +215,89 @@ def test_retry_after_extraction_crash_hits_idempotent_path():
     retry_body = retry.json()
     assert retry_body["replay_retained"] is True
     assert retry_body["replay_artifact_id"] == first.json()["replay_artifact_id"]
-    assert "idempotent" in retry_body["message"]
-    # Retry created no duplicate artifact.
+    # Zero keyframes were recorded, so the retry re-ran extraction (repair)…
+    assert inst.extract_keyframes.call_count == 2
+    # …but never registered a second artifact.
     assert len(db["proof_artifacts"]) == 1
-    # Extraction ran only for the first delivery.
+    assert retry_body["video_analysis_status"] == "failed"
+
+
+def test_retry_repair_succeeds_and_stores_keyframes_once():
+    """Crash on first delivery, working extractor on retry → keyframes repaired, one artifact."""
+    client = TestClient(app)
+    db = _mock_db("repair-session")
+    _override(db)
+
+    try:
+        with (
+            patch(
+                "app.api.v1.endpoints.workflow_visual_frames.VideoKeyframeExtractorService"
+            ) as MockExtractor,
+            patch(
+                "app.api.v1.endpoints.workflow_visual_frames.WorkflowVisualAnalysisService"
+            ) as MockVA,
+        ):
+            inst = MagicMock()
+            inst.extract_keyframes.side_effect = [MemoryError("boom"), _analyzed_result()]
+            MockExtractor.return_value = inst
+            MockVA.return_value = _mock_va()
+
+            first = _post_video(client, "repair-session")
+            repair = _post_video(client, "repair-session")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.json()["video_analysis_status"] == "failed"
+    repair_body = repair.json()
+    assert repair.status_code == 202
+    assert repair_body["video_analysis_status"] == "analyzed"
+    assert repair_body["keyframe_count"] == 1
+    assert repair_body["replay_artifact_id"] == first.json()["replay_artifact_id"]
+    assert len(db["proof_artifacts"]) == 1
+
+
+def test_duplicate_with_existing_keyframes_stays_fully_idempotent():
+    """Once keyframes exist, a duplicate delivery is acknowledged without re-extraction."""
+    client = TestClient(app)
+    db = _mock_db("dup-session")
+    _override(db)
+
+    try:
+        with (
+            patch(
+                "app.api.v1.endpoints.workflow_visual_frames.VideoKeyframeExtractorService"
+            ) as MockExtractor,
+            patch(
+                "app.api.v1.endpoints.workflow_visual_frames.WorkflowVisualAnalysisService"
+            ) as MockVA,
+        ):
+            inst = MagicMock()
+            inst.extract_keyframes.return_value = _analyzed_result()
+            MockExtractor.return_value = inst
+            MockVA.return_value = _mock_va()
+
+            first = _post_video(client, "dup-session")
+            # Simulate the stored keyframe row (the mocked VA does not write the db).
+            db["workflow_visual_frame_evidence"] = {
+                "kf-1": {
+                    "id": "kf-1",
+                    "user_id": OWNER,
+                    "proof_session_id": "dup-session",
+                    "frame_type": "video_keyframe",
+                }
+            }
+            duplicate = _post_video(client, "dup-session")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert first.status_code == 202
+    dup_body = duplicate.json()
+    assert duplicate.status_code == 202
+    assert "idempotent" in dup_body["message"]
+    assert dup_body["keyframe_count"] == 1
+    assert dup_body["replay_artifact_id"] == first.json()["replay_artifact_id"]
     assert inst.extract_keyframes.call_count == 1
+    assert len(db["proof_artifacts"]) == 1
 
 
 def test_other_users_session_is_404():

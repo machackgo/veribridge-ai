@@ -621,11 +621,7 @@ class VideoKeyframeExtractorService:
                 )
 
         finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+            pass  # video_path is owned by the caller — never deleted here
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
