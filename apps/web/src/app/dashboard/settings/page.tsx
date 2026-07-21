@@ -1,5 +1,11 @@
 import { StudentSettings } from "../../../../components/dashboard/StudentViews";
+import { SampleDataNotice } from "../../../../components/dashboard/SampleDataNotice";
 
 export default function Page() {
-  return <StudentSettings />;
+  return (
+    <>
+      <SampleDataNotice controlsInert />
+      <StudentSettings />
+    </>
+  );
 }
