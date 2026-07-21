@@ -20,6 +20,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from postgrest.exceptions import APIError as PostgrestAPIError
 
 from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.db.supabase import SupabaseAPIError, SupabaseConnectionError, SupabaseFKError
@@ -97,6 +98,37 @@ def get_student_profile(
 # ── Universal onboarding + Career Graph ───────────────────────────────────────
 
 
+def _run_onboarding_call(route: str, call: Any) -> Any:
+    # The onboarding service uses the raw supabase client, so database failures
+    # surface as postgrest APIError (e.g. PGRST205 when migrations 002/054 are
+    # not applied) rather than the wrapped Supabase* exceptions.
+    try:
+        return call()
+    except (SupabaseConnectionError, SupabaseAPIError, PostgrestAPIError) as exc:
+        logger.error("%s: %s", route, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "database_unavailable",
+                "message": (
+                    "The database is temporarily unavailable. "
+                    "Check that SUPABASE_URL is correct and the project is not paused."
+                ),
+            },
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("%s: unexpected error: %s", route, type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "internal_error",
+                "message": "An unexpected error occurred. Check server logs.",
+            },
+        ) from exc
+
+
 @router.get(
     "/onboarding",
     response_model=StudentOnboardingResponse,
@@ -106,7 +138,10 @@ def get_student_onboarding(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> StudentOnboardingResponse:
-    return StudentOnboardingService(db).get_onboarding(user_id)
+    return _run_onboarding_call(
+        "GET /student/onboarding",
+        lambda: StudentOnboardingService(db).get_onboarding(user_id),
+    )
 
 
 @router.put(
@@ -120,7 +155,10 @@ def upsert_student_onboarding(
     user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> StudentOnboardingResponse:
-    return StudentOnboardingService(db).upsert_onboarding(user_id, body)
+    return _run_onboarding_call(
+        "PUT /student/onboarding",
+        lambda: StudentOnboardingService(db).upsert_onboarding(user_id, body),
+    )
 
 
 @router.post(
@@ -132,7 +170,10 @@ def complete_student_onboarding(
     user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> OnboardingCompleteResponse:
-    completed_at = StudentOnboardingService(db).mark_complete(user_id)
+    completed_at = _run_onboarding_call(
+        "POST /student/onboarding/complete",
+        lambda: StudentOnboardingService(db).mark_complete(user_id),
+    )
     return OnboardingCompleteResponse(
         user_id=user_id,
         completed=True,
@@ -149,8 +190,10 @@ def get_opportunity_heatmap(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
 ) -> OpportunityHeatmapResponse:
-    onboarding = StudentOnboardingService(db)
-    return OpportunityHeatmapService(onboarding).get_heatmap(user_id)
+    return _run_onboarding_call(
+        "GET /student/opportunity-heatmap",
+        lambda: OpportunityHeatmapService(StudentOnboardingService(db)).get_heatmap(user_id),
+    )
 
 
 # ── PUT /student/profile ──────────────────────────────────────────────────────

@@ -36,6 +36,8 @@ export async function proxy(request: NextRequest) {
   //   /vbr/report/<token> — published Verified Build Report
   //   /r/<token>          — legacy public report
   //   /p/<slug>[/skills/<skill>] — published public Work Passport + Skill Report
+  //   /card/<slug>        — public Passport Card (subset of /p data)
+  //   /b/<code>           — revocable Beam short link (fail-closed resolver)
   const isPublic =
     pathname === "/" ||
     pathname === "/login" ||
@@ -44,7 +46,9 @@ export async function proxy(request: NextRequest) {
     pathname.startsWith("/university") ||
     pathname.startsWith("/r/") ||
     pathname.startsWith("/vbr/report/") ||
-    pathname.startsWith("/p/")
+    pathname.startsWith("/p/") ||
+    pathname.startsWith("/card/") ||
+    pathname.startsWith("/b/")
 
   if (isPublic) {
     // If the user is already logged in, bounce them away from /login
