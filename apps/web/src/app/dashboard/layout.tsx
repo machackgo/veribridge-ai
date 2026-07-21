@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { DashboardShell } from "../../../components/dashboard/DashboardShell";
+import { createSupabaseServerClient } from "../../lib/supabase/server";
 
 const nav = [
   { label: "Overview", href: "/dashboard", icon: "▣" },
@@ -21,15 +22,44 @@ const accountNav = [
   { label: "Privacy", href: "/dashboard/privacy", icon: "🛡" },
 ];
 
-export default function StudentLayout({ children }: { children: ReactNode }) {
+/** Derive display initials from a name (preferred) or email, never blank. */
+export function dashboardPersonaInitials(name: string, email: string): string {
+  const source = (name || email || "").trim();
+  if (!source) return "ME";
+  const words = source.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return source.slice(0, 2).toUpperCase();
+}
+
+export default async function StudentLayout({ children }: { children: ReactNode }) {
+  // Resolve the persona from the authenticated session — never a hardcoded identity.
+  let email = "";
+  let name = "";
+  try {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    email = user?.email ?? "";
+    const metadata = (user?.user_metadata ?? {}) as Record<string, unknown>;
+    name =
+      (typeof metadata.full_name === "string" && metadata.full_name) ||
+      (typeof metadata.name === "string" && metadata.name) ||
+      "";
+  } catch {
+    // Fall through to safe generic labels if the session cannot be read.
+  }
+
+  const displayName = name || email || "My Workspace";
+
   return (
     <DashboardShell
       nav={nav}
       accountNav={accountNav}
       persona={{
-        name: "Maya Reyes",
-        detail: "maya.reyes@wpi.edu",
-        initials: "MR",
+        name: displayName,
+        detail: email,
+        initials: dashboardPersonaInitials(name, email),
       }}
       accent="emerald"
     >
