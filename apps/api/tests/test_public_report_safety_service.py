@@ -2226,3 +2226,38 @@ def test_real_unmapped_proof_context_key_fails_the_public_scan() -> None:
 
     clean = {"report_title": "Verified Build Report", "skill_evidence": []}
     assert not contains_unsafe_fields(clean)
+
+
+# ── Regression: public-bucket avatar URLs must survive the fail-closed gate ─────
+# A published Work Passport with an uploaded avatar 404'd because the avatar's
+# canonical public URL (…/storage/v1/object/public/passport-avatars/<uid>/…)
+# contains the "supabase.co/storage" / "/storage/v1/object" substrings the scan
+# uses to catch SIGNED/private storage URLs. Public-bucket objects are
+# world-readable by design and must pass; signed/authenticated/token URLs must not.
+
+_AVATAR_PUBLIC_URL = (
+    "https://odyippjqndjcwmfzgcll.supabase.co/storage/v1/object/public/"
+    "passport-avatars/b7606fc7-ecf7-4ff4-bd17-8ae17ca24736/avatar.png?v=1784639812"
+)
+
+
+def test_public_bucket_avatar_url_is_safe():
+    assert contains_unsafe_fields(_AVATAR_PUBLIC_URL) is False
+    payload = {
+        "candidate_display_name": None,
+        "identity": {"avatar_url": _AVATAR_PUBLIC_URL},
+    }
+    # Whole-payload gate must not refuse a passport that only carries a public avatar.
+    assert enforce_public_safe(payload) == payload
+
+
+def test_signed_and_private_storage_urls_still_blocked():
+    base = "https://odyippjqndjcwmfzgcll.supabase.co/storage/v1/object"
+    uid = "b7606fc7-ecf7-4ff4-bd17-8ae17ca24736"
+    assert contains_unsafe_fields(f"{base}/sign/proof-artifacts/{uid}/x.pdf?token=eyJ.secret.sig") is True
+    assert contains_unsafe_fields(f"{base}/authenticated/proof-artifacts/{uid}/x.pdf") is True
+    assert contains_unsafe_fields(f"{base}/upload/proof-artifacts/{uid}/x.pdf") is True
+    # Even a "public"-looking URL that smuggles a credential query is refused.
+    assert contains_unsafe_fields(f"{base}/public/passport-avatars/{uid}/a.png?token=leak") is True
+    # Bare storage host reference (no clean public-object URL) stays blocked.
+    assert contains_unsafe_fields("supabase.co/storage/leaked/path") is True

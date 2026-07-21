@@ -150,6 +150,45 @@ _UNSAFE_VALUE_PATTERNS = (
     "bearer ",
 )
 
+# A world-readable Supabase Storage *public-bucket* object URL
+# (``/storage/v1/object/public/<bucket>/…``) is safe to surface publicly — e.g.
+# the recruiter-facing passport avatar photo. It is deliberately NOT treated as a
+# private storage/signed URL: only public buckets serve via ``/object/public/``,
+# whereas private objects use ``/object/sign/`` (token-bearing),
+# ``/object/authenticated/``, or ``/object/upload/`` — all of which remain blocked
+# by the patterns above. Anchored end-to-end so no other content can ride along.
+_PUBLIC_STORAGE_OBJECT_URL_RE = re.compile(
+    r"^https://[a-z0-9.-]+/storage/v1/object/public/[^\s\"'<>]+$",
+    re.IGNORECASE,
+)
+_STORAGE_SECRET_QUERY_KEYS = (
+    "token=",
+    "api_key=",
+    "apikey=",
+    "secret=",
+    "signature=",
+    "bearer ",
+)
+
+
+def _is_public_storage_object_url(value: str) -> bool:
+    """True for a clean, world-readable public-bucket object URL (safe to expose).
+
+    Rejects signed / authenticated / upload storage URLs and any URL carrying a
+    credential-bearing query string, so the private-storage boundary is intact.
+    """
+    text = value.strip()
+    if not _PUBLIC_STORAGE_OBJECT_URL_RE.match(text):
+        return False
+    lowered = text.lower()
+    if any(
+        marker in lowered
+        for marker in ("/object/sign", "/object/authenticated", "/object/upload")
+    ):
+        return False
+    query = lowered.partition("?")[2]
+    return not any(key in query for key in _STORAGE_SECRET_QUERY_KEYS)
+
 
 def _normalize_key(key: str) -> str:
     return "".join(ch for ch in key.lower() if ch.isalnum() or ch == "_")
@@ -168,6 +207,8 @@ def _contains_unsafe_fields(value: Any) -> bool:
     if isinstance(value, list):
         return any(_contains_unsafe_fields(item) for item in value)
     if isinstance(value, str):
+        if _is_public_storage_object_url(value):
+            return False
         lowered = value.lower()
         return any(pattern in lowered for pattern in _UNSAFE_VALUE_PATTERNS)
     return False
