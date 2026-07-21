@@ -551,42 +551,62 @@ async def upload_workflow_video(
         )
         if str(row.get("owner_user_id") or "") == str(user_id)
     ]
-    if existing_replays:
-        replay_artifact = existing_replays[-1]
+    existing_replay: dict[str, Any] | None = existing_replays[-1] if existing_replays else None
+    if existing_replay is not None:
         try:
-            _kf_resp = (
-                db.table("workflow_visual_frame_evidence")
-                .select("id")
-                .eq("user_id", user_id)
-                .eq("proof_session_id", session_id)
-                .eq("frame_type", "video_keyframe")
-                .execute()
-            )
-            existing_kf_count = len(getattr(_kf_resp, "data", None) or [])
+            if isinstance(db, dict):
+                existing_kf_count = sum(
+                    1
+                    for r in db.get("workflow_visual_frame_evidence", {}).values()
+                    if r.get("user_id") == user_id
+                    and r.get("proof_session_id") == session_id
+                    and r.get("frame_type") == "video_keyframe"
+                )
+            else:
+                _kf_resp = (
+                    db.table("workflow_visual_frame_evidence")
+                    .select("id")
+                    .eq("user_id", user_id)
+                    .eq("proof_session_id", session_id)
+                    .eq("frame_type", "video_keyframe")
+                    .execute()
+                )
+                existing_kf_count = len(getattr(_kf_resp, "data", None) or [])
         except Exception:
             existing_kf_count = 0
+        if existing_kf_count > 0:
+            logger.info(
+                "[WorkflowVideo] Duplicate delivery for session=%s — replay already "
+                "retained; returning idempotent acknowledgment (keyframes=%d)",
+                session_id, existing_kf_count,
+            )
+            return VideoUploadResponse(
+                session_id=session_id,
+                video_analysis_status=VIDEO_STATUS_ANALYZED,
+                keyframe_count=existing_kf_count,
+                selected_frame_timestamps_ms=[],
+                extraction_method="already_uploaded",
+                duration_ms=None,
+                frames_stored=0,
+                frames_queued_for_visual_analysis=0,
+                limitations=[
+                    "A recording was already uploaded for this session; the first retained replay remains canonical.",
+                ],
+                message="Recording already uploaded for this session — duplicate delivery ignored (idempotent).",
+                replay_retained=True,
+                replay_artifact_id=(
+                    str(existing_replay.get("id")) if existing_replay.get("id") else None
+                ),
+            )
+        # Replay retained but ZERO keyframes recorded — the first delivery's
+        # extraction failed after durable storage. The retry carries an
+        # identical body (same upload id), so fall through and repair
+        # extraction from it. The retained replay stays canonical: no second
+        # artifact is registered below.
         logger.info(
-            "[WorkflowVideo] Duplicate delivery for session=%s — replay already "
-            "retained; returning idempotent acknowledgment (keyframes=%d)",
-            session_id, existing_kf_count,
-        )
-        return VideoUploadResponse(
-            session_id=session_id,
-            video_analysis_status=VIDEO_STATUS_ANALYZED if existing_kf_count else "already_uploaded",
-            keyframe_count=existing_kf_count,
-            selected_frame_timestamps_ms=[],
-            extraction_method="already_uploaded",
-            duration_ms=None,
-            frames_stored=0,
-            frames_queued_for_visual_analysis=0,
-            limitations=[
-                "A recording was already uploaded for this session; the first retained replay remains canonical.",
-            ],
-            message="Recording already uploaded for this session — duplicate delivery ignored (idempotent).",
-            replay_retained=True,
-            replay_artifact_id=(
-                str(replay_artifact.get("id")) if replay_artifact.get("id") else None
-            ),
+            "[WorkflowVideo] Duplicate delivery for session=%s with retained replay "
+            "but 0 keyframes — re-running extraction repair from the retried body",
+            session_id,
         )
 
     # ── 1. Reject unsupported MIME types early (before touching the body) ──────
@@ -649,26 +669,32 @@ async def upload_workflow_video(
         # ── 3. Durable-first: retain the replay BEFORE any processing ──────────
         # If extraction fails or the process dies, the media is already safe and
         # a client retry lands on the idempotent already-uploaded path above.
-        replay_artifact: dict[str, Any] | None = proof_artifact_service.register_artifact_with_file(
-            db,
-            owner_user_id=user_id,
-            proof_type="website",
-            artifact_type="website_replay_video",
-            file_path=tmp_path,
-            file_name=filename_val,
-            mime_type=mime_type,
-            proof_id=session_id,
-            project_id=(
-                owned_session.get("project_id")
-                or (
-                    owned_session.get("metadata", {}).get("project_id")
-                    if isinstance(owned_session.get("metadata"), dict)
-                    else None
-                )
-            ),
-            access_policy="owner_only",
-            duration_seconds=None,  # backfilled after extraction (if it succeeds)
-        )
+        # An extraction-repair retry reuses the retained replay: never a second
+        # artifact for the same session.
+        replay_artifact: dict[str, Any] | None
+        if existing_replay is not None:
+            replay_artifact = existing_replay
+        else:
+            replay_artifact = proof_artifact_service.register_artifact_with_file(
+                db,
+                owner_user_id=user_id,
+                proof_type="website",
+                artifact_type="website_replay_video",
+                file_path=tmp_path,
+                file_name=filename_val,
+                mime_type=mime_type,
+                proof_id=session_id,
+                project_id=(
+                    owned_session.get("project_id")
+                    or (
+                        owned_session.get("metadata", {}).get("project_id")
+                        if isinstance(owned_session.get("metadata"), dict)
+                        else None
+                    )
+                ),
+                access_policy="owner_only",
+                duration_seconds=None,  # backfilled after extraction (if it succeeds)
+            )
         if replay_artifact is None:
             logger.error(
                 "[WebsiteProofRecorder] event=replay_retention_failed session_id=%s state=recording error_code=replay_storage_unavailable",

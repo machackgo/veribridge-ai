@@ -584,6 +584,19 @@ def test_video_upload_duplicate_delivery_is_idempotent_no_new_frames():
         frames_stored_after_first = mock_va_inst.store_visual_frame.call_count
         extractions_after_first = mock_extractor_inst.extract_keyframes.call_count
 
+        # The mocked visual-analysis service does not write keyframe rows;
+        # seed the row the real service would have stored so the duplicate
+        # sees a completed extraction (otherwise it would run the
+        # zero-keyframe extraction-repair path by design).
+        mock_db["workflow_visual_frame_evidence"] = {
+            "kf-1": {
+                "id": "kf-1",
+                "user_id": owner_id,
+                "proof_session_id": "idem-session",
+                "frame_type": "video_keyframe",
+            }
+        }
+
         duplicate = client.post(
             "/api/v1/student/extension-proof/sessions/idem-session/workflow/video",
             files={"video": ("recording.webm", io.BytesIO(b"fake_video"), "video/webm")},
