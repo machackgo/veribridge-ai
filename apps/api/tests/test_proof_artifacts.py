@@ -141,12 +141,50 @@ def test_non_owner_cannot_access_owner_only_artifact(client, mem_store):
     assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 404
 
 
-def test_recruiter_safe_admits_authenticated_non_owner_only(client, mem_store):
+def _grant_role(db, user_id, role):
+    db.setdefault("user_roles", {})[f"{user_id}:{role}"] = {
+        "id": f"{user_id}:{role}",
+        "user_id": user_id,
+        "role": role,
+        "scope": "global",
+        "scope_id": None,
+        "is_active": True,
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+
+
+def test_recruiter_safe_denies_plain_student_admits_privileged(client, mem_store):
+    # F3 hardening: recruiter_safe is for the owner + privileged viewers only.
     row = _register(mem_store, policy="recruiter_safe")
+
+    # A plain authenticated non-owner (another student, no roles) is denied —
+    # they can never pull a peer's recruiter-safe media by guessing its id.
     _as(client, OTHER)
-    assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 200
+    assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 404
+
+    # Anonymous is denied too.
     _as(client, None)
     assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 404
+
+    # A privileged non-owner (recruiter / admin / reviewer) IS admitted.
+    for role in ("recruiter", "admin", "reviewer"):
+        privileged = f"33333333-3333-3333-3333-33333333333{('recruiter','admin','reviewer').index(role)}"
+        _grant_role(mem_store, privileged, role)
+        _as(client, privileged)
+        assert (
+            client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 200
+        ), f"{role} should access recruiter_safe"
+
+
+def test_recruiter_safe_access_unit_policy():
+    # Direct unit coverage of the closed-policy decision.
+    art = {"retained": True, "owner_user_id": OWNER, "access_policy": "recruiter_safe"}
+    assert artifacts.can_access_artifact(art, OWNER) is True  # owner
+    assert artifacts.can_access_artifact(art, OTHER) is False  # plain student
+    assert artifacts.can_access_artifact(art, None) is False  # anonymous
+    assert (
+        artifacts.can_access_artifact(art, OTHER, caller_is_privileged=True) is True
+    )  # recruiter/admin
 
 
 def test_public_safe_admits_anonymous(client, mem_store):

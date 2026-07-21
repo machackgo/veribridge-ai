@@ -294,8 +294,20 @@ def register_artifact_with_bytes(
 # ── Access control (single source of truth) ────────────────────────────────────
 
 
-def can_access_artifact(artifact: dict[str, Any], caller_user_id: str | None) -> bool:
-    """Closed-policy access decision. Non-retained rows are treated as absent."""
+def can_access_artifact(
+    artifact: dict[str, Any],
+    caller_user_id: str | None,
+    *,
+    caller_is_privileged: bool = False,
+) -> bool:
+    """Closed-policy access decision. Non-retained rows are treated as absent.
+
+    ``recruiter_safe`` is reserved for the owner and *privileged* viewers
+    (recruiters / admins / reviewers — ``caller_is_privileged``). A plain
+    authenticated non-owner (another student) is treated like an anonymous
+    caller and may reach only ``public_safe`` artifacts, so one student can never
+    pull another student's recruiter-safe media by guessing its id.
+    """
     if not artifact.get("retained", False):
         return False
     owner = artifact.get("owner_user_id")
@@ -305,17 +317,25 @@ def can_access_artifact(artifact: dict[str, Any], caller_user_id: str | None) ->
     if policy == "public_safe":
         return True
     if policy == "recruiter_safe":
-        return caller_user_id is not None
+        return caller_user_id is not None and caller_is_privileged
     # owner_only / expired / anything unknown → deny
     return False
 
 
-def get_accessible_artifact(db: Any, artifact_id: str, caller_user_id: str | None) -> dict[str, Any] | None:
+def get_accessible_artifact(
+    db: Any,
+    artifact_id: str,
+    caller_user_id: str | None,
+    *,
+    caller_is_privileged: bool = False,
+) -> dict[str, Any] | None:
     """Fetch + gate in one step. None means 'serve an indistinct 404'."""
     artifact = get_artifact(db, artifact_id)
     if artifact is None:
         return None
-    if not can_access_artifact(artifact, caller_user_id):
+    if not can_access_artifact(
+        artifact, caller_user_id, caller_is_privileged=caller_is_privileged
+    ):
         return None
     return artifact
 
