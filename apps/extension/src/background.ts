@@ -532,8 +532,8 @@ async function captureVisualFrame(
     if (
       tabUrl.startsWith("chrome://") ||
       tabUrl.startsWith("about:") ||
-      tabUrl.includes("veribridge.ai/dashboard") ||
-      tabUrl.includes("veribridge.ai/admin") ||
+      tabUrl.includes("veribridgeai.com/dashboard") ||
+      tabUrl.includes("veribridgeai.com/admin") ||
       tabUrl.includes("localhost:3000/dashboard") ||
       tabUrl.includes("localhost:3000/admin")
     ) {

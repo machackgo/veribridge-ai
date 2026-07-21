@@ -16,6 +16,7 @@ import {
   WEBSITE_PROOF_RECORDER_BUILD_VERSION,
   WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
   isTrustedVeriBridgeAppLocation,
+  isProductionVeriBridgeHostname,
 } from "../../../packages/shared/websiteProofRecorderContract.ts"
 import {
   createRecorderBridgeHandler,
@@ -165,11 +166,33 @@ test("external target origins never bridge recorder messages", async () => {
 test("shared trusted-location helper matches the app surface exactly", () => {
   const trusted = (hostname: string, pathname: string) =>
     isTrustedVeriBridgeAppLocation({ hostname, pathname })
+  // Development loopback: trusted only on app routes.
   assert.equal(trusted("localhost", "/student/proofs/website"), true)
   assert.equal(trusted("localhost", "/dashboard/profile"), true)
   assert.equal(trusted("127.0.0.1", "/vbr"), true)
-  assert.equal(trusted("app.veribridge.ai", "/anything"), true)
   assert.equal(trusted("localhost", "/"), false)
   assert.equal(trusted("localhost", "/login"), false)
+  // Canonical production domain and its true subdomains.
+  assert.equal(trusted("veribridgeai.com", "/dashboard"), true)
+  assert.equal(trusted("www.veribridgeai.com", "/student/proofs/website"), true)
+  assert.equal(trusted("api.veribridgeai.com", "/anything"), true)
+  // Stale legacy domain must NOT be treated as the production host.
+  assert.equal(trusted("veribridge.ai", "/dashboard"), false)
+  assert.equal(trusted("app.veribridge.ai", "/anything"), false)
+  // Suffix lookalikes and unrelated domains stay rejected.
+  assert.equal(trusted("evilveribridgeai.com", "/dashboard"), false)
+  assert.equal(trusted("veribridgeai.com.evil.example.com", "/dashboard"), false)
   assert.equal(trusted("reactplay.io", "/student"), false)
+})
+
+test("production hostname predicate accepts canonical hosts only", () => {
+  assert.equal(isProductionVeriBridgeHostname("veribridgeai.com"), true)
+  assert.equal(isProductionVeriBridgeHostname("www.veribridgeai.com"), true)
+  assert.equal(isProductionVeriBridgeHostname("api.veribridgeai.com"), true)
+  assert.equal(isProductionVeriBridgeHostname("veribridge.ai"), false)
+  assert.equal(isProductionVeriBridgeHostname("app.veribridge.ai"), false)
+  assert.equal(isProductionVeriBridgeHostname("evilveribridgeai.com"), false)
+  assert.equal(isProductionVeriBridgeHostname("veribridgeai.com.evil.example.com"), false)
+  assert.equal(isProductionVeriBridgeHostname("localhost"), false)
+  assert.equal(isProductionVeriBridgeHostname("example.com"), false)
 })

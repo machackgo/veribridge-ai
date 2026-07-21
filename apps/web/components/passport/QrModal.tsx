@@ -1,30 +1,36 @@
 "use client"
 
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 
 import { QrCode } from "./QrCode"
 
 /**
  * Optional QR access, moved OFF the card face into a dismissible modal.
  *
- * The Passport Card itself is now a clean, professional credential with no QR on
- * its face; scanning is still supported for recruiters who want it, but only when
- * the candidate explicitly opens this modal ("Show QR"). The encoded `value` is
- * always the public Work Passport URL (`{app}/p/{slug}`) — never a private route,
- * raw evidence, or a signed storage URL. Renders nothing until opened / when there
- * is no published URL yet.
+ * Used for both the public Work Passport link and a project's public Verified
+ * Build Report link (via `title`/`subtitle`). The encoded `value` is always a
+ * canonical public URL (`{app}/p/{slug}` or `{app}/vbr/report/{token}`) —
+ * never a private route, auth/session token, raw evidence, or a signed
+ * storage URL. Renders nothing until opened / when there is no published URL.
+ *
+ * The URL itself is shown as selectable text with a copy action so the QR is
+ * never the only way to reach the link (accessible text fallback).
  */
 export function QrModal({
   value,
   open,
   onClose,
   title = "Scan to open the Work Passport",
+  subtitle = "Point a phone camera at the code to open the verified Work Passport.",
 }: {
   value: string | null | undefined
   open: boolean
   onClose: () => void
   title?: string
+  subtitle?: string
 }) {
+  const [copied, setCopied] = useState(false)
+
   // Close on Escape; restore body scroll when unmounted.
   useEffect(() => {
     if (!open) return
@@ -35,7 +41,16 @@ export function QrModal({
     return () => document.removeEventListener("keydown", onKey)
   }, [open, onClose])
 
+  useEffect(() => {
+    if (!open) setCopied(false)
+  }, [open])
+
   if (!open || !value) return null
+
+  const copy = () => {
+    void navigator.clipboard?.writeText(value)
+    setCopied(true)
+  }
 
   return (
     <div
@@ -73,12 +88,45 @@ export function QrModal({
       >
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, textAlign: "center" }}>
           <span style={{ fontSize: 15, fontWeight: 700, color: "#0a0e1a" }}>{title}</span>
-          <span style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>
-            Point a phone camera at the code to open the verified Work Passport.
-          </span>
+          <span style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>{subtitle}</span>
         </div>
 
         <QrCode value={value} size={208} data-testid="passport-modal-qr" />
+
+        {/* Accessible text fallback: the QR is never the only way to the link. */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, width: "100%" }}>
+          <span
+            data-testid="passport-qr-modal-url"
+            style={{
+              fontSize: 11,
+              color: "#3f4657",
+              fontFamily: "'JetBrains Mono', monospace",
+              wordBreak: "break-all",
+              textAlign: "center",
+              lineHeight: 1.5,
+              userSelect: "all",
+            }}
+          >
+            {value}
+          </span>
+          <button
+            type="button"
+            data-testid="passport-qr-modal-copy"
+            onClick={copy}
+            style={{
+              padding: "7px 14px",
+              borderRadius: 8,
+              border: "1px solid #e6e8ef",
+              background: "#ffffff",
+              color: "#0a0e1a",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            {copied ? "Link copied!" : "Copy link"}
+          </button>
+        </div>
 
         <button
           type="button"

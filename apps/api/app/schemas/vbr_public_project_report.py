@@ -108,8 +108,37 @@ class PublicVBRProjectReportResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PublicReportViewEvent(BaseModel):
+    """Optional client hints for the privacy-conscious view tracker.
+
+    Both fields are advisory: unknown sources collapse to "unknown" and a
+    malformed dedupe key is simply dropped server-side. Nothing here can
+    widen access — the token in the URL still has to resolve to an actively
+    published report.
+    """
+
+    # Arrival channel as declared by the app ("direct", "recruiter_open",
+    # "recruiter_scan"). Free-form values are normalized to "unknown".
+    source: str | None = Field(default=None, max_length=64)
+    # Opaque client-generated per-session key so obvious same-page rerenders
+    # don't inflate counts. Never derived from recruiter identity.
+    dedupe_key: str | None = Field(default=None, max_length=256)
+
+    model_config = {"extra": "forbid"}
+
+
+class PublicReportViewAck(BaseModel):
+    """Fire-and-forget acknowledgement; deliberately content-free."""
+
+    recorded: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 __all__ = [
     "ProjectReportPublishStatusResponse",
+    "PublicReportViewAck",
+    "PublicReportViewEvent",
     "PublicVideoEvidenceChip",
     "PublicVBRProjectReportResponse",
 ]

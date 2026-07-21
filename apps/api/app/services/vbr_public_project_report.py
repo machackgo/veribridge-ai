@@ -52,6 +52,17 @@ _PASSPORTS_TABLE = "vbr_work_passports"
 
 _TOKEN_GENERATION_ATTEMPTS = 5
 
+# Cheap plausibility gate for inbound public tokens: minted tokens are
+# ``secrets.token_urlsafe(24)`` (32 URL-safe chars), so anything outside this
+# shape can be rejected before touching the database. Bounds are deliberately
+# loose so historical/legacy token lengths keep working.
+_PLAUSIBLE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+
+
+def is_plausible_public_token(token: Any) -> bool:
+    """True when ``token`` is shaped like a mintable public report token."""
+    return isinstance(token, str) and bool(_PLAUSIBLE_TOKEN_RE.match(token))
+
 _REPORT_TITLE = "Verified Build Report"
 _PUBLIC_PATH_PREFIX = "/vbr/report/"
 _PASSPORT_PATH_PREFIX = "/p/"
@@ -384,6 +395,23 @@ def _not_found() -> HTTPException:
     )
 
 
+def resolve_published_project_id(db: Any, token: str) -> str | None:
+    """Project id for an *active* public token, else None.
+
+    Shares the exact publication/revocation semantics of the public read:
+    a project resolves only while its ``public_report_token`` is set, so a
+    revoked or never-published report can never be referenced (e.g. by the
+    view-tracking endpoint) through a stale token.
+    """
+    if not is_plausible_public_token(token):
+        return None
+    project = _find_project_by_token(db, token)
+    if project is None or not project.get("public_report_token"):
+        return None
+    project_id = str(project.get("id") or "")
+    return project_id or None
+
+
 def _sanitize_video_chips(chips: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop internal references (``question_id``) from video evidence chips."""
     sanitized: list[dict[str, Any]] = []
@@ -660,7 +688,7 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     preview uses, then projected to public fields and scanned for unsafe
     content as defence in depth.
     """
-    if not token:
+    if not is_plausible_public_token(token):
         raise _not_found()
 
     project = _find_project_by_token(db, token)

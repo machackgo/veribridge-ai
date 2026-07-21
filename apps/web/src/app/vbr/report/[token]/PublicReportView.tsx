@@ -10,6 +10,7 @@ import {
   type PublicVideoEvidenceChip,
   type VBRReportSkillEvidenceRow,
 } from "@/lib/vbr-api"
+import { recordPublicReportView } from "@/lib/report-view-beacon"
 import {
   Badge,
   Card,
@@ -222,6 +223,9 @@ export function PublicReportView({ token }: { token: string }) {
           return
         }
         setReport(data)
+        // Fire-and-forget, session-deduped view event. Never awaited and never
+        // able to fail loudly — analytics must not block or break the report.
+        void recordPublicReportView(token)
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : "Failed to load report."))
       .finally(() => setLoading(false))
@@ -254,7 +258,10 @@ export function PublicReportView({ token }: { token: string }) {
   const tracesById = new Map(evidenceTraces.map((t) => [t.trace_id, t]))
 
   return (
-    <div data-testid="public-report" style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+    // width:100% + minWidth:0 — the app body is a flex container, so without
+    // these the report becomes a flex item pinned at its min-content width and
+    // drags the whole page wider than small viewports (VBR-RRO-D001).
+    <div data-testid="public-report" style={{ maxWidth: 900, width: "100%", minWidth: 0, margin: "0 auto", padding: "48px 24px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
       {/* Header */}
       <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 6 }}>
         <Mono style={{ fontSize: 11, letterSpacing: "0.16em", color: TOKEN.indigo, textTransform: "uppercase" }}>
@@ -286,7 +293,7 @@ export function PublicReportView({ token }: { token: string }) {
           </p>
         )}
         {report.repo_full_name && (
-          <Mono style={{ fontSize: 11, color: TOKEN.muted, display: "block", marginBottom: 8 }}>
+          <Mono style={{ fontSize: 11, color: TOKEN.muted, display: "block", marginBottom: 8, overflowWrap: "anywhere" }}>
             {report.repo_full_name}
           </Mono>
         )}
@@ -321,21 +328,26 @@ export function PublicReportView({ token }: { token: string }) {
         {report.skill_evidence.length === 0 ? (
           <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>No claimed skills recorded for this project.</p>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ borderBottom: `1px solid ${TOKEN.line}`, textAlign: "left" }}>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Skill</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Evidence</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Supporting evidence</th>
-                <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.skill_evidence.map((row) => (
-                <SkillRow key={row.skill} row={row} tracesById={tracesById} />
-              ))}
-            </tbody>
-          </table>
+          // A table cannot shrink below its min-content width, so on narrow
+          // viewports it must scroll inside its own container instead of
+          // dragging the whole page wider (VBR-RRO-D001).
+          <div data-testid="skill-matrix-scroll" style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${TOKEN.line}`, textAlign: "left" }}>
+                  <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Skill</th>
+                  <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Evidence</th>
+                  <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Supporting evidence</th>
+                  <th style={{ padding: "6px 10px", fontSize: 11, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.skill_evidence.map((row) => (
+                  <SkillRow key={row.skill} row={row} tracesById={tracesById} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
 

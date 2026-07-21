@@ -378,6 +378,7 @@ function ProjectCard({
   const [report, setReport] = useState(project.report)
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [reportQrOpen, setReportQrOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const isPublic = Boolean(report.is_public && report.public_token)
@@ -575,6 +576,14 @@ function ProjectCard({
               >
                 Open public report
               </a>
+              <button
+                type="button"
+                data-testid="show-report-qr-button"
+                onClick={() => setReportQrOpen(true)}
+                style={secondaryBtnStyle}
+              >
+                Show report QR
+              </button>
             </>
           ) : (
             hasEvidence && (
@@ -618,6 +627,16 @@ function ProjectCard({
               : "This project has no attached proof yet, so there is no report to publish — it will not appear on your public Passport. Attach proof or record a Project Defense first."}
         </p>
       </div>
+
+      {/* Report QR: encodes exactly the canonical public report URL (the same
+          value Copy uses) — never an auth token, session, or private route. */}
+      <QrModal
+        value={publicUrl || null}
+        open={reportQrOpen}
+        onClose={() => setReportQrOpen(false)}
+        title="Scan to open the Verified Build Report"
+        subtitle="Point a phone camera at the code to open this project’s public report."
+      />
     </Card>
   )
 }
