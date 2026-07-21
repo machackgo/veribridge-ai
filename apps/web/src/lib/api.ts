@@ -92,6 +92,46 @@ async function isTokenExpired401(res: Response): Promise<boolean> {
  * reports the token expired, the session is refreshed once and the request
  * retried before the 401 is surfaced.
  */
+/**
+ * A request is replayable only when re-sending it cannot duplicate a side
+ * effect: no body, and either no method or an explicitly safe one.
+ */
+export function isReplayableRequest(options: RequestInit): boolean {
+  if (options.body != null) return false
+  const method = (options.method ?? "GET").toUpperCase()
+  return method === "GET" || method === "HEAD"
+}
+
+/**
+ * Retry a request once when the *transport* fails, not when the server answers.
+ *
+ * `fetch` rejects with a bare `TypeError: Failed to fetch` when the connection
+ * drops — including after a 200's headers have arrived but before the body has
+ * finished streaming. The Work Passport response (~80 KB, ~2.4 s) hits this
+ * intermittently in production, and the user sees a dead-end "Failed to fetch"
+ * that a manual "Try again" always clears (audit 2026-07-21).
+ *
+ * Deliberately narrow: any HTTP response — including 4xx/5xx — is returned
+ * untouched so real server errors are never masked or silently re-sent, and
+ * only replayable requests are retried so a retry can never double-submit.
+ */
+export async function fetchWithTransientRetry(
+  send: () => Promise<Response>,
+  replayable: boolean,
+  attempts = 2,
+): Promise<Response> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt++) {
+    try {
+      return await send()
+    } catch (err) {
+      lastError = err
+      if (!replayable) break
+    }
+  }
+  throw lastError
+}
+
 export async function fetchAPI(
   path: string,
   options: RequestInit = {}
@@ -121,7 +161,10 @@ export async function fetchAPI(
     return fetch(`${API_BASE}${path}`, { ...options, headers })
   }
 
-  const res = await doFetch(session?.access_token)
+  const res = await fetchWithTransientRetry(
+    () => doFetch(session?.access_token),
+    isReplayableRequest(options),
+  )
 
   // A request body (stream/FormData) may not be replayable — only retry
   // idempotent-safe bodyless requests after a token refresh.
