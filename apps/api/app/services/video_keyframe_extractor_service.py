@@ -172,12 +172,19 @@ class VideoKeyframeExtractorService:
         video_bytes: bytes | None,
         filename: str = "recording.webm",
         mime_type: str = "video/webm",
+        video_path: str | None = None,
     ) -> VideoKeyframeResult:
         """Extract up to max_keyframes evenly-spaced frames.
+
+        Accepts either in-memory bytes or, preferably, ``video_path`` — a file
+        already on disk. The path form never materialises the video in Python
+        memory; both cv2 and ffmpeg decode straight from the file.
 
         Never raises — returns a VideoKeyframeResult with an appropriate
         status code even when the video is invalid or backends are unavailable.
         """
+        if video_path is not None:
+            return self._extract_from_path(video_path, filename, mime_type)
 
         # ── 1. Null / empty bytes ──────────────────────────────────────────────
         if not video_bytes:
@@ -224,7 +231,71 @@ class VideoKeyframeExtractorService:
                 ],
             )
 
-        # ── 4. Try cv2, then ffmpeg, then not_available ────────────────────────
+        # ── 4. Delegate to the path-based cascade via a temp file ──────────────
+        # Bytes are written to disk once; backends decode from the file so no
+        # additional in-memory copies of the video are made.
+        ext_suffix = os.path.splitext(filename.lower())[1] or ".webm"
+        tmp_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=ext_suffix, delete=False) as tf:
+                tf.write(video_bytes)
+                tmp_path = tf.name
+            return self._run_backends(tmp_path, filename)
+        finally:
+            pass  # video_path is owned by the caller — never deleted here
+
+    def _extract_from_path(
+        self, video_path: str, filename: str, mime_type: str
+    ) -> VideoKeyframeResult:
+        """Path-based variant: size/mime checks + backend cascade, no byte copies."""
+        try:
+            size_bytes = os.path.getsize(video_path)
+        except OSError:
+            return _make_failed(
+                "Video file not readable.",
+                extraction_method="none",
+            )
+        if size_bytes <= 0:
+            return _make_failed(
+                "No video bytes provided.",
+                extraction_method="none",
+            )
+        if size_bytes > self._max_size:
+            mb       = size_bytes     // (1024 * 1024)
+            limit_mb = self._max_size // (1024 * 1024)
+            return VideoKeyframeResult(
+                video_analysis_status=VIDEO_STATUS_LIMIT_EXCEEDED,
+                keyframe_count=0,
+                selected_frame_timestamps_ms=[],
+                extraction_method="none",
+                duration_ms=None,
+                frame_width=None,
+                frame_height=None,
+                limitations=[
+                    f"Video size {mb} MB exceeds the limit of {limit_mb} MB. "
+                    "Please record a shorter workflow demonstration."
+                ],
+            )
+        clean_mime = (mime_type or "").split(";")[0].strip().lower()
+        ext        = os.path.splitext(filename.lower())[1] if filename else ""
+        if clean_mime not in _ALLOWED_MIME_TYPES and ext not in _ALLOWED_EXTENSIONS:
+            return VideoKeyframeResult(
+                video_analysis_status=VIDEO_STATUS_UNSUPPORTED,
+                keyframe_count=0,
+                selected_frame_timestamps_ms=[],
+                extraction_method="none",
+                duration_ms=None,
+                frame_width=None,
+                frame_height=None,
+                limitations=[
+                    f"Unsupported video format '{clean_mime or ext}'. "
+                    "Supported: WebM (video/webm), MP4 (video/mp4), MKV, OGG."
+                ],
+            )
+        return self._run_backends(video_path, filename)
+
+    def _run_backends(self, video_path: str, filename: str) -> VideoKeyframeResult:
+        # Try cv2, then ffmpeg, then not_available.
         # IMPORTANT: If cv2 *returns* a non-ANALYZED result (e.g. frame_count=0
         # for browser WebM streaming format), we still fall through to ffmpeg.
         # Previously the early `return` prevented this fallback — now fixed.
@@ -232,7 +303,7 @@ class VideoKeyframeExtractorService:
         ffmpeg_error: str | None = None
 
         try:
-            cv2_result = self._extract_with_cv2(video_bytes, filename)
+            cv2_result = self._extract_with_cv2(video_path, filename)
             if cv2_result.video_analysis_status == VIDEO_STATUS_ANALYZED:
                 return cv2_result
             # Limit exceeded: no point trying ffmpeg (it would hit the same limit).
@@ -257,7 +328,7 @@ class VideoKeyframeExtractorService:
             logger.warning("[VideoKeyframes] cv2 extraction raised: %s", exc)
 
         try:
-            return self._extract_with_ffmpeg(video_bytes, filename)
+            return self._extract_with_ffmpeg(video_path, filename)
         except _FfmpegUnavailable:
             pass   # not installed — fall through to not_available
         except Exception as exc:
@@ -291,9 +362,9 @@ class VideoKeyframeExtractorService:
     # ── cv2 backend ────────────────────────────────────────────────────────────
 
     def _extract_with_cv2(
-        self, video_bytes: bytes, filename: str
+        self, video_path: str, filename: str
     ) -> VideoKeyframeResult:
-        """Extract keyframes using OpenCV.
+        """Extract keyframes using OpenCV, decoding directly from ``video_path``.
 
         Raises _Cv2Unavailable when cv2 is not installed.
         Raises other exceptions for decoding errors (caller handles these).
@@ -303,17 +374,8 @@ class VideoKeyframeExtractorService:
         except ImportError as exc:
             raise _Cv2Unavailable() from exc
 
-        ext = os.path.splitext(filename.lower())[1] or ".webm"
-
-        # cv2.VideoCapture requires a file path; write bytes to a temp file.
-        # The file is deleted in the finally block even if decoding fails.
-        tmp_path: str | None = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tf:
-                tf.write(video_bytes)
-                tmp_path = tf.name
-
-            cap = cv2.VideoCapture(tmp_path)
+            cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 return _make_failed(
                     "Could not open video file. "
@@ -431,16 +493,12 @@ class VideoKeyframeExtractorService:
             )
 
         finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+            pass  # video_path is owned by the caller — never deleted here
 
     # ── ffmpeg backend ─────────────────────────────────────────────────────────
 
     def _extract_with_ffmpeg(
-        self, video_bytes: bytes, filename: str
+        self, video_path: str, filename: str
     ) -> VideoKeyframeResult:
         """Extract keyframes using the ffmpeg system binary.
 
@@ -460,14 +518,7 @@ class VideoKeyframeExtractorService:
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             raise _FfmpegUnavailable() from exc
 
-        ext = os.path.splitext(filename.lower())[1] or ".webm"
-        tmp_path: str | None = None
-
         try:
-            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tf:
-                tf.write(video_bytes)
-                tmp_path = tf.name
-
             # ── Probe duration ─────────────────────────────────────────────────
             duration_ms: int | None = None
             duration_s  = 60.0   # fallback if probe fails
@@ -478,7 +529,7 @@ class VideoKeyframeExtractorService:
                         "ffprobe", "-v", "error",
                         "-show_entries", "format=duration",
                         "-of", "default=noprint_wrappers=1:nokey=1",
-                        tmp_path,
+                        video_path,
                     ],
                     capture_output=True, text=True, timeout=30, check=False,
                 )
@@ -514,7 +565,7 @@ class VideoKeyframeExtractorService:
 
                 ffmpeg_result = subprocess.run(
                     [
-                        "ffmpeg", "-i", tmp_path,
+                        "ffmpeg", "-nostdin", "-threads", "1", "-i", video_path,
                         "-vf", f"fps=1/{interval:.3f}",
                         "-vframes", str(n),
                         "-q:v", "3",

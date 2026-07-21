@@ -117,3 +117,26 @@ export function websiteProofLifecycleReducer(
 ): WebsiteProofLifecycle {
   return transitionWebsiteProofLifecycle(lifecycle, action.event, { error_code: action.error_code })
 }
+
+/**
+ * Human label for the recorder status chip.
+ *
+ * INITIALIZING_EXTENSION is a *resting* state right after session create /
+ * resume-restore — nothing is in flight until the user presses Start Proof
+ * Demo. Presenting the raw state name there reads as a hung handshake
+ * (production audit 2026-07-21), so the resting case gets an actionable
+ * label while a genuinely in-flight init keeps the progress wording.
+ */
+export function recorderStatusLabel(
+  lifecycle: WebsiteProofLifecycle,
+  recorderReady: boolean,
+): string {
+  if (recorderReady) return "Recorder ready"
+  if (
+    lifecycle.state === "INITIALIZING_EXTENSION" &&
+    (lifecycle.last_event === "SESSION_CREATED" || lifecycle.last_event === "RESTORE_CREATED")
+  ) {
+    return "READY TO START — press Start Proof Demo"
+  }
+  return lifecycle.state.replaceAll("_", " ")
+}

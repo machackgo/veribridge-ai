@@ -151,3 +151,30 @@ describe("Website Proof lifecycle state machine", () => {
     }
   })
 })
+
+describe("recorderStatusLabel", () => {
+  const base = { error_code: null, updated_at: "2026-07-21T00:00:00.000Z" } as const
+
+  it("labels the resting post-create state as ready-to-start, not initializing", async () => {
+    const { recorderStatusLabel } = await import("../lib/website-proof-lifecycle")
+    expect(
+      recorderStatusLabel({ ...base, state: "INITIALIZING_EXTENSION", last_event: "SESSION_CREATED" }, false),
+    ).toBe("READY TO START — press Start Proof Demo")
+    expect(
+      recorderStatusLabel({ ...base, state: "INITIALIZING_EXTENSION", last_event: "RESTORE_CREATED" }, false),
+    ).toBe("READY TO START — press Start Proof Demo")
+  })
+
+  it("keeps the in-flight init and other states verbatim", async () => {
+    const { recorderStatusLabel } = await import("../lib/website-proof-lifecycle")
+    expect(
+      recorderStatusLabel({ ...base, state: "INITIALIZING_EXTENSION", last_event: "INITIALIZATION_REQUESTED" }, false),
+    ).toBe("INITIALIZING EXTENSION")
+    expect(
+      recorderStatusLabel({ ...base, state: "FAILED_RETRYABLE", last_event: "RETRYABLE_FAILURE" }, false),
+    ).toBe("FAILED RETRYABLE")
+    expect(
+      recorderStatusLabel({ ...base, state: "RECORDING", last_event: "RECORDING_STARTED" }, true),
+    ).toBe("Recorder ready")
+  })
+})
