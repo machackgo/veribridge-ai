@@ -77,6 +77,24 @@ describe("proxy public-route allowlist — anonymous", () => {
     expect(locationOf(res)).toBeNull()
   })
 
+  it("lets an anonymous recruiter open a public Passport Card", async () => {
+    const res = await proxy(req("/card/EJZb5dKMQuU"))
+    expect(res.status).not.toBe(307)
+    expect(locationOf(res)).toBeNull()
+  })
+
+  it("lets an anonymous recruiter open a Beam short link", async () => {
+    const res = await proxy(req("/b/AbCdEf123456AbCd"))
+    expect(res.status).not.toBe(307)
+    expect(locationOf(res)).toBeNull()
+  })
+
+  it("keeps the owner-only /beam surface protected despite the /b/ prefix", async () => {
+    const res = await proxy(req("/beam"))
+    expect(res.status).toBe(307)
+    expect(locationOf(res)).toContain("/login")
+  })
+
   it("keeps the recruiter opener open", async () => {
     const res = await proxy(req("/recruiters/open"))
     expect(locationOf(res)).toBeNull()
