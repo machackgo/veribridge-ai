@@ -14,9 +14,16 @@
  * as an inline SVG.
  */
 
-// ── Error correction levels (spec enum values) ───────────────────────────────
+// ── Error correction levels ──────────────────────────────────────────────────
 export type QrErrorCorrectionLevel = "L" | "M" | "Q" | "H"
+// Format-info EC indicator bits (spec §8.9): L=01, M=00, Q=11, H=10. ONLY for
+// the encoded type-info — never a table index.
 const EC_LEVEL_VALUE: Record<QrErrorCorrectionLevel, number> = { M: 0, L: 1, H: 2, Q: 3 }
+// Row order of RS_BLOCK_TABLE per version. Indexing that table with the
+// format-info bit values instead produced structurally corrupt codes: an "M"
+// QR was built with L's Reed-Solomon block layout while its format info
+// claimed M, so real scanners could never decode it (VBR-RRO-D002).
+const EC_ROW_INDEX: Record<QrErrorCorrectionLevel, number> = { L: 0, M: 1, Q: 2, H: 3 }
 
 // ── GF(256) math ─────────────────────────────────────────────────────────────
 const EXP_TABLE: number[] = new Array(256)
@@ -100,7 +107,7 @@ const RS_BLOCK_TABLE: number[][] = [
 
 type RsBlock = { totalCount: number; dataCount: number }
 function getRsBlocks(version: number, ecLevel: QrErrorCorrectionLevel): RsBlock[] {
-  const row = RS_BLOCK_TABLE[(version - 1) * 4 + EC_LEVEL_VALUE[ecLevel]]
+  const row = RS_BLOCK_TABLE[(version - 1) * 4 + EC_ROW_INDEX[ecLevel]]
   if (!row) throw new Error(`Unsupported QR version ${version}`)
   const blocks: RsBlock[] = []
   for (let i = 0; i < row.length; i += 3) {

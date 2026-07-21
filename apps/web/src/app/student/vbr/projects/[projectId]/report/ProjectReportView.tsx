@@ -46,6 +46,7 @@ import { DocumentOriginalAccessActions } from "../../../../../../../components/p
 import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
 import { VaultSkillLinkList } from "../../../../../../../components/passport/VaultProofs"
 import { ProjectDefenseInspectionSection } from "../../../../../../../components/passport/ProjectDefenseInspectionCard"
+import { QrModal } from "../../../../../../../components/passport/QrModal"
 
 // Keeps an in-page anchor target clear of the sticky top chrome when the jump
 // nav or a skill-matrix link scrolls to it.
@@ -370,6 +371,7 @@ function PublishControls({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [qrOpen, setQrOpen] = useState(false)
   // Once a publish/unpublish action runs, ignore any still-in-flight initial
   // status fetch so it cannot clobber the newer result.
   const actedRef = useRef(false)
@@ -461,6 +463,14 @@ function PublishControls({ projectId }: { projectId: string }) {
               </button>
               <button
                 type="button"
+                data-testid="show-report-qr-button"
+                onClick={() => setQrOpen(true)}
+                style={secondaryBtnStyle}
+              >
+                Show QR code
+              </button>
+              <button
+                type="button"
                 data-testid="unpublish-link-button"
                 disabled={busy}
                 onClick={() => run(() => unpublishVBRProjectReport(projectId))}
@@ -469,6 +479,15 @@ function PublishControls({ projectId }: { projectId: string }) {
                 {busy ? "Working…" : "Unpublish link"}
               </button>
             </div>
+            {/* Report QR: encodes exactly the canonical public report URL (the
+                same value Copy uses) — never an auth token or private route. */}
+            <QrModal
+              value={publicUrl || null}
+              open={qrOpen}
+              onClose={() => setQrOpen(false)}
+              title="Scan to open the Verified Build Report"
+              subtitle="Point a phone camera at the code to open this project’s public report."
+            />
           </div>
         ) : (
           <div>

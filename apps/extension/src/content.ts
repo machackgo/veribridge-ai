@@ -5,6 +5,7 @@ import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./typ
 import {
   RECORDER_TARGET_READY,
   isTrustedVeriBridgeAppLocation,
+  isProductionVeriBridgeHostname,
 } from "../../../packages/shared/websiteProofRecorderContract"
 import { createRecorderBridgeHandler } from "./recorderBridge"
 
@@ -134,7 +135,7 @@ function isVeriBridgeInternal(): boolean {
       pathname.startsWith("/admin")
     )
   }
-  return hostname.endsWith("veribridge.ai")
+  return isProductionVeriBridgeHostname(hostname)
 }
 
 /**

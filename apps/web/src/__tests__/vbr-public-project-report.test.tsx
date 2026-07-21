@@ -382,4 +382,23 @@ describe("PublicReportView", () => {
     expect(screen.getAllByText("Demonstrated").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Partially demonstrated").length).toBeGreaterThan(0)
   })
+
+  it("stays viewport-safe on small screens (VBR-RRO-D001 regression)", async () => {
+    vi.mocked(getPublicVBRProjectReport).mockResolvedValue(makePublicReport())
+
+    render(<PublicReportView token="tok-1" />)
+    const container = await screen.findByTestId("public-report")
+
+    // The app body is a flex container: without width:100% + minWidth:0 the
+    // report is a flex item pinned at min-content width, dragging the page
+    // wider than a phone viewport.
+    expect(container.style.width).toBe("100%")
+    expect(container.style.minWidth).toBe("0px")
+
+    // The skill matrix (a table that cannot shrink below min-content) must
+    // scroll inside its own container rather than widening the page.
+    const scroller = screen.getByTestId("skill-matrix-scroll")
+    expect(scroller.style.overflowX).toBe("auto")
+    expect(scroller.contains(screen.getAllByTestId("public-skill-row")[0])).toBe(true)
+  })
 })

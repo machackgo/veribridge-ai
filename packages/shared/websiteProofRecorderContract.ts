@@ -178,6 +178,20 @@ export type RecorderConfigSelection = {
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"])
 
+/**
+ * Canonical production domain. Matches the apex host exactly and any true
+ * subdomain (`www.`, `api.`, …) via a dot-boundary suffix so lookalike hosts
+ * like `evilveribridgeai.com` or the stale `veribridge.ai` never qualify.
+ */
+const PRODUCTION_APP_DOMAIN = "veribridgeai.com"
+
+export function isProductionVeriBridgeHostname(hostname: string): boolean {
+  return (
+    hostname === PRODUCTION_APP_DOMAIN ||
+    hostname.endsWith(`.${PRODUCTION_APP_DOMAIN}`)
+  )
+}
+
 const TRUSTED_APP_PATH_PREFIXES = [
   "/student",
   "/dashboard",
@@ -198,7 +212,7 @@ const TRUSTED_APP_PATH_PREFIXES = [
 export function isTrustedVeriBridgeAppLocation(
   location: { hostname: string; pathname: string },
 ): boolean {
-  if (location.hostname.endsWith("veribridge.ai")) return true
+  if (isProductionVeriBridgeHostname(location.hostname)) return true
   if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
     return TRUSTED_APP_PATH_PREFIXES.some(prefix => location.pathname.startsWith(prefix))
   }

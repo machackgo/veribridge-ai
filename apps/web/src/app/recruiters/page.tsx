@@ -53,7 +53,23 @@ export default function RecruitersPage() {
         </div>
       </Card>
 
-      <div style={{ display: "flex", justifyContent: "center" }}>
+      <div style={{ display: "flex", justifyContent: "center", gap: 8, flexWrap: "wrap" }}>
+        <a
+          data-testid="recruiters-open-report-link"
+          href="/recruiters/open"
+          style={{
+            padding: "10px 18px",
+            borderRadius: 8,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+            color: TOKEN.ink,
+            fontSize: 13,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}
+        >
+          Open a report link or QR
+        </a>
         <a
           data-testid="recruiters-request-vbr-link"
           href="/recruiters/request-vbr"
