@@ -38,6 +38,7 @@ from app.api.v1.endpoints import (
     skill_evidence,
     skill_evidence_timeline,
     skill_evidence_profile,
+    skill_gaps,
     student,
     vbr_project_defense,
     vbr_projects,
@@ -144,6 +145,11 @@ api_router.include_router(
     skill_evidence_profile.router,
     prefix="/student/skill-evidence-profiles",
     tags=["skill-evidence-profiles"],
+)
+api_router.include_router(
+    skill_gaps.router,
+    prefix="/student/skill-gaps",
+    tags=["skill-gaps"],
 )
 api_router.include_router(
     skill_evidence_pipelines.router,
