@@ -96,6 +96,25 @@ def _require_supabase() -> None:
 # ── Client factories ──────────────────────────────────────────────────────────
 
 
+def create_service_role_client() -> "Client":
+    """
+    Create a NEW (uncached) server-side Supabase client using the service-role
+    key. Bypasses all RLS policies.
+
+    The process-wide cached client from :func:`get_supabase_client` is NOT safe
+    to use from multiple threads concurrently — racing requests through its
+    single sync httpx transport surfaces ``httpx.ReadError: [Errno 11/35]
+    Resource temporarily unavailable``. Callers that fan work out to a thread
+    pool must give each worker thread its own client from this factory.
+    Construction is purely local (no network call).
+    """
+    _require_supabase()
+    return create_client(
+        supabase_url=settings.supabase_url,
+        supabase_key=settings.supabase_service_role_key.get_secret_value(),
+    )
+
+
 @lru_cache(maxsize=1)
 def get_supabase_client() -> "Client":
     """
@@ -105,11 +124,7 @@ def get_supabase_client() -> "Client":
     The client does not make a network call on construction — the first
     actual query call triggers the connection.
     """
-    _require_supabase()
-    return create_client(
-        supabase_url=settings.supabase_url,
-        supabase_key=settings.supabase_service_role_key.get_secret_value(),
-    )
+    return create_service_role_client()
 
 
 @lru_cache(maxsize=1)
