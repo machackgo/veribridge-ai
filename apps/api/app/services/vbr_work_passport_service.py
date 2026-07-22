@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from datetime import UTC, datetime
@@ -41,6 +42,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.db.supabase import create_service_role_client
 from app.services.passport_attachment_intelligence import (
     PUBLIC_UNATTACHED_LIMITATION,
     build_attachment_suggestions,
@@ -1411,6 +1413,43 @@ def get_passport_status(db: Any, user_id: str) -> dict[str, Any]:
 # ── Private passport (owner-only) ────────────────────────────────────────────
 
 
+def _worker_clients(
+    db: Any, pipeline_db: Any, thread_local: threading.local
+) -> tuple[Any, Any]:
+    """Per-worker-thread (db, pipeline_db) for the report thread pool.
+
+    The request-scoped Supabase sync client is NOT safe to share across threads
+    issuing requests concurrently: racing its single httpx transport surfaces
+    ``httpx.ReadError: [Errno 11] Resource temporarily unavailable`` and the
+    whole passport 500s (deterministically on accounts with many projects).
+    Each worker thread therefore gets its OWN client. Dict stores (tests /
+    dev fallbacks) are plain in-process data and are shared as-is; if a fresh
+    client cannot be constructed we fall back to the shared one rather than
+    fail the passport outright.
+    """
+    if isinstance(db, dict):
+        return db, pipeline_db
+    pair = getattr(thread_local, "vb_client_pair", None)
+    if pair is None:
+        try:
+            fresh = create_service_role_client()
+        except Exception:  # pragma: no cover - defensive fallback
+            logger.exception("[VBR] per-thread Supabase client creation failed; sharing request client")
+            fresh = None
+        worker_db = fresh if fresh is not None else db
+        # In production ``get_pipeline_db`` returns the same client as ``db``;
+        # a dict pipeline store (dev fallback) is shared as-is.
+        if isinstance(pipeline_db, dict):
+            worker_pipeline = pipeline_db
+        elif pipeline_db is db:
+            worker_pipeline = worker_db
+        else:
+            worker_pipeline = fresh if fresh is not None else pipeline_db
+        pair = (worker_db, worker_pipeline)
+        thread_local.vb_client_pair = pair
+    return pair
+
+
 def _build_report_pairs(
     db: Any, pipeline_db: Any, projects: list[dict[str, Any]], user_id: str
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
@@ -1420,22 +1459,25 @@ def _build_report_pairs(
     is dominated by database round-trip latency, so a passport with many
     projects used to pay (projects × report latency) sequentially — tens of
     seconds on a real account. A small thread pool collapses that to roughly the
-    slowest single report. Order is preserved.
+    slowest single report. Order is preserved. Every worker thread uses its own
+    Supabase client (see :func:`_worker_clients`) — the shared sync client is
+    not thread-safe under concurrent requests.
     """
     if len(projects) <= 1:
         return [
             (p, build_student_vbr_report(db, pipeline_db, p, user_id, include_cross_proof=False))
             for p in projects
         ]
-    with ThreadPoolExecutor(max_workers=min(8, len(projects))) as pool:
-        reports = list(
-            pool.map(
-                lambda project: build_student_vbr_report(
-                    db, pipeline_db, project, user_id, include_cross_proof=False
-                ),
-                projects,
-            )
+    thread_local = threading.local()
+
+    def _build_one(project: dict[str, Any]) -> dict[str, Any]:
+        worker_db, worker_pipeline_db = _worker_clients(db, pipeline_db, thread_local)
+        return build_student_vbr_report(
+            worker_db, worker_pipeline_db, project, user_id, include_cross_proof=False
         )
+
+    with ThreadPoolExecutor(max_workers=min(8, len(projects))) as pool:
+        reports = list(pool.map(_build_one, projects))
     return list(zip(projects, reports))
 
 
