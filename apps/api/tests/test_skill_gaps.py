@@ -10,8 +10,8 @@ Covers every row of the deterministic rule table in
   4. website supported/weakly-supported, nothing counted   → Insufficient evidence
   5. website unsupported (attempted, not demonstrated)     → Missing evidence
   6. claimed / link-less claim, no mention anywhere        → Not assessed
-  7. no claims, no claim rows, no completed analyses       → project fallback,
-                                                             zero fabricated items
+  7. no claimed skills and no claim rows (website-only     → project fallback,
+     outcomes can never form items)                          zero fabricated items
 
 Plus:
   - the e5e74ace-shaped fixture reproducing the production worked example
@@ -283,6 +283,28 @@ class TestRuleTable:
         assert "Not enough evidence to assess" in report["insufficient_evidence_note"]
         assert report["gap_items"] == []
         assert report["summary"]["total_claimed"] == 0
+
+    def test_rule7_website_outcomes_alone_are_not_assessable(self, mem_store: dict) -> None:
+        # A completed analysis with nothing claimed and no claim rows must NOT
+        # yield an "assessed / no gaps" verdict — nothing claims any skill, so
+        # the honest state is the explicit insufficient-evidence fallback.
+        _add_project(mem_store, claimed_skills=[])
+        _add_website_session(
+            mem_store, supported=["React"], unsupported=["Machine Learning"]
+        )
+        report = _report(mem_store)
+        assert report["assessment_state"] == "insufficient_evidence"
+        assert report["gap_items"] == []
+        assert report["demonstrated_skills"] == []
+
+    def test_case_variant_claimed_duplicates_yield_one_item(self, mem_store: dict) -> None:
+        _add_project(mem_store, claimed_skills=["React", "react "])
+        report = _report(mem_store)
+        names = [i["skill_name"] for i in report["gap_items"]]
+        assert names == ["React"]
+        assert report["claimed_skills"] == ["React"]
+        assert report["summary"]["total_claimed"] == 1
+        assert report["summary"]["not_assessed"] == 1
 
     def test_claim_ladder_beats_website_unsupported(self, mem_store: dict) -> None:
         # Canonical demonstrated axis wins; the runtime outcome stays in basis.

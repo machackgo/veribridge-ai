@@ -44,9 +44,9 @@ RULE TABLE (deterministic, first match wins per skill):
   |   | runtime, not demonstrated — a provable negative)             |                         |
   | 6 | claimed skill (or link-less claim row) with no evidence      | not_assessed            |
   |   | links and no website-analysis mention anywhere               |                         |
-  | 7 | project has no claimed skills, no claim rows, and no         | project-level           |
-  |   | completed website analyses                                   | insufficient-evidence   |
-  |   |                                                              | fallback — NO items     |
+  | 7 | project has no claimed skills and no claim rows (website-    | project-level           |
+  |   | only outcomes can never form items, so nothing is            | insufficient-evidence   |
+  |   | assessable)                                                  | fallback — NO items     |
 
 The gap universe for a project is ``effective_claimed_skills`` ∪ claim rows.
 A skill mentioned only by a website analysis but neither claimed nor claim-
@@ -406,10 +406,12 @@ def build_project_skill_gap_report(
     claimed = effective_claimed_skills(metadata)
     claims = _rows(db, "vbr_project_skill_claims", {"project_id": project_id})
     claims_by_key = {_norm(c.get("skill_key") or c.get("skill_name")): c for c in claims}
-    website_outcomes = _website_outcomes(db, user_id=user_id, project_id=project_id)
 
     # Rule 7 — nothing legitimate can be inferred: explicit fallback, no items.
-    if not claimed and not claims and not website_outcomes:
+    # Website-only outcomes can never form gap items (nothing claims them), so
+    # a project with no claimed skills and no claim rows is not assessable —
+    # saying "no gaps" there would be misleading.
+    if not claimed and not claims:
         return {
             "project_id": project_id,
             "project_title": project_title,
@@ -428,21 +430,27 @@ def build_project_skill_gap_report(
             },
         }
 
-    # Gap universe: claimed skills first (owner's own ordering), then claim
-    # rows not covered by a claimed skill (deterministic name order). Website-
-    # only skills are never a gap (nothing claims them).
-    claimed_keys = {_norm(s) for s in claimed}
+    website_outcomes = _website_outcomes(db, user_id=user_id, project_id=project_id)
+
+    # Gap universe: claimed skills first (owner's own ordering, deduped by
+    # normalized key so case/whitespace variants never yield duplicate items),
+    # then claim rows not covered by a claimed skill (deterministic name
+    # order). Website-only skills are never a gap (nothing claims them).
+    seen_keys: set[str] = set()
     universe: list[tuple[str, str, bool]] = []  # (skill_name, key, is_claimed)
     for skill in claimed:
         key = _norm(skill)
-        if key:
+        if key and key not in seen_keys:
+            seen_keys.add(key)
             universe.append((skill.strip(), key, True))
     for key, claim in sorted(
         claims_by_key.items(), key=lambda kv: _norm(kv[1].get("skill_name"))
     ):
-        if key and key not in claimed_keys:
+        if key and key not in seen_keys:
+            seen_keys.add(key)
             universe.append((str(claim.get("skill_name") or key).strip(), key, False))
 
+    claimed_display = [name for name, _key, is_claimed in universe if is_claimed]
     demonstrated_skills: list[str] = []
     gap_items: list[dict[str, Any]] = []
     counts = {
@@ -497,11 +505,11 @@ def build_project_skill_gap_report(
         "project_title": project_title,
         "assessment_state": "assessed",
         "insufficient_evidence_note": None,
-        "claimed_skills": [s.strip() for s in claimed],
+        "claimed_skills": claimed_display,
         "demonstrated_skills": demonstrated_skills,
         "gap_items": gap_items,
         "summary": {
-            "total_claimed": len(claimed),
+            "total_claimed": len(claimed_display),
             "demonstrated": counts["demonstrated"],
             "partially_demonstrated": counts["partially_demonstrated"],
             "insufficient_evidence": counts["insufficient_evidence"],
