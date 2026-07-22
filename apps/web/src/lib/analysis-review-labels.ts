@@ -41,3 +41,38 @@ export function workflowAnalysisReviewLabel(
 export function labelImpliesAiReview(label: string): boolean {
   return /\bAI[\s-]?(reviewed|review|analyzed|analysed)\b/i.test(label)
 }
+
+/**
+ * Recruiter-facing badge labels for `verification_status`
+ * (= `ai_domain_review_status` from the deterministic domain review — the
+ * review is a rules engine, `llm_used: false`, so no label may claim an AI
+ * model reviewed the evidence).
+ *
+ * Backend values (apps/api/app/services/verification_review_service.py
+ * `_AI_STATUS_TO_DOMAIN`): ai_domain_reviewed, human_review_recommended,
+ * privacy_blocked, needs_more_evidence.
+ */
+export const VERIFICATION_STATUS_BADGE_LABELS: Record<string, string> = {
+  ai_domain_reviewed: "Evidence Reviewed",
+  human_review_recommended: "Human Review Recommended",
+  needs_more_evidence: "Needs More Evidence",
+  privacy_blocked: "Privacy Review Required",
+}
+
+/**
+ * Honest, human-readable badge label for a verification status.
+ * Returns null for a missing status (no badge). Unknown/legacy slugs are
+ * humanized (never rendered as raw machine identifiers, never as an AI claim).
+ */
+export function verificationStatusBadgeLabel(
+  status: string | null | undefined
+): string | null {
+  if (!status) return null
+  const known = VERIFICATION_STATUS_BADGE_LABELS[status]
+  if (known) return known
+  const humanized = status
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+  return labelImpliesAiReview(humanized) ? "Evidence Reviewed" : humanized
+}

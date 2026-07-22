@@ -17,9 +17,11 @@ import { render, screen } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
 import {
+  VERIFICATION_STATUS_BADGE_LABELS,
   WORKFLOW_ANALYSIS_REVIEW_FALLBACK_LABEL,
   WORKFLOW_ANALYSIS_REVIEW_LABELS,
   labelImpliesAiReview,
+  verificationStatusBadgeLabel,
   workflowAnalysisReviewLabel,
 } from "@/lib/analysis-review-labels"
 import { WorkflowAnalysisCard } from "../../components/skill-proof/extension-proof-panel"
@@ -136,5 +138,34 @@ describe("WorkflowAnalysisCard — rendered chip honesty", () => {
       />,
     )
     expect(screen.getByText(/AI Reviewed · Full Multimodal Analysis/)).toBeInTheDocument()
+  })
+})
+
+describe("verificationStatusBadgeLabel — recruiter badge honesty", () => {
+  it("maps every known ai_domain_review_status to an honest human label", () => {
+    expect(verificationStatusBadgeLabel("ai_domain_reviewed")).toBe("Evidence Reviewed")
+    expect(verificationStatusBadgeLabel("human_review_recommended")).toBe(
+      "Human Review Recommended",
+    )
+    expect(verificationStatusBadgeLabel("needs_more_evidence")).toBe("Needs More Evidence")
+    expect(verificationStatusBadgeLabel("privacy_blocked")).toBe("Privacy Review Required")
+  })
+
+  it("returns null for a missing status (no badge rendered)", () => {
+    expect(verificationStatusBadgeLabel(null)).toBeNull()
+    expect(verificationStatusBadgeLabel(undefined)).toBeNull()
+    expect(verificationStatusBadgeLabel("")).toBeNull()
+  })
+
+  it("never renders a raw machine slug and never fabricates an AI-review claim", () => {
+    for (const [slug, label] of Object.entries(VERIFICATION_STATUS_BADGE_LABELS)) {
+      expect(label).not.toMatch(/_/)
+      expect(labelImpliesAiReview(label)).toBe(false)
+      expect(verificationStatusBadgeLabel(slug)).toBe(label)
+    }
+    // Unknown/legacy slugs are humanized, not shown raw.
+    expect(verificationStatusBadgeLabel("some_new_status")).toBe("Some New Status")
+    // A hypothetical future AI-claiming slug is coerced to a neutral label.
+    expect(verificationStatusBadgeLabel("ai_reviewed")).toBe("Evidence Reviewed")
   })
 })
