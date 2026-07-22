@@ -54,7 +54,11 @@ import {
   type DiscoveredEvidenceItem,
   type DiscoveredEvidenceType,
   syncWebsiteProofToSkillGraph,
+  fetchWebsiteProofReplayStatus,
   publishRecorderAuthToExtension,
+  confirmRecorderAuthWithExtension,
+  isRecorderAuthRequestMessage,
+  RECORDER_AUTH_NOT_ESTABLISHED_MESSAGE,
 } from "@/lib/api"
 import { VerificationReviewSection, type WebsiteProofReviewSnapshot } from "./verification-review-section"
 import { SequenceAnalysisPanel } from "./sequence-analysis-panel"
@@ -84,6 +88,45 @@ const initialWebsiteProofForm: FormState = {
 }
 
 const ACTIVE_EXTENSION_PROOF_SESSION_KEY = "vb_active_extension_proof_session"
+
+// Bumped whenever the route-mode lifecycle contract changes. Logged by the dev
+// diagnostics below so a browser console immediately reveals whether the served
+// bundle actually contains this lifecycle fix (a stale dev server from another
+// worktree will log an older fingerprint — or nothing at all).
+export const WEBSITE_PROOF_LIFECYCLE_FINGERPRINT =
+  "website-proof-route-mode-v2 (proof-artifact-retention)"
+
+// Dev-only route diagnostics: logs why the panel is (or isn't) showing a
+// session. Never logs tokens or proof content — only ids, route info, and
+// which storage keys exist.
+function logWebsiteProofRouteDiagnostics(details: {
+  mode: "new" | "existing"
+  sessionSource: "query_param" | "none"
+  requestedSessionId: string | null
+  reason: string
+}): void {
+  if (process.env.NODE_ENV !== "development") return
+  try {
+    if (typeof window === "undefined") return
+    const draft = loadActiveExtensionProofSession()
+    let followupIntentPresent = false
+    try {
+      followupIntentPresent = sessionStorage.getItem(FOLLOWUP_INTENT_KEY_FE) !== null
+    } catch { /* sessionStorage unavailable */ }
+    console.info("[WebsiteProofRoute]", {
+      buildFingerprint: WEBSITE_PROOF_LIFECYCLE_FINGERPRINT,
+      mode: details.mode,
+      sessionSource: details.sessionSource,
+      requestedSessionId: details.requestedSessionId,
+      reason: details.reason,
+      pathname: window.location.pathname,
+      search: window.location.search,
+      historyStateKeys: Object.keys(window.history.state ?? {}),
+      localStorageDraftSessionId: draft?.sessionId ?? null,
+      followupIntentPresent,
+    })
+  } catch { /* diagnostics must never break the flow */ }
+}
 
 export type ActiveExtensionProofSessionDraft = {
   sessionId: string
@@ -930,12 +973,16 @@ function EvidenceChecklist({
    *  separate VeriBridge reviewer step. */
   finalVerificationReady?: boolean
 }) {
+  // Website Proof is a focused workflow-evidence experience: GitHub Evidence and
+  // the combined Final Verification belong to the Proof Center / Work Passport,
+  // so they are excluded from this page's checklist.
   const items = buildEvidenceItems(urlType, analysis, liveCheck, liveChecking, hasGithubUrl, githubAnalysis, githubAnalyzing, finalEvaluationPresent)
+    .filter((item) => item.key !== "github" && item.key !== "final")
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "var(--bg-2)", borderBottom: "1px solid var(--line)", padding: "9px 14px" }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-          Verification Checklist
+          Workflow Evidence Checklist
         </span>
       </div>
       <div style={{ padding: "10px 14px", display: "grid", gap: 7 }}>
@@ -1023,8 +1070,8 @@ function StatusMessage({
   if (status === "uploaded_pending_analysis") {
     const title = local ? "✓ Local workflow evidence uploaded" : "✓ Website workflow evidence uploaded"
     const body = local
-      ? "Local workflow proof uploaded. This demonstrates the project running in the student's local environment. Recruiters cannot directly open the localhost URL, so GitHub evidence, setup instructions, or deployment are recommended for stronger verification."
-      : "Workflow proof uploaded. GitHub analysis and final verification are still pending."
+      ? "Local workflow proof uploaded. This demonstrates the project running in your local environment. Run the workflow analysis below to review the recorded evidence."
+      : "Workflow proof uploaded. Run the workflow analysis below to review the recorded evidence."
 
     return (
       <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 8 }}>
@@ -2662,6 +2709,221 @@ function ObservedDemonstrationTimeline({
   )
 }
 
+// ── Workflow Recording replay ────────────────────────────────────────────────
+
+type WorkflowRecordingState =
+  | { kind: "idle" }
+  | { kind: "loading" }
+  | { kind: "ready"; signedUrl: string; mimeType: string | null; durationSeconds: number | null }
+  | { kind: "processing" }
+  | { kind: "not_retained" }
+  | { kind: "error"; message: string }
+
+function _formatDuration(seconds: number | null | undefined): string | null {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return null
+  const total = Math.round(seconds)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${s.toString().padStart(2, "0")}`
+}
+
+/**
+ * Replays the retained website-workflow walkthrough recording for this proof
+ * session. The canonical recording state comes from the owner-gated
+ * `GET .../workflow/video/replay` status endpoint (`fetchWebsiteProofReplayStatus`)
+ * — the SINGLE source of truth, so the UI never shows "processing" and "no
+ * video" at once. Playback uses the short-lived signed URL the endpoint returns;
+ * on load failure / expiry the player refreshes it by re-calling the endpoint.
+ * The private storage path/bucket are never exposed.
+ *
+ * Honest states: not every session retains a raw recording (legacy sessions
+ * captured before retention, or storage not configured) — `not_retained` is a
+ * normal end-state shown plainly, distinct from a transient `error` (Retry).
+ */
+export function WorkflowRecordingSection({
+  sessionId,
+  sessionStatus,
+}: {
+  sessionId: string
+  sessionStatus: ExtensionProofSessionStatus
+}) {
+  const [state, setState] = useState<WorkflowRecordingState>({ kind: "idle" })
+
+  // A recording can only exist once the proof has been uploaded.
+  const canHaveRecording = (
+    ["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]
+  ).includes(sessionStatus)
+  const stillProcessing = sessionStatus !== "completed"
+
+  const load = React.useCallback(async () => {
+    setState({ kind: "loading" })
+    const result = await fetchWebsiteProofReplayStatus(sessionId)
+    if (result.status === "error") {
+      setState({ kind: "error", message: result.message })
+      return
+    }
+    const data = result.data
+    if (data.replay_available && data.signed_url) {
+      setState({
+        kind: "ready",
+        signedUrl: data.signed_url,
+        mimeType: data.mime_type,
+        durationSeconds: data.duration_seconds,
+      })
+    } else if (data.recording_state === "not_retained") {
+      // Before completion the recording may simply not be persisted yet.
+      setState({ kind: stillProcessing ? "processing" : "not_retained" })
+    } else {
+      // recording_state === "ready" but no signed URL — a transient storage
+      // hiccup. Honest + retryable, never a broken player.
+      setState({ kind: "error", message: data.message || "The replay link is temporarily unavailable. Retry shortly." })
+    }
+    // stillProcessing intentionally captured per-invocation; refetch on status change below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!canHaveRecording) return
+    // Fetching the replay status on mount / status change is a legitimate
+    // "loading" transition, not a cascading render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load()
+    // Re-check when the session status advances (e.g. analyzing → completed).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, sessionStatus, canHaveRecording])
+
+  if (!canHaveRecording) return null
+
+  const durationLabel = state.kind === "ready" ? _formatDuration(state.durationSeconds) : null
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 14, background: "var(--bg-2)", overflow: "hidden" }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--line)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>Workflow Recording</div>
+          <p style={{ margin: "3px 0 0", fontSize: 11, color: "var(--ink-2)", lineHeight: 1.6 }}>
+            Replay the recorded workflow used to generate this evidence analysis.
+          </p>
+        </div>
+        {durationLabel && (
+          <span data-testid="workflow-recording-duration" style={{ fontSize: 11, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+            {durationLabel}
+          </span>
+        )}
+      </div>
+      <div style={{ padding: "14px 16px" }}>
+        {state.kind === "loading" && (
+          <div data-testid="workflow-recording-loading" style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+            Loading recording…
+          </div>
+        )}
+
+        {state.kind === "ready" && (
+          <video
+            data-testid="workflow-recording-video"
+            src={state.signedUrl}
+            controls
+            preload="metadata"
+            playsInline
+            onError={() =>
+              setState({
+                kind: "error",
+                message: "The replay link expired or could not be loaded. Retry to refresh it.",
+              })
+            }
+            style={{ width: "100%", borderRadius: 10, background: "#000", display: "block", maxHeight: 480 }}
+          >
+            Your browser cannot play this recording.
+          </video>
+        )}
+
+        {state.kind === "processing" && (
+          <div data-testid="workflow-recording-processing" style={{ fontSize: 12, color: "#1e40af", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "12px 14px", lineHeight: 1.6 }}>
+            Your recording is being processed. The replay will appear here once the workflow analysis finishes.
+          </div>
+        )}
+
+        {state.kind === "not_retained" && (
+          <div data-testid="workflow-recording-unavailable" style={{ fontSize: 12, color: "var(--ink-2)", background: "var(--bg-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", lineHeight: 1.6 }}>
+            A replayable recording was not retained for this proof. This happens for sessions captured before
+            recording retention was enabled — the workflow was still analyzed from DOM, visual frames, and
+            keyframes. Record a new Website Proof to capture a replayable walkthrough.
+          </div>
+        )}
+
+        {state.kind === "error" && (
+          <div data-testid="workflow-recording-error" role="alert" style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "#991b1b", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "10px 14px" }}>
+              {state.message}
+            </div>
+            <div>
+              <button
+                type="button"
+                onClick={() => void load()}
+                style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer" }}
+              >
+                Retry
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Explicit "this proof is saved" confirmation for a completed Website Proof.
+ *
+ * A Website Proof is persisted server-side automatically: the session, its
+ * workflow_analysis_results, and the retained recording artifact are all written
+ * during upload/analysis — there is no separate "create record" step, so a
+ * second save would only risk a duplicate. Per the save-idempotency design we
+ * therefore surface the auto-saved state plainly ("Saved automatically" + when),
+ * offer "View in Proof Center", and let the What's-next actions Finish / add
+ * another proof. The student never has to wonder whether the proof was saved.
+ */
+export function WebsiteProofSavedBanner({
+  savedAt,
+  onViewProofCenter,
+}: {
+  savedAt: string | null
+  onViewProofCenter: () => void
+}) {
+  let savedLabel: string | null = null
+  if (savedAt) {
+    const d = new Date(savedAt)
+    if (!Number.isNaN(d.getTime())) {
+      savedLabel = d.toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit",
+      })
+    }
+  }
+  return (
+    <div
+      data-testid="website-proof-saved-banner"
+      style={{ border: "1px solid #bbf7d0", borderRadius: 12, background: "#f0fdf4", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}
+    >
+      <div style={{ display: "grid", gap: 3 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#065f46" }}>✓ Website Proof saved</div>
+        <p style={{ margin: 0, fontSize: 11.5, color: "#047857", lineHeight: 1.55 }}>
+          Saved automatically to your Proof Center{savedLabel ? ` · ${savedLabel}` : ""}. The workflow analysis and
+          the retained recording are stored privately — you can reopen this proof and replay it any time.
+        </p>
+      </div>
+      <button
+        type="button"
+        data-testid="website-proof-view-proof-center"
+        onClick={onViewProofCenter}
+        style={{ border: "1px solid #059669", background: "#059669", color: "#fff", borderRadius: 10, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}
+      >
+        View in Proof Center
+      </button>
+    </div>
+  )
+}
+
 function WorkflowAnalysisCard({
   analysis,
   finalEvaluation,
@@ -2794,8 +3056,8 @@ function WorkflowAnalysisCard({
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
           <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
             Workflow analysis is based on browser events, DOM evidence, visual frames, video
-            keyframes, and sequence analysis where available. Final verification remains pending
-            until GitHub evidence, live website check (if applicable), and all evidence steps are complete.
+            keyframes, and sequence analysis where available. This is a workflow-evidence analysis of
+            the recorded website walkthrough — not your full VeriBridge verification score.
           </p>
         </div>
       </div>
@@ -7183,11 +7445,40 @@ function EvidenceDiscoveryResults({ discovery }: { discovery: WebsiteEvidenceDis
 export function ExtensionProofPanel({
   onBack,
   onSessionComplete,
+  initialSessionId,
 }: {
   onBack: () => void
   onSessionComplete?: () => void
+  // Explicit "view saved proof" mode. When a session id is present in the route
+  // (e.g. /student/proofs/website?session_id=<id>) the panel loads that exact
+  // session. When absent, the panel stays in fresh NEW-proof mode and never
+  // auto-restores a prior (possibly completed) session from storage.
+  initialSessionId?: string | null
 }) {
   const router = useRouter()
+
+  // The panel is route-controlled only when it owns the page's session_id query
+  // (the /student/proofs/website route passes it as string | null). When embedded
+  // in another flow (e.g. the proof-studio submission panel) the prop is omitted
+  // and we must not mutate that host page's URL.
+  const routeControlled = initialSessionId !== undefined
+
+  // A session_id only ever enters the URL through an explicit reopen (a Proof
+  // Center "view saved proof" link). We deliberately do NOT push self-created
+  // sessions into the URL: doing so left a finished proof's id lingering in the
+  // route, so a hard refresh or a reopened tab would resurrect the just-completed
+  // session instead of the blank "Create Website Proof Session" form.
+  function clearSessionIdFromUrl(): void {
+    if (!routeControlled) return
+    try {
+      if (typeof window === "undefined") return
+      const params = new URLSearchParams(window.location.search)
+      if (!params.has("session_id")) return
+      params.delete("session_id")
+      const qs = params.toString()
+      router.replace(qs ? `${window.location.pathname}?${qs}` : window.location.pathname)
+    } catch { /* navigation unavailable */ }
+  }
   const [step, setStep]                 = useState<PanelStep>("form")
   const [form, setForm]                 = useState<FormState>(initialWebsiteProofForm)
   const [session, setSession]           = useState<ExtensionProofSessionResponse | null>(null)
@@ -7233,7 +7524,14 @@ export function ExtensionProofPanel({
   } | null>(null)
   const followUpMode = followupIntent !== null
 
+  // When the user deliberately leaves a session (Start new / Save & add another /
+  // Done), the route's session_id can linger for a render or two until the URL
+  // actually clears. This records the dismissed id so the load effect won't
+  // re-hydrate that just-finished session in the meantime.
+  const dismissedSessionIdRef = useRef<string | null>(null)
+
   function resetWebsiteProofForm() {
+    dismissedSessionIdRef.current = initialSessionId ?? null
     clearActiveExtensionProofSession()
     setForm(initialWebsiteProofForm)
     setStep("form")
@@ -7281,6 +7579,9 @@ export function ExtensionProofPanel({
     resetWebsiteProofForm()
     setFollowupIntent(null)
     clearFollowUpProofDraft()
+    // Drop back to the bare base route so the fresh form can't be re-hydrated
+    // into the just-finished session on a refresh or back/forward navigation.
+    clearSessionIdFromUrl()
   }
 
   // Sync the completed proof session into the profile/Skill Graph before
@@ -7338,6 +7639,9 @@ export function ExtensionProofPanel({
       setFollowupIntent(null)
       clearFollowUpProofDraft()
       setPendingCompletedAction(null)
+      // Leave the just-finished session's id behind so the base route can't
+      // re-hydrate it after "Save & add another Website Proof".
+      clearSessionIdFromUrl()
       if (next === "proof-studio") {
         onBack()
       } else if (next === "dashboard") {
@@ -7410,17 +7714,81 @@ export function ExtensionProofPanel({
   const urlType = classifyUrl(form.websiteUrl)
   const local = isLocal(urlType)
 
+  // Tracks the previous route session_id so we can tell a genuine back/forward
+  // navigation to the base route (id → none) apart from a freshly-created session
+  // whose id we haven't pushed into the URL yet (none → id).
+  const prevInitialSessionIdRef = useRef<string | null>(initialSessionId ?? null)
+
+  // Session lifecycle mode.
+  //
+  //   NEW mode      — no session_id in the route. Always start blank. We do NOT
+  //                   infer "existing" from a stored prior session, so creating,
+  //                   completing, or refreshing a proof and landing on the base
+  //                   route always shows a fresh form.
+  //   EXISTING mode — an explicit session_id is present because the user reopened
+  //                   a saved proof (a Proof Center "view saved proof" link). We
+  //                   load exactly that session. Self-created sessions never write
+  //                   their id into the route, so they can't be resurrected here.
   useEffect(() => {
     if (followUpMode) return
     try {
       if (sessionStorage.getItem(FOLLOWUP_INTENT_KEY_FE)) return
     } catch { /* sessionStorage unavailable */ }
-    const draft = loadActiveExtensionProofSession()
-    if (!draft) return
+
+    const prevInitialSessionId = prevInitialSessionIdRef.current
+    prevInitialSessionIdRef.current = initialSessionId ?? null
+
+    // NEW mode: never auto-restore a prior session from localStorage.
+    if (!initialSessionId) {
+      // The URL has genuinely dropped its session_id, so any dismissal is done.
+      dismissedSessionIdRef.current = null
+      // Back/forward (or an in-app nav) took us from an explicit saved-session
+      // URL to the bare base route while the panel was still showing that
+      // session — or still loading it (session null but step already flipped to
+      // session_active, which would otherwise render nothing at all). Drop it so
+      // the base route is genuinely fresh. Guarded on prevInitialSessionId so the
+      // create flow's (none → id) transition can't wipe the new session.
+      const droppedLingeringSession = Boolean(
+        routeControlled && prevInitialSessionId &&
+        (session?.id === prevInitialSessionId || (!session && step !== "form")),
+      )
+      if (droppedLingeringSession) {
+        resetWebsiteProofForm()
+      }
+      logWebsiteProofRouteDiagnostics({
+        mode: "new",
+        sessionSource: "none",
+        requestedSessionId: null,
+        reason: droppedLingeringSession
+          ? "base route after back/forward — dropped lingering session"
+          : "base route — blank form, stored drafts ignored",
+      })
+      return
+    }
+    logWebsiteProofRouteDiagnostics({
+      mode: "existing",
+      sessionSource: "query_param",
+      requestedSessionId: initialSessionId,
+      reason: "explicit session_id in route",
+    })
+
+    // The user just left this session (reset/complete) but its id still lingers
+    // in the route until the URL clears — stay on the fresh form, don't reload it.
+    if (dismissedSessionIdRef.current === initialSessionId) return
+
+    // Already showing the requested session (e.g. we just created it and pushed
+    // its id into the URL) — nothing to reload.
+    if (session?.id === initialSessionId) return
+
     let cancelled = false
-    setForm({ ...initialWebsiteProofForm, ...draft.form })
+    // Carry over the in-progress form only when the stored draft belongs to the
+    // session we're opening; otherwise start from a clean form.
+    const draft = loadActiveExtensionProofSession()
+    if (draft && draft.sessionId === initialSessionId) {
+      setForm({ ...initialWebsiteProofForm, ...draft.form })
+    }
     setStep("session_active")
-    void getExtensionProofSession(draft.sessionId)
+    void getExtensionProofSession(initialSessionId)
       .then((restored) => {
         if (cancelled) return
         setSession(restored)
@@ -7442,10 +7810,37 @@ export function ExtensionProofPanel({
           clearActiveExtensionProofSession()
           setSession(null)
           setStep("form")
+          clearSessionIdFromUrl()
         }
       })
     return () => { cancelled = true }
-  }, [followUpMode])
+  }, [followUpMode, initialSessionId, session?.id])
+
+  // Back/forward-cache guard. Safari/Chrome can restore this page from bfcache
+  // with all React state intact, which would revive a finished proof on the
+  // bare base route even though no code path re-fetched it. On a persisted
+  // pageshow in NEW mode, drop any completed/expired session so the base route
+  // stays a blank form. In-progress sessions are left alone, and EXISTING mode
+  // (explicit session_id) legitimately shows its saved session.
+  useEffect(() => {
+    if (!routeControlled) return
+    function handlePageShow(event: PageTransitionEvent) {
+      if (!event.persisted) return
+      if (initialSessionId) return
+      if (!session) return
+      if (session.status === "completed" || session.status === "expired") {
+        resetWebsiteProofForm()
+        logWebsiteProofRouteDiagnostics({
+          mode: "new",
+          sessionSource: "none",
+          requestedSessionId: null,
+          reason: "bfcache pageshow on base route — cleared stale finished session",
+        })
+      }
+    }
+    window.addEventListener("pageshow", handlePageShow)
+    return () => window.removeEventListener("pageshow", handlePageShow)
+  })
 
   useEffect(() => {
     if (!session) return
@@ -7530,12 +7925,25 @@ export function ExtensionProofPanel({
   // token"). Delivered same-origin only (never to the target site) and refreshed
   // on an interval so a longer recording keeps a non-expired token.
   useEffect(() => {
-    void publishRecorderAuthToExtension()
+    const sessionId = session?.id
+    void publishRecorderAuthToExtension(sessionId)
     const intervalId = window.setInterval(() => {
-      void publishRecorderAuthToExtension()
+      void publishRecorderAuthToExtension(sessionId)
     }, 45_000)
-    return () => window.clearInterval(intervalId)
-  }, [])
+    // PULL side: the extension's content script may load AFTER our publish
+    // burst (document_idle). It posts an auth REQUEST once listening; answer
+    // with a fresh publish so the handoff works regardless of load order.
+    const onAuthRequest = (event: MessageEvent) => {
+      if (isRecorderAuthRequestMessage(event)) {
+        void publishRecorderAuthToExtension(sessionId)
+      }
+    }
+    window.addEventListener("message", onAuthRequest)
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener("message", onAuthRequest)
+    }
+  }, [session?.id])
 
   useEffect(() => {
     if (!session) return
@@ -7710,9 +8118,14 @@ export function ExtensionProofPanel({
       setPoll(false)
       return
     }
+    // `cancelled` covers the window where the fetch is already in flight when the
+    // user resets/navigates away — clearing the timer alone can't stop a late
+    // response from re-hydrating the session that was just dismissed.
+    let cancelled = false
     const t = setTimeout(async () => {
       try {
         const updated = await getExtensionProofSession(session.id)
+        if (cancelled) return
         setSession(updated)
         if (updated.status === "completed") {
           setPoll(false)
@@ -7722,7 +8135,10 @@ export function ExtensionProofPanel({
         }
       } catch { /* transient network error — next tick will retry */ }
     }, 3000)
-    return () => clearTimeout(t)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
   }, [pollingActive, session, onSessionComplete])
 
   // ── Auto-fetch workflow analysis ──────────────────────────────────────────
@@ -7734,9 +8150,11 @@ export function ExtensionProofPanel({
     if (!session) return
     if (session.status !== "completed") return
     if (workflowAnalysis?.proof_session_id === session.id) return
+    let cancelled = false
     void getWorkflowAnalysis(session.id).then((r) => {
-      if (r) setWorkflowAnalysis(r)
+      if (r && !cancelled) setWorkflowAnalysis(r)
     }).catch(() => undefined)
+    return () => { cancelled = true }
   }, [session?.id, session?.status, workflowAnalysis?.proof_session_id])
 
   // ── Auto-fetch live website check ─────────────────────────────────────────
@@ -7797,16 +8215,11 @@ export function ExtensionProofPanel({
     }).catch(() => undefined)
   }, [session?.id, session?.status, defenseAnalysis])
 
-  // ── Auto-run final evaluator when workflow analysis is ready ─────────────
-  // Re-runs when GitHub or live check results arrive to refresh scores.
-  const currentSessionAnalysisId = currentSessionAnalysis?.id ?? null
-  useEffect(() => {
-    if (!session) return
-    if (!currentSessionAnalysis) return
-    if (finalEvalRunning) return
-    void handleRunFinalEval()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSessionAnalysisId, githubAnalysis?.id, liveCheck?.id])
+  // Final evidence evaluation is intentionally NOT auto-run on the Website Proof
+  // page: the combined cross-source score (GitHub + Project Defense + documents)
+  // lives in the Proof Center / Work Passport, not here. This page focuses on the
+  // workflow recording and its own workflow-evidence analysis, so it never calls
+  // the final-evaluation endpoint on load.
 
   // ── Simulated progress for live check ────────────────────────────────────
   useEffect(() => {
@@ -8119,6 +8532,10 @@ export function ExtensionProofPanel({
         form,
         savedAt: new Date().toISOString(),
       })
+      // Note: we intentionally leave the URL bare (no session_id) for a freshly
+      // created session. Its lifecycle is driven from React state on this screen;
+      // keeping it out of the route is what guarantees the base route — and a
+      // refresh — always returns to the blank new-proof form.
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create proof session.")
     } finally {
@@ -8151,13 +8568,19 @@ export function ExtensionProofPanel({
     setStarting(true)
     setError(null)
     try {
+      // Hand the recorder extension the auth token and WAIT for its token-free
+      // ACK before anything starts. Without a confirmed handoff every recorder
+      // upload (visible-evidence / visual-frames / video / upload) would 401 at
+      // the end of the recording — block here, where the user can still fix it.
+      const { confirmed } = await confirmRecorderAuthWithExtension(session.id)
+      if (!confirmed) {
+        setError(RECORDER_AUTH_NOT_ESTABLISHED_MESSAGE)
+        return
+      }
+
       const updated = await startExtensionProofSession(session.id)
       setSession(updated)
       transitionWebsiteProofProgress({ type: "recording_started" })
-
-      // Refresh the recorder extension's token immediately before opening the
-      // target site so its uploads for this session carry a current Bearer.
-      await publishRecorderAuthToExtension()
 
       const targetUrl = form.websiteUrl.trim()
       const targetWindowFeatures = local ? undefined : "noopener,noreferrer"
@@ -8424,14 +8847,15 @@ export function ExtensionProofPanel({
 
     const sectionTitle = local ? "Local Workflow Evidence" : "Website Workflow Evidence"
     const sectionSubtitle = local
-      ? "This evidence shows a recorded workflow of your locally running project. It demonstrates the app working in your development environment. Recruiters will see this as medium-confidence evidence — add GitHub or deploy your app for stronger verification."
-      : "This evidence shows a recorded workflow of the submitted website or application. It verifies that the app was demonstrated, but it is not the final skill verification by itself."
+      ? "This evidence shows a recorded workflow of your locally running project. It demonstrates the app working in your development environment, and recruiters see it as medium-confidence workflow evidence."
+      : "This evidence shows a recorded workflow of the submitted website or application. It documents that the app was demonstrated as part of your workflow evidence."
     const cardTitle = local ? "Local Workflow Evidence Session" : "Website Workflow Evidence Session"
 
+    const isDev = process.env.NODE_ENV === "development"
     const sessionDetails: Array<[string, string, boolean]> = [
-      ["Session ID", session.id.slice(0, 18) + "…", true],
+      // Session ID is an internal identifier — surfaced only in dev/debug.
+      ...(isDev ? [["Session ID", session.id.slice(0, 18) + "…", true] as [string, string, boolean]] : []),
       ["Website",    form.websiteUrl, false],
-      ...(form.githubUrl ? [["GitHub", form.githubUrl, false] as [string, string, boolean]] : []),
       ["Skill",      form.skillName, false],
     ]
 
@@ -8539,6 +8963,19 @@ export function ExtensionProofPanel({
           />
         )}
 
+        {/* Saved confirmation — a completed Website Proof is auto-persisted, so
+            surface that plainly (per UX order: completion/saved status first). */}
+        {isCompleted && (
+          <WebsiteProofSavedBanner
+            savedAt={session.updated_at ?? null}
+            onViewProofCenter={onBack}
+          />
+        )}
+
+        {/* Workflow Recording replay — the recorded walkthrough that produced
+            this evidence analysis (access-gated, owner-only stream). */}
+        <WorkflowRecordingSection sessionId={session.id} sessionStatus={session.status} />
+
         {/* Analyze button — shown when uploaded and not yet analyzing */}
         {session.status === "uploaded_pending_analysis" && !currentSessionAnalysis && !analyzing && (
           <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "14px 16px", display: "grid", gap: 10 }}>
@@ -8547,7 +8984,7 @@ export function ExtensionProofPanel({
               <p style={{ margin: "4px 0 0", fontSize: 12, color: "#1e3a8a", lineHeight: 1.65 }}>
                 VeriBridge will analyze your recorded workflow timeline to identify which claimed skills
                 are supported, what interactions were demonstrated, and what evidence is still missing.
-                This is a Workflow Timeline Analysis — it does not replace GitHub evidence or final verification.
+                This is a workflow-evidence analysis of your recorded website walkthrough.
               </p>
             </div>
             <div>
@@ -8591,8 +9028,8 @@ export function ExtensionProofPanel({
           <div style={{ border: "1px solid #bfdbfe", borderRadius: 12, background: "#eff6ff", padding: "12px 14px", display: "grid", gap: 4 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#1e40af" }}>Local/private website detected</div>
             <p style={{ margin: 0, fontSize: 11, color: "#1e3a8a", lineHeight: 1.6 }}>
-              Public live check is not applicable for local development URLs. Verification will rely on workflow
-              recording, DOM/visual evidence, GitHub, transcript, and optional documents.
+              Public live check is not applicable for local or private development URLs. This proof relies on the
+              recorded workflow, DOM evidence, and visual-frame analysis instead.
             </p>
           </div>
         )}
@@ -8657,164 +9094,13 @@ export function ExtensionProofPanel({
           />
         )}
 
-        {/* ── GitHub Evidence Analysis ────────────────────────────────── */}
-
-        {/* No GitHub URL provided */}
-        {!form.githubUrl.trim() && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && (
-          <div style={{ border: "1px solid #e2e8f0", borderRadius: 12, background: "#f8fafc", padding: "12px 14px", display: "grid", gap: 6 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b" }}>GitHub Evidence: Not Provided</div>
-            <p style={{ margin: 0, fontSize: 11, color: "#64748b", lineHeight: 1.6 }}>
-              No GitHub URL was submitted with this proof session. Add a public GitHub repository to strengthen your evidence.
-            </p>
-          </div>
-        )}
-
-        {/* Run GitHub analysis button — shown when GitHub URL provided, proof uploaded, and not yet analyzed */}
-        {form.githubUrl.trim() && (["uploaded_pending_analysis", "analyzing", "completed"] as ExtensionProofSessionStatus[]).includes(session.status) && !githubAnalysis && !githubAnalyzing && (
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, background: "#f9fafb", padding: "14px 16px", display: "grid", gap: 10 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>Run GitHub Evidence Analysis</div>
-              <p style={{ margin: "4px 0 0", fontSize: 12, color: "#374151", lineHeight: 1.65 }}>
-                VeriBridge will fetch your public repository, detect the tech stack, match claimed skills, and generate a recruiter-readable evidence report.
-              </p>
-              <p style={{ margin: "6px 0 0", fontSize: 11, color: "#6b7280" }}>
-                Repo: <span style={{ fontFamily: "monospace" }}>{form.githubUrl.trim()}</span>
-              </p>
-            </div>
-            <div>
-              <button
-                type="button"
-                onClick={() => void handleGitHubAnalysis()}
-                style={{
-                  border: "1px solid transparent", background: "#111827", color: "#fff",
-                  borderRadius: 10, padding: "10px 20px", fontWeight: 700, fontSize: 14, cursor: "pointer",
-                }}
-              >
-                Run GitHub Evidence Analysis
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* GitHub analysis error */}
-        {githubAnalyzeError && !githubAnalysis && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", borderRadius: 10, padding: "10px 14px", display: "grid", gap: 8 }}>
-            <div style={{ color: "#991b1b", fontSize: 12 }}>{githubAnalyzeError}</div>
-            {!githubAnalyzing && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => void handleGitHubAnalysis()}
-                  style={{
-                    border: "1px solid #dc2626", background: "transparent", color: "#991b1b",
-                    borderRadius: 8, padding: "6px 14px", fontWeight: 600, fontSize: 12, cursor: "pointer",
-                  }}
-                >
-                  Retry GitHub Analysis
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* GitHub analysis in progress */}
-        {githubAnalyzing && (
-          <GitHubAnalysisInProgress simProgress={githubSimProgress} simStageIdx={githubSimStageIdx} />
-        )}
-
-        {/* GitHub analysis result */}
-        {githubAnalysis && !githubAnalyzing && (
-          <GitHubAnalysisCard
-            analysis={githubAnalysis}
-            onRerun={() => void handleGitHubAnalysis()}
-            sourceScore={sourceScoreFromEvaluation(finalEvalForDisplay, "github")}
-          />
-        )}
-
-        {/* ── Project Defense Transcript ─────────────────────────────────── */}
-        <ProjectDefenseSection
-          session={session}
-          defenseAnalysis={defenseAnalysis}
-          defenseTranscript={defenseTranscript}
-          defenseAnalyzing={defenseAnalyzing}
-          defenseAnalyzeError={defenseAnalyzeError}
-          defenseSimProgress={defenseSimProgress}
-          defenseSimStageIdx={defenseSimStageIdx}
-          sourceScore={projectDefenseSourceScore(finalEvalForDisplay, defenseAnalysis)}
-          onTranscriptChange={setDefenseTranscript}
-          onAnalyze={() => void handleDefenseAnalysis()}
-        />
-
-        {/* ── Additional Evidence Modules (AI/CS/DS modules only — non-CS hidden) ── */}
-        {isCompleted && (
-          <FutureProofModulesSection
-            sessionId={session.id}
-            documentScore={sourceScoreFromEvaluation(finalEvalForDisplay, "uploaded_documents")}
-            onAnalyzed={() => void handleRunFinalEval()}
-          />
-        )}
-
-        {/* ── Final Evidence Score ─────────────────────────────────────────── */}
-        {finalEvalForDisplay && currentSessionAnalysis && (
-          <FinalEvaluatorCard
-            evaluation={finalEvalForDisplay}
-            sessionId={session.id}
-            onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
-            onRunLiveCheck={isLiveCheckApplicable(urlType) ? () => void handleLiveCheck() : undefined}
-            hideActions
-          />
-        )}
-        {finalEvalRunning && !finalEval && (
-          <div style={{ padding: "10px 14px", background: "#f8fafc",
-            border: "1px solid #e2e8f0", borderRadius: 10,
-            fontSize: 11, color: "#94a3b8" }}>
-            Computing final evidence score…
-          </div>
-        )}
-
-        {/* ── Detected Skill Profile ───────────────────────────────────────── */}
-        {finalEvalForDisplay && (
-          <DetectedSkillProfileSection evaluation={finalEvalForDisplay} />
-        )}
-
-        {/* ── Final Recommendations ──────────────────────────────────────── */}
-        {finalEvalForDisplay && (
-          <FinalRecommendationsSection
-            evaluation={finalEvalForDisplay}
-            sessionId={session.id}
-            onRunGitHub={form.githubUrl.trim() ? () => void handleGitHubAnalysis() : undefined}
-            onRunLiveCheck={isLiveCheckApplicable(urlType) ? () => void handleLiveCheck() : undefined}
-          />
-        )}
-
-        {/* ── Verification Review ────────────────────────────────────────── */}
-        {/* Track A: AI Review MVP. Track B: Human/Faculty/Expert (coming soon).
-            IMPORTANT: human_verified is NEVER set by AI review. */}
-        <VerificationReviewSection
-          sessionId={session.id}
-          readinessScore={readinessReport?.readiness_score ?? 0}
-          readinessLevel={readinessReport?.readiness_level ?? "insufficient"}
-          readinessReady={readinessReport !== null}
-          snapshot={reviewSnapshot ?? {
-            proofSessionId: session.id,
-            websiteUrlType: isLocal_(urlType) ? "local" : urlType === "live_deployed_url" ? "live" : urlType === "invalid_url" ? "invalid" : "private",
-            claimedSkills: [],
-            workflowEvidenceStatus: session.status,
-            workflowAnalysisScore: null,
-            videoKeyframeScore: null,
-            ocrScore: null,
-            domScore: null,
-            qwenVisualReasoningScore: null,
-            githubStatus: "not_run",
-            githubScore: null,
-            projectDefenseScore: null,
-            documentEvidenceScore: null,
-            finalEvidenceScore: readinessReport?.readiness_score ?? null,
-            privacyScanStatus: privacyScan?.status ?? "not_run",
-            generatedRecommendation: readinessReport?.recruiter_summary ?? "Evidence package not yet fully scored.",
-            timestamp: new Date().toISOString(),
-          }}
-        />
+        {/* Website Proof focuses on the recorded website workflow only. GitHub
+            Evidence, Project Defense, document/optional evidence, the combined
+            Final Evidence Score, grouped skill profile, recommended next
+            actions, and Verification Review submission are intentionally NOT
+            rendered here — they live in their own proof flows, the Proof
+            Center, and the Work Passport. This keeps the page a focused,
+            recruiter-honest workflow-evidence experience. */}
 
         {/* Expired */}
         {isExpired && (
@@ -8907,7 +9193,7 @@ export function ExtensionProofPanel({
                 disabled={profileSyncState === "syncing"}
                 style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
               >
-                {profileSyncState === "syncing" && pendingCompletedAction === "new-website" ? "Saving to profile…" : "Save & add another Website Proof"}
+                {profileSyncState === "syncing" && pendingCompletedAction === "new-website" ? "Finishing…" : "Add another Website Proof"}
               </button>
               <button
                 type="button"
@@ -8915,7 +9201,7 @@ export function ExtensionProofPanel({
                 disabled={profileSyncState === "syncing"}
                 style={{ border: "1px solid var(--line-2)", background: "transparent", color: "var(--ink-2)", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
               >
-                {profileSyncState === "syncing" && pendingCompletedAction === "proof-studio" ? "Saving to profile…" : "Save & add another type of proof"}
+                {profileSyncState === "syncing" && pendingCompletedAction === "proof-studio" ? "Finishing…" : "Add another proof type"}
               </button>
               <button
                 type="button"
@@ -8923,7 +9209,7 @@ export function ExtensionProofPanel({
                 disabled={profileSyncState === "syncing"}
                 style={{ border: "1px solid var(--ink)", background: profileSyncState === "syncing" ? "var(--bg-2)" : "var(--ink)", color: profileSyncState === "syncing" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "9px 16px", fontWeight: 700, fontSize: 13, cursor: profileSyncState === "syncing" ? "not-allowed" : "pointer" }}
               >
-                {profileSyncState === "syncing" && pendingCompletedAction === "dashboard" ? "Saving to profile…" : "Finish & go to dashboard"}
+                {profileSyncState === "syncing" && pendingCompletedAction === "dashboard" ? "Finishing…" : "Finish Website Proof"}
               </button>
             </div>
           </div>

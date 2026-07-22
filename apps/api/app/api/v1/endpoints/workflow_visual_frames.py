@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -56,6 +57,7 @@ from app.services.visual_reasoning_service import (
 )
 from app.services.keyframe_storage_service import KeyframeStorageService
 from app.services.proof_target_resolver import resolve_target_url, resolve_target_domain
+from app.services import proof_artifact_service as artifacts
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -125,6 +127,15 @@ class VideoUploadResponse(BaseModel):
     frames_queued_for_visual_analysis: int
     limitations: list[str]
     message: str
+    # ── Replay retention (migration 056: proof_artifacts) ─────────────────────
+    # Whether the raw recording was retained privately for owner replay, and the
+    # canonical recording state the UI should render. The artifact id is safe to
+    # return (it is an opaque id gated by the artifact access routes) — the
+    # storage path is never exposed.
+    recording_state: str = artifacts.RECORDING_STATE_NOT_RETAINED
+    replay_retained: bool = False
+    replay_artifact_id: str | None = None
+    recording_duration_seconds: float | None = None
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -529,6 +540,49 @@ async def upload_workflow_video(
     frames_stored   = 0
     queued_for_analysis = 0
 
+    # ── 3b. Retain the raw recording privately for owner replay ────────────────
+    # The recording is the durable, recruiter-inspectable original of a Website
+    # Proof. It is stored in the PRIVATE proof-artifacts bucket (owner_only) and
+    # served only through the gated replay routes — never a public URL. Retention
+    # is idempotent per session (a re-upload replaces the prior recording) and
+    # best-effort: if the artifact bucket is not configured, or the file is
+    # oversized/empty, the proof still completes with frames/analysis and the
+    # recording is honestly reported as `not_retained`.
+    replay_artifact_id: str | None = None
+    replay_retained = False
+    oversized = len(raw) > limit_bytes
+    recording_duration_seconds = (
+        result.duration_ms / 1000.0 if result.duration_ms else None
+    )
+    if raw and not oversized:
+        try:
+            replay_row = artifacts.retain_website_replay_video(
+                db,
+                owner_user_id=user_id,
+                session_id=session_id,
+                data=raw,
+                mime_type=mime_type,
+                file_name=filename_val,
+                duration_seconds=recording_duration_seconds,
+            )
+            if replay_row is not None:
+                replay_artifact_id = str(replay_row.get("id"))
+                replay_retained = True
+                logger.info(
+                    "[WorkflowVideo] Retained replay artifact=%s session=%s bytes=%d",
+                    replay_artifact_id, session_id, len(raw),
+                )
+        except Exception as _ret_exc:
+            logger.warning(
+                "[WorkflowVideo] Replay retention failed (non-fatal): session=%s error=%s",
+                session_id, _ret_exc,
+            )
+    recording_state = (
+        artifacts.RECORDING_STATE_READY
+        if replay_retained
+        else artifacts.RECORDING_STATE_NOT_RETAINED
+    )
+
     va_svc = WorkflowVisualAnalysisService(db)
 
     if result.video_analysis_status == VIDEO_STATUS_ANALYZED and result._extracted_frames:
@@ -907,6 +961,97 @@ async def upload_workflow_video(
         frames_queued_for_visual_analysis=queued_for_analysis,
         limitations=public.get("limitations", []),
         message=message,
+        recording_state=recording_state,
+        replay_retained=replay_retained,
+        replay_artifact_id=replay_artifact_id,
+        recording_duration_seconds=recording_duration_seconds,
+    )
+
+
+# ── Replay status endpoint ─────────────────────────────────────────────────────
+
+
+class WorkflowReplayResponse(BaseModel):
+    """Canonical recording/replay state for a Website Proof session.
+
+    The signed URL (when present) is short-lived and points at the private
+    recording object so the owner's ``<video>`` player can stream it without an
+    Authorization header. The storage path / bucket are never exposed. Retry
+    simply calls this endpoint again to mint a fresh URL.
+    """
+
+    session_id: str
+    recording_state: str          # ready | not_retained
+    replay_available: bool
+    signed_url: str | None = None
+    expires_at: str | None = None
+    expires_in_seconds: int | None = None
+    duration_seconds: float | None = None
+    mime_type: str | None = None
+    artifact_id: str | None = None
+    message: str
+
+
+@router.get(
+    "/{session_id}/workflow/video/replay",
+    response_model=WorkflowReplayResponse,
+    summary="Get replay state + a short-lived signed URL for a Website Proof recording",
+    description=(
+        "Returns the canonical recording state for a Website Proof session and, "
+        "when a recording was retained, a short-lived signed URL the owner's "
+        "video player can stream directly.\n\n"
+        "**States**\n"
+        "  • `ready` — the recording is retained; `signed_url` is populated.\n"
+        "  • `not_retained` — no recording was retained for this session (legacy "
+        "session captured before retention existed, or artifact storage is not "
+        "configured). No signed URL.\n\n"
+        "**Access**: owner-gated. Another user's session id resolves to "
+        "`not_retained` exactly like a session with no recording — no existence "
+        "leak. The storage path / bucket are never exposed."
+    ),
+)
+def get_workflow_video_replay(
+    session_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> WorkflowReplayResponse:
+    artifact = artifacts.get_website_replay_artifact(db, session_id, user_id)
+    if artifact is None:
+        return WorkflowReplayResponse(
+            session_id=session_id,
+            recording_state=artifacts.RECORDING_STATE_NOT_RETAINED,
+            replay_available=False,
+            message=(
+                "No replayable recording was retained for this session. Record a "
+                "new Website Proof to capture a replayable walkthrough."
+            ),
+        )
+
+    signed_url, ttl = artifacts.create_short_lived_signed_url(db, artifact)
+    if not signed_url:
+        # Retained, but storage can't mint a URL right now — honest, retryable.
+        return WorkflowReplayResponse(
+            session_id=session_id,
+            recording_state=artifacts.RECORDING_STATE_READY,
+            replay_available=False,
+            duration_seconds=artifact.get("duration_seconds"),
+            mime_type=artifact.get("mime_type"),
+            artifact_id=str(artifact.get("id")),
+            message="The recording is retained but a replay link is temporarily unavailable. Retry shortly.",
+        )
+
+    expires_at = (datetime.now(UTC) + timedelta(seconds=ttl)).isoformat()
+    return WorkflowReplayResponse(
+        session_id=session_id,
+        recording_state=artifacts.RECORDING_STATE_READY,
+        replay_available=True,
+        signed_url=signed_url,
+        expires_at=expires_at,
+        expires_in_seconds=ttl,
+        duration_seconds=artifact.get("duration_seconds"),
+        mime_type=artifact.get("mime_type"),
+        artifact_id=str(artifact.get("id")),
+        message="Recording ready to replay.",
     )
 
 

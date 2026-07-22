@@ -3483,8 +3483,12 @@ def _extract_demonstrated_actions(
             first_url = target_urls[0]
             actions.append(f"Target application loaded: {_format_url(first_url)}")
             if len(target_urls) > 1:
+                # "unique pages visited" is deliberate: target_urls is deduped,
+                # so this counts DISTINCT pages within the target site — not raw
+                # navigation events (which can revisit the same page). Keeping the
+                # two terms distinct avoids the "2 vs 16 vs 19 pages" contradiction.
                 actions.append(
-                    f"{len(target_urls)} pages navigated within the target application"
+                    f"{len(target_urls)} unique pages visited within the target application"
                 )
                 for url in target_urls[1:4]:
                     actions.append(f"  • {_format_url(url)}")
@@ -3849,7 +3853,7 @@ def _build_recruiter_summary(
     # ── Skills directly supported by target-site workflow ────────────────────
     if supported:
         lines.append(
-            f"The observed workflow supports evidence for: {', '.join(supported)}."
+            f"Demonstrated in the recorded workflow: {', '.join(supported)}."
         )
 
     # ── Skills weakly supported: split code vs. objective-mentioned ───────────
@@ -3872,7 +3876,7 @@ def _build_recruiter_summary(
             )
         if indirect_skills:
             lines.append(
-                f"Partial evidence is available for: {', '.join(indirect_skills)}. "
+                f"Partially demonstrated: {', '.join(indirect_skills)}. "
                 "These skills are consistent with the observed workflow but require "
                 "additional evidence for full confirmation."
             )
@@ -3880,9 +3884,24 @@ def _build_recruiter_summary(
     # ── No observable evidence ────────────────────────────────────────────────
     if unsupported:
         lines.append(
-            f"No observable evidence was found for: {', '.join(unsupported)}. "
-            "Consider a more focused demonstration or add GitHub and live deployment evidence."
+            f"Not assessed from this workflow: {', '.join(unsupported)}. "
+            "A browser walkthrough shows behaviour, so these were not demonstrated here — "
+            "this is an absence of workflow evidence, not evidence they are absent. "
+            "Add GitHub, live deployment, or a project defense to assess them."
         )
+
+    # ── Implementation-framework observability caveat (honest epistemics) ─────
+    # Browser workflow evidence demonstrates BEHAVIOUR, not the underlying
+    # implementation. Never imply a framework is unsupported merely because its
+    # name did not appear in OCR — say it is not directly observable here. Kept
+    # generic (no vendor names) so internal-infra host names never leak into the
+    # recruiter-facing summary.
+    lines.append(
+        "Implementation frameworks and backend technologies cannot be directly verified from "
+        "browser-visible workflow evidence alone — the workflow demonstrates how the application "
+        "behaves, not which technologies build it. Confirm technology/framework claims with GitHub "
+        "evidence, a project defense, or deployment metadata."
+    )
 
     # ── Supporting GitHub evidence ────────────────────────────────────────────
     if supporting_visited_urls and github_url:
@@ -3891,11 +3910,16 @@ def _build_recruiter_summary(
             "providing additional context for code-level skills."
         )
 
-    # ── Localhost caveat ──────────────────────────────────────────────────────
+    # ── Localhost caveat (honest, not dismissive) ─────────────────────────────
+    # Local evidence still demonstrates the app running and responding — deployment
+    # ACCESSIBILITY is a separate axis from workflow DEMONSTRATION, so we state
+    # both rather than zeroing out the workflow evidence because the URL is local.
     if is_local:
         lines.append(
-            "This is a local (localhost) recording — the application is not publicly accessible. "
-            "A live deployment URL would significantly strengthen this proof."
+            "This recording demonstrates the application running and responding in the student's "
+            "local development environment. Because the app is not publicly deployed, recruiters "
+            "cannot independently open it from this report — this affects deployment accessibility, "
+            "not the workflow demonstrated. A live deployment URL would let recruiters verify it directly."
         )
 
     # ── Frame OCR evidence note ───────────────────────────────────────────────

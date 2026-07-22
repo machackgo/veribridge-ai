@@ -1272,7 +1272,13 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
   const ocrSummary   = analysis.frame_ocr_evidence_summary ?? null
   const hasOCREvidence = ocrSummary?.has_ocr_evidence === true
 
-  // No video was uploaded for this session
+  // No keyframes were extracted for visual/OCR analysis.
+  //
+  // This is scoped to KEYFRAME evidence only — it deliberately does NOT claim
+  // "no recording", because whether a replayable recording was retained is owned
+  // by the Workflow Recording player (the single source of truth). Keyframe
+  // extraction can be absent (extractor/provider not configured) even when the
+  // recording itself was retained, so this section never contradicts the player.
   if (!kfStatus && kfCount === 0) {
     return (
       <div style={{
@@ -1281,13 +1287,11 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
       }}>
         <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.09em",
           textTransform: "uppercase", color: "#64748b", marginBottom: 2 }}>
-          Video / Keyframe Evidence
+          Keyframe / Visual Evidence
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: "4px 8px", fontSize: 11 }}>
-          <span style={{ color: "#64748b" }}>Recording captured</span>
-          <span style={{ color: "#94a3b8" }}>No video recorded</span>
-          <span style={{ color: "#64748b" }}>Uploaded to backend</span>
-          <span style={{ color: "#94a3b8" }}>No</span>
+          <span style={{ color: "#64748b" }}>Keyframes extracted</span>
+          <span style={{ color: "#94a3b8" }}>None</span>
           <span style={{ color: "#64748b" }}>OCR/visual analysis</span>
           <span style={{ color: "#92400e", fontSize: 10 }}>
             Not configured — set VISUAL_ANALYSIS_PROVIDER=local_ocr or local_vision
@@ -1295,9 +1299,9 @@ function VideoKeyframeEvidenceSection({ analysis }: { analysis: WorkflowAnalysis
         </div>
         <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1.5,
           padding: "6px 8px", background: "#fef9c3", border: "1px solid #fef08a", borderRadius: 6 }}>
-          To add video evidence: in the recorder tab click{" "}
-          <strong>Stop &amp; Upload Video</strong> before Stop &amp; Send.<br />
-          Visual analysis not configured. Start backend with{" "}
+          No keyframes were extracted for visual/OCR analysis. See the{" "}
+          <strong>Workflow Recording</strong> section for whether a replayable recording was retained.
+          To enable visual analysis, start the backend with{" "}
           <code style={{ fontFamily: "monospace", fontSize: 9 }}>VISUAL_ANALYSIS_PROVIDER=local_ocr</code>{" "}
           or <code style={{ fontFamily: "monospace", fontSize: 9 }}>local_vision</code>.
         </div>
@@ -1486,11 +1490,12 @@ function deriveSkillEvidenceSources(
     missing.push("No GitHub repository evidence")
   }
 
-  // Video evidence
+  // Keyframe / visual evidence (scoped to keyframes — replay retention is owned
+  // by the Workflow Recording player, so this never asserts "no recording").
   if (analysis.video_keyframe_status === "extracted") {
     found.push(`Video: ${analysis.video_keyframe_count} keyframe${analysis.video_keyframe_count !== 1 ? "s" : ""} extracted`)
   } else if (!analysis.video_keyframe_status) {
-    missing.push("No video recording")
+    missing.push("No keyframes extracted for visual analysis")
   }
 
   // Derive recommendation from student_improvement_suggestions
