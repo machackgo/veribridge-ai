@@ -53,6 +53,8 @@ import {
   refreshWebsiteProofRecorderSessionAuth,
   type RecorderHandshakeFailure,
 } from "@/lib/api"
+import { workflowAnalysisReviewLabel } from "@/lib/analysis-review-labels"
+import { coherentOverallDefenseScore } from "@/lib/defense-score"
 import {
   finalizeWebsiteProof,
   listVBRProjects,
@@ -921,10 +923,18 @@ function buildEvidenceItems(
   ]
 }
 
-function evidenceLabelOverride(key: string, s: EvidenceItemStatus, finalVerificationReady = false): string {
-  if (key === "workflow_analysis" && s === "complete") return "AI Reviewed"
+function evidenceLabelOverride(
+  key: string,
+  s: EvidenceItemStatus,
+  finalVerificationReady = false,
+  workflowAnalysisType?: string | null,
+): string {
+  // Honest wording: only a full multimodal analysis may claim "AI Reviewed".
+  // The deterministic timeline_only analysis (degraded mode default) shows
+  // "Timeline Evidence"; GitHub analysis is deterministic, so "Analyzed".
+  if (key === "workflow_analysis" && s === "complete") return workflowAnalysisReviewLabel(workflowAnalysisType)
   if (key === "workflow_analysis" && s === "uploading") return "In Progress"
-  if (key === "github" && s === "complete") return "AI Reviewed"
+  if (key === "github" && s === "complete") return "Analyzed"
   if (key === "github" && s === "uploading") return "Analyzing…"
   if (key === "live_check" && s === "uploading") return "Checking…"
   if (key === "live_check" && s === "not_applicable") return "Not applicable"
@@ -981,7 +991,7 @@ function EvidenceChecklist({
                 </span>
               </div>
               <span style={{ fontSize: 11, fontWeight: 600 }}>
-                {evidenceLabelOverride(item.key, s)}
+                {evidenceLabelOverride(item.key, s, false, analysis?.analysis_type)}
               </span>
             </div>
           )
@@ -1411,7 +1421,10 @@ function projectDefenseSourceScore(
   const fromEval = sourceScoreFromEvaluation(evaluation, "project_defense")
   if (fromEval && fromEval.status !== "not_run" && (fromEval.score ?? 0) > 0) return fromEval
   if (!analysis) return fromEval
-  const score = analysis.overall_defense_score
+  // Coherence guard: cap the analysis overall at what its components support.
+  const score = (analysis.overall_defense_score != null
+    ? coherentOverallDefenseScore(analysis)
+    : null)
     ?? Math.round([
       analysis.consistency_with_evidence_score,
       analysis.explanation_clarity_score,
@@ -2868,7 +2881,7 @@ function presentAnalysisNarrative(text: string): string {
   })
 }
 
-function WorkflowAnalysisCard({
+export function WorkflowAnalysisCard({
   analysis,
   finalEvaluation,
 }: {
@@ -2880,6 +2893,9 @@ function WorkflowAnalysisCard({
     analysis.analysis_type === "timeline_only" ? "Workflow Timeline Analysis"
     : analysis.analysis_type === "video_frame_analysis" ? "Video Frame Analysis"
     : "Full Multimodal Analysis"
+  // Honest review chip: "AI Reviewed" only when an AI provider actually ran
+  // (full_multimodal_analysis). timeline_only shows "Timeline Evidence".
+  const reviewLabel = workflowAnalysisReviewLabel(analysis.analysis_type)
 
   return (
     <div style={{ border: "1px solid #bfdbfe", borderRadius: 14, overflow: "hidden" }}>
@@ -2887,7 +2903,7 @@ function WorkflowAnalysisCard({
       <div style={{ background: "#eff6ff", borderBottom: "1px solid #bfdbfe", padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>Workflow Evidence Analysis</div>
-          <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>AI Reviewed · {analysisTypeLabel}</div>
+          <div style={{ fontSize: 11, color: "#3b82f6", marginTop: 2 }}>{reviewLabel} · {analysisTypeLabel}</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {/* Qualitative evidence labels only — numeric workflow/evidence-strength
@@ -4961,7 +4977,8 @@ export function GitHubAnalysisCard({
       }}>
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: headerTitle }}>
-            GitHub Evidence Analysis — {success ? "AI Reviewed" : unavailable ? "Repository Unavailable" : "Failed"}
+            {/* Honest wording: the GitHub analyzer is deterministic (no AI provider runs). */}
+            GitHub Evidence Analysis — {success ? "Analyzed" : unavailable ? "Repository Unavailable" : "Failed"}
           </div>
           <div style={{ fontSize: 11, color: headerSub, marginTop: 2 }}>
             {success ? "Repository analysed · evidence extracted" : unavailable ? "Repository is private or could not be reached" : "Analysis encountered an error"}
@@ -5089,7 +5106,7 @@ export function GitHubAnalysisCard({
         {/* Footer note */}
         <div style={{ borderTop: "1px solid var(--line)", paddingTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <p style={{ margin: 0, fontSize: 11, color: "var(--muted)", lineHeight: 1.5 }}>
-            GitHub Evidence: AI Reviewed. Final verification remains pending until all evidence steps are complete.
+            GitHub Evidence: Analyzed. Final verification remains pending until all evidence steps are complete.
           </p>
           <button
             type="button"
@@ -6076,7 +6093,10 @@ export function ProjectDefenseResultCard({
   analysis: ProjectDefenseAnalysisResponse
   sourceScore?: FinalSourceScore
 }) {
-  const overallScore = sourceScore?.score ?? analysis.overall_defense_score
+  // Coherence guard: when falling back to the analysis's own overall, cap it
+  // at what the component scores support (legacy rows stored e.g. overall=100
+  // beside ownership=60 — the two must never contradict on screen).
+  const overallScore = sourceScore?.score ?? coherentOverallDefenseScore(analysis)
   const scoreColor =
     overallScore >= 70 ? "#166534" :
     overallScore >= 50 ? "#854d0e" :
@@ -6111,7 +6131,8 @@ export function ProjectDefenseResultCard({
         display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
       }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: scoreColor }}>Project Defense — AI Reviewed</div>
+          {/* Honest wording: the defense transcript analysis is deterministic (non-LLM). */}
+          <div style={{ fontSize: 13, fontWeight: 700, color: scoreColor }}>Project Defense — Analyzed</div>
           <div style={{ fontSize: 11, color: scoreColor, opacity: 0.8, marginTop: 2 }}>
             Transcript analysed · Evidence consistency checked
           </div>

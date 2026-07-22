@@ -9,7 +9,9 @@ Guardrails:
   — does NOT delete or modify any evidence records
   — does NOT touch GitHub Evidence Analysis (reserved for future)
   — does NOT mark Final Verification complete
-  — uses "AI Reviewed", "Workflow Evidence Analysis", "Evidence supports"
+  — uses honest wording ("Workflow Analysis Reviewed", "Workflow Evidence
+    Analysis", "Evidence supports") — never claims an AI review for the
+    deterministic timeline_only analysis
 """
 
 from __future__ import annotations
@@ -447,7 +449,10 @@ def _build_evidence_sources(
         ),
         EvidenceSourceStatus(
             key="workflow_analysis",
-            label="Workflow Analysis — AI Reviewed",
+            # Honest wording: the workflow analysis is deterministic
+            # (timeline_only) unless an AI provider actually ran — never
+            # imply an AI review here.
+            label="Workflow Analysis Reviewed",
             status="complete" if has_workflow_analysis else "pending",
         ),
         EvidenceSourceStatus(

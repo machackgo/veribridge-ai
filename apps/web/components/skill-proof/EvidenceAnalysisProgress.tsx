@@ -383,8 +383,15 @@ export function EvidenceAnalysisProgress({
 
 export function AnalysisCompletedChip({
   featureType,
+  label = "Analysis Complete",
 }: {
   featureType: AnalysisFeatureType
+  /**
+   * Honest completion wording. Never pass an AI-implying label unless an AI
+   * provider actually ran (analysis_type === "full_multimodal_analysis") —
+   * use workflowAnalysisReviewLabel() from "@/lib/analysis-review-labels".
+   */
+  label?: string
 }) {
   const theme = THEMES[featureType]
   return (
@@ -393,7 +400,7 @@ export function AnalysisCompletedChip({
       fontSize: 11, fontWeight: 600, padding: "4px 10px", borderRadius: 999,
       background: "#f0fdf4", color: "#065f46", border: "1px solid #bbf7d0",
     }}>
-      ✓ AI Reviewed
+      ✓ {label}
     </span>
   )
 }
