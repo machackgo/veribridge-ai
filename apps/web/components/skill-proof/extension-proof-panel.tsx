@@ -53,6 +53,7 @@ import {
   refreshWebsiteProofRecorderSessionAuth,
   type RecorderHandshakeFailure,
 } from "@/lib/api"
+import { coherentOverallDefenseScore } from "@/lib/defense-score"
 import {
   finalizeWebsiteProof,
   listVBRProjects,
@@ -1411,7 +1412,10 @@ function projectDefenseSourceScore(
   const fromEval = sourceScoreFromEvaluation(evaluation, "project_defense")
   if (fromEval && fromEval.status !== "not_run" && (fromEval.score ?? 0) > 0) return fromEval
   if (!analysis) return fromEval
-  const score = analysis.overall_defense_score
+  // Coherence guard: cap the analysis overall at what its components support.
+  const score = (analysis.overall_defense_score != null
+    ? coherentOverallDefenseScore(analysis)
+    : null)
     ?? Math.round([
       analysis.consistency_with_evidence_score,
       analysis.explanation_clarity_score,
@@ -6076,7 +6080,10 @@ export function ProjectDefenseResultCard({
   analysis: ProjectDefenseAnalysisResponse
   sourceScore?: FinalSourceScore
 }) {
-  const overallScore = sourceScore?.score ?? analysis.overall_defense_score
+  // Coherence guard: when falling back to the analysis's own overall, cap it
+  // at what the component scores support (legacy rows stored e.g. overall=100
+  // beside ownership=60 — the two must never contradict on screen).
+  const overallScore = sourceScore?.score ?? coherentOverallDefenseScore(analysis)
   const scoreColor =
     overallScore >= 70 ? "#166534" :
     overallScore >= 50 ? "#854d0e" :

@@ -34,6 +34,9 @@ from typing import Any
 from app.services.defense_answer_evidence_service import (
     MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION,
 )
+from app.services.project_defense_analysis_service import (
+    coherent_overall_defense_score,
+)
 from app.services.project_defense_inspection_service import (
     build_project_defense_inspection_cards,
 )
@@ -207,7 +210,9 @@ def _report_safe_analysis(analysis: dict[str, Any] | None) -> dict[str, Any] | N
         "skills_mentioned": [str(s) for s in (analysis.get("skills_mentioned") or [])],
         "skills_explained_well": [str(s) for s in (analysis.get("skills_explained_well") or [])],
         "skills_missing_from_explanation": [str(s) for s in (analysis.get("skills_missing_from_explanation") or [])],
-        "overall_assessment": _defense_area_label(int(analysis.get("overall_defense_score") or 0)),
+        # Coherence: legacy stored rows may carry an overall that exceeds what
+        # their component scores support — label the derived coherent value.
+        "overall_assessment": _defense_area_label(coherent_overall_defense_score(analysis)),
         "explanation_clarity": _defense_area_label(int(analysis.get("explanation_clarity_score") or 0)),
         "ownership_signal": _defense_area_label(int(analysis.get("ownership_signal_score") or 0)),
         "technical_depth": _defense_area_label(int(analysis.get("technical_depth_score") or 0)),

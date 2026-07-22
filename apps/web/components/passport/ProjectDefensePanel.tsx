@@ -39,6 +39,7 @@ import {
   type WebsiteProofRecommendationResponse,
   type WebsiteProofSummaryResponse,
 } from "@/lib/passport-api"
+import { coherentOverallDefenseScore } from "@/lib/defense-score"
 import {
   Badge,
   Btn,
@@ -176,7 +177,9 @@ function VideoEvidenceSection({ chips }: { chips: VideoEvidenceChip[] }) {
   )
 }
 
-function AnalysisResults({
+// Exported for regression tests (defense-score-consistency.test.tsx): the
+// displayed Overall Defense Score must stay coherent with the component stats.
+export function AnalysisResults({
   analysis,
   videoEvidenceChips,
   syncStatus,
@@ -196,7 +199,10 @@ function AnalysisResults({
       <CardHeader title="Project Defense Analysis" eyebrow="Step E · Deterministic analysis" icon="📊" />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <ScoreStat label="Overall Defense Score" value={analysis.overall_defense_score} />
+        {/* Coherence guard: the displayed overall can never exceed what the
+            component scores below support (legacy analyses stored e.g.
+            overall=100 beside ownership=60). */}
+        <ScoreStat label="Overall Defense Score" value={coherentOverallDefenseScore(analysis)} />
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <ScoreStat label="Ownership signal" value={analysis.ownership_signal_score} />

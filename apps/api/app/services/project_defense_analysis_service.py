@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -45,6 +46,52 @@ _TABLE = "project_defense_analysis_results"
 # ── Minimum transcript length constants ───────────────────────────────────────
 _MIN_WORDS_FOR_SHORT_PENALTY: int = 50    # fewer → "extremely short" penalty
 _MIN_WORDS_FOR_LENGTH_BONUS: int = 100   # ≥ this → length bonus earned
+
+# ── Overall-score rubric weights (must sum to 100) ────────────────────────────
+# overall_defense_score = LENGTH + SKILLS
+#                       + CONSISTENCY × (consistency_with_evidence_score / 100)
+#                       + OWNERSHIP   × (ownership_signal_score / 100)
+#                       + TECH_DEPTH  × (technical_depth_score / 100)
+#                       + LIMITATIONS − penalties, clamped to [0, 100].
+# The gauged dimensions (consistency / ownership / depth) contribute
+# PROPORTIONALLY to their published 0–100 component scores, so the displayed
+# overall can never contradict the displayed components (e.g. the historical
+# bug of "Overall 100/100" beside "Ownership 60/100").
+_LENGTH_WEIGHT: int = 20
+_SKILLS_WEIGHT: int = 20
+_CONSISTENCY_WEIGHT: int = 20
+_OWNERSHIP_WEIGHT: int = 15
+_TECH_DEPTH_WEIGHT: int = 15
+_LIMITATIONS_WEIGHT: int = 10
+
+
+def coherent_overall_defense_score(analysis: Mapping[str, Any]) -> int:
+    """Clamp a STORED overall score to what its component scores can support.
+
+    Legacy rows were persisted before the proportional rubric: ownership and
+    technical depth granted full step credit at a low threshold, so a stored
+    ``overall_defense_score`` of 100 can sit beside components of 60/65. Those
+    prod rows are never mutated — instead, every read/display path derives a
+    coherent overall by capping the stored value at the maximum the rubric
+    allows for the stored component scores (binary criteria assumed fully met,
+    no penalties — i.e. the most generous coherent interpretation).
+
+    Rows produced by the current ``analyze_defense_transcript`` already satisfy
+    the bound, so this is the identity for them.
+    """
+    overall = int(analysis.get("overall_defense_score") or 0)
+    consistency = int(analysis.get("consistency_with_evidence_score") or 0)
+    ownership = int(analysis.get("ownership_signal_score") or 0)
+    depth = int(analysis.get("technical_depth_score") or 0)
+    bound = (
+        _LENGTH_WEIGHT
+        + _SKILLS_WEIGHT
+        + _LIMITATIONS_WEIGHT
+        + round(_CONSISTENCY_WEIGHT * min(100, max(0, consistency)) / 100)
+        + round(_OWNERSHIP_WEIGHT * min(100, max(0, ownership)) / 100)
+        + round(_TECH_DEPTH_WEIGHT * min(100, max(0, depth)) / 100)
+    )
+    return max(0, min(overall, bound, 100))
 
 
 # ── Transcript-only sensitive patterns (grouped card numbers) ─────────────────
@@ -369,13 +416,20 @@ def analyze_defense_transcript(
     replacing the sentence-level keyword heuristic entirely. Pass ``None``
     (not ``[]``) only when no per-question answer data exists at all.
 
-    Scoring:
+    Scoring (overall_defense_score, 0–100):
         +20  transcript exists and is long enough (≥100 words)
         +20  claimed skills are mentioned naturally
-        +20  explanation matches other evidence sources
-        +15  student explains their own role / contribution
-        +15  technical/project depth is present
+        +20 × (consistency_with_evidence_score / 100)
+        +15 × (ownership_signal_score / 100)
+        +15 × (technical_depth_score / 100)
         +10  limitations / future improvements explained
+
+    Coherence invariant: the ownership / technical-depth / consistency
+    dimensions contribute PROPORTIONALLY to their published 0–100 component
+    scores (weights 15/15/20). The overall can therefore never reach 100
+    while a component gauge reads e.g. 60/100 — full marks require full
+    component scores. (Previously ownership/depth granted full step credit
+    at a low threshold, so overall=100 could sit beside components 60/65.)
 
     Deductions:
         -10  vague or generic explanation
@@ -566,20 +620,19 @@ def analyze_defense_transcript(
 
     result.consistency_with_evidence_score = min(100, consistency_score * 5)
 
-    # ── 4. Ownership signal (+15) / no ownership signal (-10) ─────────────────
+    # ── 4. Ownership signal (15 × component/100) / no ownership signal (-10) ──
+    # The overall credit is PROPORTIONAL to the published ownership component
+    # so the two can never contradict each other (coherence invariant).
     ownership_matches = sum(1 for p in _OWNERSHIP_RE if p.search(text))
     if ownership_matches >= 2:
-        score += 15
         result.ownership_signal_score = min(100, 50 + ownership_matches * 5)
     elif ownership_matches == 1:
-        score += 8
         result.ownership_signal_score = 40
         improvements.append(
             "Use first-person ownership language more explicitly. "
             "Say 'I built X', 'I implemented Y', or 'my approach was Z' throughout."
         )
     else:
-        score = max(0, score - 10)
         result.ownership_signal_score = 10
         risk_flags.append(
             "No clear ownership signal detected in the transcript. "
@@ -590,14 +643,16 @@ def analyze_defense_transcript(
             "Add clear first-person ownership statements: 'I built', 'I implemented', "
             "'my design decision was…' to demonstrate personal contribution."
         )
+    score += round(_OWNERSHIP_WEIGHT * result.ownership_signal_score / 100)
+    if ownership_matches == 0:
+        score = max(0, score - 10)
 
-    # ── 5. Technical depth (+15) ───────────────────────────────────────────────
+    # ── 5. Technical depth (15 × component/100) ───────────────────────────────
+    # Proportional to the published technical-depth component (same invariant).
     depth_matches = sum(1 for p in _TECH_DEPTH_RE if p.search(text))
     if depth_matches >= 4:
-        score += 15
         result.technical_depth_score = min(100, 50 + depth_matches * 3)
     elif depth_matches >= 2:
-        score += 8
         result.technical_depth_score = 40
         improvements.append(
             "Add more technical detail: explain how key components work, "
@@ -609,6 +664,7 @@ def analyze_defense_transcript(
             "Include more technical depth: mention architecture decisions, "
             "how the main feature works end-to-end, and any tradeoffs you made."
         )
+    score += round(_TECH_DEPTH_WEIGHT * result.technical_depth_score / 100)
 
     # ── 6. Limitations / future improvements (+10) ────────────────────────────
     limitation_matches = sum(1 for p in _LIMITATION_RE if p.search(text))

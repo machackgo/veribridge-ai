@@ -29,6 +29,9 @@ from app.schemas.public_work_passport import (
 )
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.notification_service import NotificationService
+from app.services.project_defense_analysis_service import (
+    coherent_overall_defense_score,
+)
 from app.services.verification_readiness_service import compute_readiness_report
 
 _PASSPORTS = "public_work_passports"
@@ -1037,7 +1040,13 @@ def _protected_evidence(evidence: dict[str, Any], sections: list[str]) -> dict[s
             "skills_mentioned": defense.get("skills_mentioned") or [],
             "skills_explained_well": defense.get("skills_explained_well") or [],
             "skills_missing_from_explanation": defense.get("skills_missing_from_explanation") or [],
-            "overall_defense_score": defense.get("overall_defense_score"),
+            # Coherent derived overall — legacy rows may store an overall that
+            # exceeds what their component scores support (never mutated).
+            "overall_defense_score": (
+                coherent_overall_defense_score(defense)
+                if defense.get("overall_defense_score") is not None
+                else None
+            ),
             "recruiter_summary": defense.get("recruiter_summary"),
             "risk_flags": defense.get("risk_flags") or [],
         }
