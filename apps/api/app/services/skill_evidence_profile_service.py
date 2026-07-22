@@ -25,6 +25,7 @@ from app.schemas.skill_evidence_profile import (
     EvidenceSourceStatus,
     SkillEvidenceProfile,
 )
+from app.services.canonical_project_evidence import USABLE_WEBSITE_SESSION_STATUSES
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,12 @@ _EXTENSION_PROOF_EVIDENCE_TYPES = (
     "local development (extension proof)",
     "private website (extension proof)",
 )
+
+# Sessions in these states carry an uploaded recording that is still being
+# analyzed — they HAVE produced evidence and their stubs stay visible while
+# analysis finishes. Anything earlier (created / waiting_for_extension /
+# recording) or archived ('expired') has produced no evidence at all.
+_EVIDENCE_IN_FLIGHT_STATUSES = frozenset({"uploaded_pending_analysis", "analyzing"})
 
 
 class SkillEvidenceProfileService:
@@ -55,6 +62,16 @@ class SkillEvidenceProfileService:
         evidence_rows = self._fetch_extension_proof_evidence(user_id)
         if not evidence_rows:
             logger.info("SKILL_EVIDENCE_PROFILE_NO_EVIDENCE user=%s", user_id)
+            return []
+
+        # Honesty gate: a Website Proof session writes its skill_evidence stub
+        # at CREATE time, before any recording is uploaded. A still-pending
+        # stub whose owning session never reached a usable (completed) state —
+        # abandoned mid-recording, or soft-archived as 'expired' — has produced
+        # no evidence and must not surface as an evidence profile.
+        evidence_rows = self._filter_unusable_session_stubs(user_id, evidence_rows)
+        if not evidence_rows:
+            logger.info("SKILL_EVIDENCE_PROFILE_NO_USABLE_EVIDENCE user=%s", user_id)
             return []
 
         session_ids = [
@@ -118,6 +135,76 @@ class SkillEvidenceProfileService:
         except Exception:
             logger.warning(
                 "SKILL_EVIDENCE_PROFILE_FETCH_EVIDENCE_FAILED user=%s",
+                user_id, exc_info=True,
+            )
+            return []
+
+    def _filter_unusable_session_stubs(
+        self, user_id: str, evidence_rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Drop still-pending stubs of sessions that never produced evidence.
+
+        A row is excluded only when ALL of the following hold:
+          — its ``verification_status`` is still ``pending_review`` (nothing
+            downstream has verified it), AND
+          — an owning session is found (via the session's
+            ``skill_evidence_id`` backlink, or the row's
+            ``metadata.session_id``), AND
+          — that session's status is neither usable (``completed``) nor
+            evidence-in-flight (uploaded, awaiting analysis) — i.e. the
+            recording was abandoned before upload or archived as expired.
+
+        Legacy rows with no discoverable session keep their current behavior.
+        """
+        sessions = self._fetch_all_sessions(user_id)
+        if not sessions:
+            return evidence_rows
+        session_by_evidence_id = {
+            str(s.get("skill_evidence_id") or ""): s
+            for s in sessions
+            if s.get("skill_evidence_id")
+        }
+        session_by_id = {str(s.get("id") or ""): s for s in sessions if s.get("id")}
+
+        def _owning_session(row: dict[str, Any]) -> dict[str, Any] | None:
+            session = session_by_evidence_id.get(str(row.get("id") or ""))
+            if session is not None:
+                return session
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            return session_by_id.get(str(meta.get("session_id") or ""))
+
+        kept: list[dict[str, Any]] = []
+        for row in evidence_rows:
+            if str(row.get("verification_status") or "") == "pending_review":
+                session = _owning_session(row)
+                if session is not None:
+                    status = str(session.get("status") or "").strip().lower()
+                    if (
+                        status not in USABLE_WEBSITE_SESSION_STATUSES
+                        and status not in _EVIDENCE_IN_FLIGHT_STATUSES
+                    ):
+                        continue
+            kept.append(row)
+        return kept
+
+    def _fetch_all_sessions(self, user_id: str) -> list[dict[str, Any]]:
+        try:
+            if isinstance(self._client, dict):
+                return [
+                    r
+                    for r in self._client.get(_SESSION_TABLE, {}).values()
+                    if r.get("user_id") == user_id
+                ]
+            result = (
+                self._client.table(_SESSION_TABLE)
+                .select("id,skill_evidence_id,status")
+                .eq("user_id", user_id)
+                .execute()
+            )
+            return getattr(result, "data", []) or []
+        except Exception:
+            logger.warning(
+                "SKILL_EVIDENCE_PROFILE_FETCH_ALL_SESSIONS_FAILED user=%s",
                 user_id, exc_info=True,
             )
             return []

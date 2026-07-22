@@ -9,7 +9,10 @@ Usage
     # Dry-run (safe — prints counts only):
     python scripts/cleanup_proof_session.py --session-id d592f7fb-6aee-47d6-a549-a7192268574e
 
-    # Soft archive (sets extension_proof_sessions.status = 'expired'):
+    # Soft archive (sets extension_proof_sessions.status = 'expired' AND
+    # detaches the project linkage: session metadata project edge moved to
+    # detached_project_id, proof_project_relationships rows downgraded to
+    # vault_only with a provenance trail — nothing is deleted):
     python scripts/cleanup_proof_session.py --session-id d592f7fb-... --archive
 
     # Export backup JSON then delete (requires --confirm):
@@ -56,7 +59,11 @@ parser.add_argument(
     "--archive",
     action="store_true",
     default=False,
-    help="Soft-archive: set extension_proof_sessions.status = 'expired' (no data deleted).",
+    help=(
+        "Soft-archive: set extension_proof_sessions.status = 'expired' and detach the "
+        "project linkage (metadata + proof_project_relationships → vault_only, with a "
+        "provenance trail). No data is deleted."
+    ),
 )
 parser.add_argument(
     "--delete",
@@ -134,11 +141,13 @@ if report.affected_pipeline_ids:
 if args.archive:
     if args.delete:
         sys.exit("ERROR: --archive and --delete are mutually exclusive.")
-    print(f"\n=== Soft-archive: setting status='expired' on {session_id} ===")
+    print(f"\n=== Soft-archive: expiring + detaching {session_id} ===")
     updated = svc.archive_session(session_id)
     if updated:
-        print("Done — session status set to 'expired'.")
-        print("Note: text-column tables (frames, events) and synced artifacts are NOT deleted.")
+        print("Done — session status set to 'expired' and project linkage detached")
+        print("(session metadata edge → detached_project_id; relationship rows → vault_only).")
+        print("Note: nothing was deleted — skill_evidence stub, text-column tables (frames,")
+        print("events) and synced artifacts all remain.")
         print("Run with --delete --confirm to remove them after archiving.")
     else:
         print("No session row found — nothing archived.")
