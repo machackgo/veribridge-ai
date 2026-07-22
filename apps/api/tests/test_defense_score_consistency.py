@@ -205,3 +205,48 @@ class TestStoredRowCoherence:
             )
             == 100
         )
+
+
+class TestFinalEvaluatorSourceScoreCoherence:
+    """The final evaluator's project_defense source score is PREFERRED by the
+    frontend over the (clamped) analysis overall — so it must obey the same
+    coherence bound, or a legacy row would still display 100 beside 60/65."""
+
+    def _svc(self):
+        from unittest.mock import MagicMock
+
+        from app.services.final_evidence_evaluator_service import (
+            FinalEvidenceEvaluatorService,
+        )
+
+        return FinalEvidenceEvaluatorService(MagicMock())
+
+    def test_legacy_prod_row_source_score_is_clamped_to_89(self) -> None:
+        pd = {
+            "analysis_status": "analyzed",
+            "overall_defense_score": 100,
+            "consistency_with_evidence_score": 100,
+            "ownership_signal_score": 60,
+            "technical_depth_score": 65,
+        }
+        result = self._svc()._score_project_defense(pd, claimed_skills=["React"])
+        assert result.score == 89
+        assert result.status == "pass"  # still ≥ 60 — gating unchanged
+
+    def test_coherent_row_source_score_unchanged(self) -> None:
+        pd = {
+            "analysis_status": "analyzed",
+            "overall_defense_score": 72,
+            "consistency_with_evidence_score": 80,
+            "ownership_signal_score": 90,
+            "technical_depth_score": 70,
+        }
+        result = self._svc()._score_project_defense(pd, claimed_skills=["React"])
+        assert result.score == 72
+
+    def test_row_without_component_scores_is_not_clamped(self) -> None:
+        # The bound is meaningless without component scores — a bare overall
+        # must pass through untouched (never lowered to the 50 floor).
+        pd = {"analysis_status": "analyzed", "overall_defense_score": 80}
+        result = self._svc()._score_project_defense(pd, claimed_skills=["React"])
+        assert result.score == 80

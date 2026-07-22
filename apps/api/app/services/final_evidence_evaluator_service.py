@@ -31,6 +31,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from urllib.parse import quote, urlparse
 
+from app.services.project_defense_analysis_service import (
+    coherent_overall_defense_score,
+)
 from app.services.url_classification_service import (
     classify_website_url,
     local_private_live_check_note,
@@ -1568,6 +1571,22 @@ class FinalEvidenceEvaluatorService:
         raw_score = pd.get("overall_score")
         if raw_score is None:
             raw_score = pd.get("overall_defense_score")
+            if raw_score is not None and any(
+                pd.get(k) is not None
+                for k in (
+                    "consistency_with_evidence_score",
+                    "ownership_signal_score",
+                    "technical_depth_score",
+                )
+            ):
+                # Coherence: legacy stored rows may carry an overall that
+                # exceeds what their component scores support. This source
+                # score is preferred by the UI over the (already clamped)
+                # analysis overall, so it must obey the same bound — otherwise
+                # a legacy row would still display 100 beside 60/65 gauges.
+                # Only applied when component scores exist (the bound is
+                # meaningless without them); never raises the stored value.
+                raw_score = coherent_overall_defense_score(pd)
         if raw_score is None:
             dims = [
                 pd.get("consistency_with_evidence_score"),
