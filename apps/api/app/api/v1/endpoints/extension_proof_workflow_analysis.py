@@ -17,6 +17,7 @@ from app.schemas.extension_proof_workflow_analysis import (
     WorkflowAnalyzeRequest,
     WorkflowAnalysisResponse,
     VisibleEvidenceStatus,
+    analysis_review_stage_label,
 )
 from app.services.extension_proof_workflow_analysis_service import (
     ExtensionProofWorkflowAnalysisService,
@@ -323,7 +324,10 @@ def _to_response(row: dict[str, Any]) -> WorkflowAnalysisResponse:
             row.get("visual_reasoning_summary")
         ),
         progress=100,
-        current_stage="AI reviewed",
+        # Honest completed-stage label: "AI reviewed" is only allowed when an
+        # AI provider actually ran (full_multimodal_analysis). A deterministic
+        # timeline_only analysis says "Timeline evidence reviewed".
+        current_stage=analysis_review_stage_label(row.get("analysis_type", "timeline_only")),
         stages=stages,
         analysis_stage="complete",
         progress_percent=100,

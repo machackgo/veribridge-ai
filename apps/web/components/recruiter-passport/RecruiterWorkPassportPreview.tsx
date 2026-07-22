@@ -202,7 +202,9 @@ function EvidenceScoreSection({
                 fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 999,
                 background: C.indigoSoft, color: C.indigo, border: "1px solid #c7d2fe",
               }}>
-                AI Reviewed
+                {/* Honest wording: show the actual verification status — never a
+                    hardcoded "AI Reviewed" claim for any truthy status. */}
+                {verificationStatus}
               </span>
             )}
             {readinessLevel && (
