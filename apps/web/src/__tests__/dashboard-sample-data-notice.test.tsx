@@ -15,8 +15,10 @@ import { join } from "node:path"
 const APP_DIR = join(__dirname, "..", "app", "dashboard")
 
 // Routes whose body still renders illustrative placeholder content.
+// (skill-gaps was removed 2026-07-22: that route is now wired to the real
+// evidence-derived GET /api/v1/student/skill-gaps endpoint — see
+// skill-gaps-page.test.tsx for its no-mock guard.)
 const MOCK_BACKED_ROUTES = [
-  "skill-gaps",
   "profile",
   "visa-fit",
   "jobs",
