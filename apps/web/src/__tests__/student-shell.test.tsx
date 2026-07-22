@@ -20,7 +20,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 
 const mockPush = vi.fn()
 const mockRefresh = vi.fn()
-let mockPathname = "/student/vbr"
+let mockPathname = "/student"
 let mockSearchParams = new URLSearchParams()
 
 vi.mock("next/navigation", () => ({
@@ -58,7 +58,7 @@ function renderShell(children = <div data-testid="page-body">page content</div>)
 }
 
 beforeEach(() => {
-  mockPathname = "/student/vbr"
+  mockPathname = "/student"
   mockSearchParams = new URLSearchParams()
   mockPush.mockReset()
   mockRefresh.mockReset()
@@ -76,7 +76,7 @@ describe("StudentShell chrome", () => {
     renderShell()
     expect(screen.getByTestId("student-shell")).toBeInTheDocument()
     expect(screen.getByTestId("page-body")).toBeInTheDocument()
-    expect(screen.getByTestId("student-shell-brand")).toHaveAttribute("href", "/student/vbr")
+    expect(screen.getByTestId("student-shell-brand")).toHaveAttribute("href", "/student")
 
     const sidebar = screen.getByTestId("student-shell-sidebar")
     for (const label of [
@@ -93,7 +93,7 @@ describe("StudentShell chrome", () => {
     }
   })
 
-  it("marks Dashboard active on /student/vbr and deep-nested items by longest prefix", () => {
+  it("marks Dashboard active on /student and deep-nested items by longest prefix", () => {
     renderShell()
     const sidebar = screen.getByTestId("student-shell-sidebar")
     const dashboard = Array.from(sidebar.querySelectorAll("a")).find((a) => a.textContent === "Dashboard")
@@ -103,7 +103,7 @@ describe("StudentShell chrome", () => {
     expect(activeNavHref("/student/vbr/passport")).toBe("/student/vbr/passport")
     expect(activeNavHref("/student/vbr/passport/skills/react")).toBe("/student/vbr/passport")
     expect(activeNavHref("/student/proofs/github")).toBe("/student/proofs/github")
-    expect(activeNavHref("/student/vbr/projects/p1/report")).toBe("/student/vbr")
+    expect(activeNavHref("/student/vbr/projects/p1/report")).toBe("/student")
     expect(activeNavHref("/dashboard/skill-gaps")).toBe("/dashboard/skill-gaps")
   })
 
@@ -119,7 +119,14 @@ describe("StudentShell chrome", () => {
 
   it("falls back to a Dashboard-only breadcrumb on unknown student routes", () => {
     expect(studentBreadcrumbs("/student/somewhere-new")).toEqual([
-      { label: "Dashboard", href: "/student/vbr" },
+      { label: "Dashboard", href: "/student" },
+    ])
+  })
+
+  it("labels the Skills & Gaps breadcrumb when the shell hosts /dashboard/skill-gaps", () => {
+    expect(studentBreadcrumbs("/dashboard/skill-gaps")).toEqual([
+      { label: "Dashboard", href: "/student" },
+      { label: "Skills & Gaps" },
     ])
   })
 })
@@ -171,15 +178,18 @@ describe("active project context", () => {
 })
 
 describe("profile menu and sign-out", () => {
-  it("shows persona identity plus Profile and Settings links", () => {
+  it("shows persona identity plus Account and Settings links", () => {
     renderShell()
     fireEvent.click(screen.getByTestId("student-shell-profile-toggle"))
     const menu = screen.getByTestId("student-shell-profile-menu")
     expect(menu).toHaveTextContent("Ada Lovelace")
     expect(menu).toHaveTextContent("ada@example.edu")
-    const links = Array.from(menu.querySelectorAll("a")).map((a) => a.getAttribute("href"))
-    expect(links).toContain("/dashboard/profile")
-    expect(links).toContain("/dashboard/settings")
+    const links = Array.from(menu.querySelectorAll("a")).map((a) => [
+      a.textContent,
+      a.getAttribute("href"),
+    ])
+    expect(links).toContainEqual(["Account", "/dashboard/profile"])
+    expect(links).toContainEqual(["Settings", "/dashboard/settings"])
   })
 
   it("signs out via supabase.auth.signOut() and lands on /login", async () => {

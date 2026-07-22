@@ -27,7 +27,7 @@ type ShellNavItem = { label: string; href: string }
 type ShellNavSection = { title: string | null; items: ShellNavItem[] }
 
 const NAV_SECTIONS: ShellNavSection[] = [
-  { title: null, items: [{ label: "Dashboard", href: "/student/vbr" }] },
+  { title: null, items: [{ label: "Dashboard", href: "/student" }] },
   {
     title: "Proofs",
     items: [
@@ -48,7 +48,7 @@ const NAV_SECTIONS: ShellNavSection[] = [
 ]
 
 const ACCOUNT_LINKS: ShellNavItem[] = [
-  { label: "Profile", href: "/dashboard/profile" },
+  { label: "Account", href: "/dashboard/profile" },
   { label: "Settings", href: "/dashboard/settings" },
 ]
 
@@ -83,9 +83,9 @@ export function activeNavHref(pathname: string): string | null {
 type Crumb = { label: string; href?: string }
 
 export function studentBreadcrumbs(pathname: string): Crumb[] {
-  const home: Crumb = { label: "Dashboard", href: "/student/vbr" }
+  const home: Crumb = { label: "Dashboard", href: "/student" }
   let tail: Crumb[] = []
-  if (pathname === "/student/vbr") return [{ label: "Dashboard" }]
+  if (pathname === "/student") return [{ label: "Dashboard" }]
   else if (pathname.startsWith("/student/proofs/github")) tail = [{ label: "GitHub Proof" }]
   else if (pathname.startsWith("/student/proofs/website")) tail = [{ label: "Website Proof" }]
   else if (pathname.startsWith("/student/proofs/documents")) tail = [{ label: "Document Proof" }]
@@ -96,6 +96,7 @@ export function studentBreadcrumbs(pathname: string): Crumb[] {
     tail = [{ label: "Work Passport", href: "/student/vbr/passport" }, { label: "Skill Report" }]
   else if (pathname.startsWith("/student/vbr/passport")) tail = [{ label: "Work Passport" }]
   else if (/^\/student\/vbr\/projects\/[^/]+\/report/.test(pathname)) tail = [{ label: "VBR Report" }]
+  else if (pathname.startsWith("/dashboard/skill-gaps")) tail = [{ label: "Skills & Gaps" }]
   else return [home]
   return [home, ...tail]
 }
@@ -134,7 +135,7 @@ function ActiveProjectChip({ className = "hidden sm:inline-flex", testId = "stud
 
   return (
     <Link
-      href="/student/vbr"
+      href="/student"
       data-testid={testId}
       title="Active project context — manage projects from the Dashboard"
       className={className}
@@ -328,7 +329,7 @@ export function StudentShell({
           </button>
 
           <Link
-            href="/student/vbr"
+            href="/student"
             data-testid="student-shell-brand"
             style={{ display: "flex", alignItems: "center", gap: 8 }}
           >

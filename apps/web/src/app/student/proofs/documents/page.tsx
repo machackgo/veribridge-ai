@@ -8,7 +8,7 @@ export default function DocumentProofStudioPage() {
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px" }}>
       <Link
-        href="/student/vbr"
+        href="/student"
         style={{
           fontSize: 13,
           color: TOKEN.indigo,
