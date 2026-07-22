@@ -44,8 +44,8 @@ export default function OnboardingPage() {
         your project, repo, and a short walkthrough.
       </p>
       <div style={{ display: "flex", gap: 12 }}>
-        <Link href="/student/vbr" style={primaryLinkStyle}>
-          Go to Proof Studio
+        <Link href="/student" style={primaryLinkStyle}>
+          Go to Student Dashboard
         </Link>
         <Link href="/dashboard" style={secondaryLinkStyle}>
           Go to dashboard

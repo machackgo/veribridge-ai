@@ -8,7 +8,7 @@ import { type NextRequest, NextResponse } from "next/server"
  *
  * Behaviour:
  *  - Unauthenticated request to protected paths → redirect /login?next=<path>
- *  - Authenticated request to /login → redirect to requested next path or /student/vbr
+ *  - Authenticated request to /login → redirect to requested next path or /student
  *  - All other paths → pass through unchanged
  *
  * Session check uses getSession() (reads JWT from cookie, no extra network
@@ -56,7 +56,7 @@ export async function proxy(request: NextRequest) {
     if (pathname === "/login") {
       const session = await getSessionSafe(request)
       if (session) {
-        const next = request.nextUrl.searchParams.get("next") ?? "/student/vbr"
+        const next = request.nextUrl.searchParams.get("next") ?? "/student"
         const dest = request.nextUrl.clone()
         dest.pathname = next.startsWith("/") ? next : "/dashboard"
         dest.search = ""

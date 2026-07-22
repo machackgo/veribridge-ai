@@ -312,8 +312,8 @@ export default function Page() {
           <p style={{ margin: 0, fontSize: 13, color: "var(--ink-2)", lineHeight: 1.6 }}>
             Skill gaps are computed per project from your attached evidence. Create a project and
             attach proofs to see an honest assessment here.{" "}
-            <Link href="/student/vbr" style={{ color: "var(--indigo)" }}>
-              Go to Proof Studio →
+            <Link href="/student" style={{ color: "var(--indigo)" }}>
+              Go to Student Dashboard →
             </Link>
           </p>
         </Card>

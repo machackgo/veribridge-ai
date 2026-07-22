@@ -139,7 +139,7 @@ describe("Skill Gaps page states", () => {
     apiMocks.getSkillGapsOverview.mockResolvedValue(overview([]))
     render(<SkillGapsPage />)
     expect(await screen.findByText(/No projects yet/i)).toBeInTheDocument()
-    expect(screen.getByText(/Go to Proof Studio/i)).toBeInTheDocument()
+    expect(screen.getByText(/Go to Student Dashboard/i)).toBeInTheDocument()
   })
 
   it("shows the insufficient-evidence fallback without fabricating items", async () => {

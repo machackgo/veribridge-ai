@@ -36,7 +36,7 @@ function WebsiteProofPageInner() {
       </p>
 
       <ExtensionProofPanel
-        onBack={() => router.push(returnTo ?? "/student/vbr")}
+        onBack={() => router.push(returnTo ?? "/student")}
         requestedSessionId={requestedSessionId}
         historyMode={historyMode}
       />

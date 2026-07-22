@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { DashboardShell } from "../../../components/dashboard/DashboardShell";
+import { DashboardChromeSwitch } from "../../../components/dashboard/DashboardChromeSwitch";
+import { studentPersonaInitials } from "../../../components/student/persona";
 import { createSupabaseServerClient } from "../../lib/supabase/server";
 
 const nav = [
@@ -53,7 +54,7 @@ export default async function StudentLayout({ children }: { children: ReactNode 
   const displayName = name || email || "My Workspace";
 
   return (
-    <DashboardShell
+    <DashboardChromeSwitch
       nav={nav}
       accountNav={accountNav}
       persona={{
@@ -61,9 +62,13 @@ export default async function StudentLayout({ children }: { children: ReactNode 
         detail: email,
         initials: dashboardPersonaInitials(name, email),
       }}
-      accent="emerald"
+      studentPersona={{
+        name: displayName,
+        email,
+        initials: studentPersonaInitials(name, email),
+      }}
     >
       {children}
-    </DashboardShell>
+    </DashboardChromeSwitch>
   );
 }

@@ -517,7 +517,7 @@ function OtpStep({
 function LoginInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const redirectTo = searchParams.get("next") ?? "/student/vbr"
+  const redirectTo = searchParams.get("next") ?? "/student"
 
   const [step, setStep] = useState<Step>("email")
   const [email, setEmail] = useState("")
@@ -613,7 +613,7 @@ function LoginInner() {
       })
       if (error) throw error
       if (data.session) {
-        const destination = redirectTo.startsWith("/") ? redirectTo : "/student/vbr"
+        const destination = redirectTo.startsWith("/") ? redirectTo : "/student"
         router.push(destination)
         router.refresh()
       }
@@ -650,7 +650,7 @@ function LoginInner() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
         options: {
-          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo || "/student/vbr")}`,
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo || "/student")}`,
         },
       })
       if (error) throw error
