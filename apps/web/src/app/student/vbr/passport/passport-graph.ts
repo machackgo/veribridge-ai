@@ -99,6 +99,21 @@ export type SkillProjectEvidence = {
   reportIsPublic: boolean
 }
 
+/**
+ * Canonical skill→evidence relationship, strongest first. Shared vocabulary
+ * between the Skills Evidence Map and the Skill Report so the two never disagree:
+ *  • `direct`     — a proof directly supports THIS skill in a project (report
+ *                   skill_evidence / project top_skill). Counted as skill evidence.
+ *  • `attached`   — the skill's proof is attached to a real project but that
+ *                   project never skill-mapped it ("attached, not skill-mapped").
+ *                   A project-level relationship — distinguished from direct.
+ *  • `vault`      — retained proof exists only in the Proof Vault, attached to no
+ *                   project on this passport (vault-only / standalone).
+ *  • `suggested`  — no retained proof at all (a derived Skill-Graph/AI signal).
+ *                   Never "evidence"; hidden from the default map.
+ */
+export type SkillRelationship = "direct" | "attached" | "vault" | "suggested"
+
 /** One skill node in the Projects ↔ Skills explorer — labels and links only. */
 export type PassportSkillNode = {
   /** Stable lowercased identity key. */
@@ -111,8 +126,29 @@ export type PassportSkillNode = {
   proofTypes: string[]
   /** Connected projects that exist on this passport (render targets). */
   projectIds: string[]
-  /** Connected-project count (payload count when it knows more than the ids). */
+  /** Honest connected-project count: distinct projects with a real, resolvable
+   *  evidence relationship to this skill ON THIS PASSPORT. Never inflated by the
+   *  Proof Vault summary's raw `project_count` (which counts duplicate-attempt
+   *  `vbr_projects` rows and would let an unattached skill read "24 projects"
+   *  while showing zero project rows). Vault-only proof does not count here. */
   projectCount: number
+  /** Number of distinct proof-source TYPES supporting this skill (attached
+   *  project proof + vault-only), so a skill row can honestly state how much
+   *  proof backs it — a vault-only skill still shows "N proof sources" instead of
+   *  looking empty, and a suggestion with no retained proof shows 0. */
+  proofSourceCount: number
+  /** Canonical relationship of this skill to its strongest evidence. Drives the
+   *  relationship badge, the Relationship-type filter, and whether the skill is a
+   *  bare suggestion hidden from the default map. */
+  relationship: SkillRelationship
+  /** Grouped, on-passport projects the skill's proof is ATTACHED to but which
+   *  never skill-mapped it (the "attached, not skill-mapped" tier). Empty for a
+   *  direct skill (its projects are in `projectEvidence`) and for vault-only /
+   *  suggested skills. Each id resolves to a real project card + owner route. */
+  attachedProjects: { projectId: string; projectTitle: string }[]
+  /** A retained, inspectable proof source backs this skill (not only an AI/Skill-
+   *  Graph signal). False → a bare suggestion that must never read as "evidence". */
+  hasRetainedProof: boolean
   /** The project where this skill is most strongly evidenced, when known. */
   strongest: StrongestProjectRef | null
   /** Per-attached-project evidence rows for contextual "proof → project → skill"
@@ -179,6 +215,22 @@ type SkillDraft = {
   payloadProjectCount: number
   /** Vault-only proof-type sources for this skill (unattached to any project). */
   vaultOnlySources: Set<string>
+  /** Canonical proof-type labels the Proof Vault summary recorded for this skill
+   *  (any of its proofs, regardless of attachment). Used ONLY to reveal the real
+   *  proof source of a skill whose evidence lives solely in the vault — a skill
+   *  with no resolvable project edge — so its GitHub / Document / Website / Defense
+   *  proof is never invisible. Never applied to a skill that already has an
+   *  attached project edge (that proof is shown on its project row, not as
+   *  vault-only). */
+  vaultSummaryProofTypes: Set<string>
+  /** Grouped, on-passport project id → title the vault summary attaches this skill
+   *  to (raw duplicate-attempt rows already resolved by the backend). Used to build
+   *  the "attached, not skill-mapped" tier for a skill with no direct edge. */
+  vaultConnectedProjects: Map<string, string>
+  /** The backend flagged a retained, inspectable proof source for this skill. */
+  hasRetainedProof: boolean
+  /** This skill carried a vault summary at all (vs. only report/project edges). */
+  fromVault: boolean
 }
 
 /**
@@ -192,6 +244,7 @@ type SkillDraft = {
 export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph {
   const strongest = strongestProjectBySkill(passport)
   const knownProjectIds = new Set(passport.projects.map((p) => p.project_id))
+  const projectById = new Map(passport.projects.map((p) => [p.project_id, p]))
   // Title → the project ids that share it. A title mapping to more than one id
   // is ambiguous, so title-only matching against it must fail closed.
   const titleToIds = new Map<string, Set<string>>()
@@ -208,7 +261,7 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     const key = name.trim().toLowerCase()
     let d = drafts.get(key)
     if (!d) {
-      d = { name: name.trim(), slug: "", status: "", sources: new Set(), projectIds: new Set(), payloadProjectCount: 0, vaultOnlySources: new Set() }
+      d = { name: name.trim(), slug: "", status: "", sources: new Set(), projectIds: new Set(), payloadProjectCount: 0, vaultOnlySources: new Set(), vaultSummaryProofTypes: new Set(), vaultConnectedProjects: new Map(), hasRetainedProof: false, fromVault: false }
       drafts.set(key, d)
     }
     return d
@@ -326,9 +379,38 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
   // (a display number, not an attached edge) from the vault summary.
   for (const v of passport.vault_skill_summaries ?? []) {
     const d = draft(v.skill)
+    d.fromVault = true
+    if (v.has_retained_proof) d.hasRetainedProof = true
     if (!d.slug && v.skill_slug) d.slug = v.skill_slug
     if (!d.status) d.status = v.status
-    d.payloadProjectCount = Math.max(d.payloadProjectCount, v.project_count)
+    // Grouped, on-passport projects the backend resolved this skill's vault proof
+    // to (duplicate-attempt rows already collapsed). Only ids that are real
+    // projects on THIS passport are kept, so a stale id never fronts a dead link.
+    const connectedIds = v.connected_project_ids ?? []
+    const connectedTitles = v.connected_project_titles ?? []
+    connectedIds.forEach((pid, i) => {
+      if (knownProjectIds.has(pid)) {
+        d.vaultConnectedProjects.set(pid, connectedTitles[i] ?? projectById.get(pid)?.project_title ?? "Project")
+      }
+    })
+    // Record the vault's real proof-source types for this skill. These reveal
+    // WHERE a purely-vault skill's evidence came from (GitHub / Document / …) so
+    // it is never rendered as an empty "vault-only" row — but they are applied
+    // (below) ONLY to skills with no resolvable project edge, so attached proof is
+    // never mislabelled vault-only. Non-proof pipeline signals (e.g. "Skill
+    // Graph") canonicalize to null and are dropped.
+    for (const label of Object.keys(v.proof_source_counts ?? {})) {
+      const canonical = normalizeProofTypeLabel(label)
+      if (canonical) d.vaultSummaryProofTypes.add(canonical)
+    }
+    // IMPORTANT (project-count honesty): the vault summary's `project_count`
+    // counts distinct raw `vbr_projects` rows a proof is attached to — inflated by
+    // duplicate Project Defense attempts of the same real project (e.g. 24 rows
+    // for 2 real projects) and non-zero even when NOTHING is attached to a project
+    // the map can render. It must never drive the connected-project count, so it
+    // is deliberately NOT merged into `payloadProjectCount` here. Connected
+    // projects come only from real, resolvable edges (steps 1 & 3) plus the report
+    // aggregate's already-grouped `project_count`.
   }
 
   // 3 — project top skills (evidence-backed Project → Skill edges). top_skills
@@ -343,7 +425,6 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
     }
   }
 
-  const projectById = new Map(passport.projects.map((p) => [p.project_id, p]))
   const skills: PassportSkillNode[] = [...drafts.entries()].map(([key, d]) => {
     const strongestTitle = strongest[key]?.title?.trim().toLowerCase() ?? null
     const projectMeta = perSkillProjectMeta.get(key)
@@ -387,17 +468,66 @@ export function buildPassportGraph(passport: PrivateWorkPassport): PassportGraph
       const bStrong = strongestTitle && b.projectTitle.trim().toLowerCase() === strongestTitle ? 0 : 1
       return aStrong - bStrong || a.projectTitle.localeCompare(b.projectTitle)
     })
+    const proofTypes = SKILL_PROOF_TYPE_ORDER.filter((label) => d.sources.has(label))
+    // Vault-only proof-type chips. When the backend already computed the skill's
+    // unattached vault sources (report skills carry `vault_only_sources`), those
+    // win. Otherwise, for a skill with NO resolvable project edge, fall back to
+    // the vault summary's own proof types so a purely-vault skill still shows its
+    // real proof source (GitHub / Document / …) instead of an empty row. A skill
+    // that DOES have a project edge never synthesizes vault chips from the summary
+    // — its proof belongs on the project row, not the vault-only tier.
+    const vaultOnlySources =
+      d.vaultOnlySources.size > 0
+        ? SKILL_PROOF_TYPE_ORDER.filter((label) => d.vaultOnlySources.has(label))
+        : d.projectIds.size === 0
+          ? SKILL_PROOF_TYPE_ORDER.filter((label) => d.vaultSummaryProofTypes.has(label))
+          : []
+    // Distinct proof-source types backing the skill: attached project proof plus
+    // any vault-only proof, deduped. Zero only when the skill truly has no
+    // retained proof source (a bare suggestion), which the UI can label honestly.
+    const proofSourceCount = new Set([...proofTypes, ...vaultOnlySources]).size
+    const hasDirect = d.projectIds.size > 0
+    // "Attached, not skill-mapped": the skill's vault proof resolves to a real
+    // project on this passport, but that project never surfaced it as a top skill
+    // (so no direct edge exists). Exclude any project already a direct edge.
+    const attachedProjects = hasDirect
+      ? []
+      : [...d.vaultConnectedProjects.entries()]
+          .filter(([pid]) => !d.projectIds.has(pid))
+          .map(([projectId, projectTitle]) => ({ projectId, projectTitle }))
+    // Does any retained (inspectable) proof source back this skill? True whenever
+    // a direct project edge, the skill's own proof-type set, a vault-only chip, or
+    // the backend's retained-proof flag says so. False → a bare AI/Skill-Graph
+    // suggestion (no GitHub/Document/Website/Defense/Video proof anywhere).
+    const hasRetainedProof =
+      hasDirect || proofTypes.length > 0 || vaultOnlySources.length > 0 || d.hasRetainedProof
+    const relationship: SkillRelationship = hasDirect
+      ? "direct"
+      : attachedProjects.length > 0
+        ? "attached"
+        : hasRetainedProof
+          ? "vault"
+          : "suggested"
+    // Honest connected-project count: distinct grouped projects with a real
+    // relationship to this skill — direct edges plus attached (not-skill-mapped)
+    // projects. Never the inflated raw vault `project_count`. A vault-only or
+    // suggested skill has zero.
+    const connectedProjectIds = new Set<string>([...d.projectIds, ...attachedProjects.map((a) => a.projectId)])
     return {
       key,
       name: d.name,
       slug: d.slug || fallbackSkillSlug(d.name),
       status: d.status || "Not assessed",
-      proofTypes: SKILL_PROOF_TYPE_ORDER.filter((label) => d.sources.has(label)),
+      proofTypes,
       projectIds: [...d.projectIds],
-      projectCount: Math.max(d.projectIds.size, d.payloadProjectCount),
-      strongest: strongest[key] ?? null,
+      projectCount: connectedProjectIds.size,
+      proofSourceCount,
+      relationship,
+      attachedProjects,
+      hasRetainedProof,
+      strongest: hasDirect ? strongest[key] ?? null : null,
       projectEvidence,
-      vaultOnlySources: SKILL_PROOF_TYPE_ORDER.filter((label) => d.vaultOnlySources.has(label)),
+      vaultOnlySources,
     }
   })
   skills.sort((a, b) => b.projectIds.length - a.projectIds.length || a.name.localeCompare(b.name))

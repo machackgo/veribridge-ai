@@ -400,6 +400,20 @@ class VaultSkillSummary(BaseModel):
     project_ids: list[str] = Field(default_factory=list)
     project_titles: list[str] = Field(default_factory=list)
     project_count: int = 0
+    # Grouped, on-passport project relationship (the honest connected-project set).
+    # ``project_ids`` above are RAW ``vbr_projects`` rows — one per Project Defense
+    # attempt — so their count is inflated by duplicate attempts of the same real
+    # project. These resolve those raw ids to the deduplicated representative
+    # projects that actually appear on this passport, so the Skills Evidence Map can
+    # show a truthful connected-project count and link to a real project card.
+    connected_project_ids: list[str] = Field(default_factory=list)
+    connected_project_titles: list[str] = Field(default_factory=list)
+    # True when at least one retained, first-class proof source (GitHub / Document /
+    # Website / Project Defense / Video) backs this skill — i.e. NOT only a derived
+    # Skill-Graph/AI signal. A skill with ``has_retained_proof == False`` is a bare
+    # suggestion: it must never render as "Evidence observed" and is kept out of the
+    # default evidence map.
+    has_retained_proof: bool = False
     proof_source_counts: dict[str, int] = Field(default_factory=dict)
     proof_count: int = 0
     attached_count: int = 0

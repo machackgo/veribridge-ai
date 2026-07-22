@@ -1043,6 +1043,15 @@ export type VaultSkillSummary = {
   project_ids: string[]
   project_titles: string[]
   project_count: number
+  /** Grouped, on-passport project ids the skill's vault proof is attached to
+   *  (duplicate-attempt raw rows resolved to their representative project). The
+   *  honest connected-project set — never the inflated raw `project_count`. */
+  connected_project_ids?: string[]
+  connected_project_titles?: string[]
+  /** True when a retained, inspectable proof source (GitHub / Document / Website /
+   *  Project Defense / Video) backs this skill — false when it is only a derived
+   *  Skill-Graph/AI signal (a bare suggestion). */
+  has_retained_proof?: boolean
   proof_source_counts: Record<string, number>
   proof_count: number
   attached_count: number

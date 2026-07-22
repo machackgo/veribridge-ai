@@ -3,11 +3,17 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+// ── Mock next/navigation so ExtensionProofPanel's useRouter is satisfied ──────
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
+}))
+
 // ── Mock @/lib/api so backend calls do not hit the network in tests ───────────
 // getReviewStatus returns null by default (no persisted review).
 // submitForAiReview resolves successfully by default.
 // Individual tests override these with mockResolvedValueOnce / mockRejectedValueOnce.
 vi.mock("@/lib/api", () => ({
+  publishRecorderAuthToExtension: vi.fn().mockResolvedValue(undefined),
   getReviewStatus: vi.fn().mockResolvedValue(null),
   submitForAiReview: vi.fn().mockResolvedValue({
     id: "mock-review-id",
