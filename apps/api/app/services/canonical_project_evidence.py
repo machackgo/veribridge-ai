@@ -40,6 +40,22 @@ from app.services.github_evidence_service import parse_github_repo_url
 # several valid proofs are attached to the same project.
 _ANALYZED_GITHUB_STATUSES = ("analyzed", "needs_more_evidence")
 
+# Website session statuses whose recording lifecycle actually finished. Only
+# these sessions are usable as project evidence. A session that was created or
+# started but never uploaded/completed (an abandoned recording), or that was
+# soft-archived as ``expired``, must never be admitted as project evidence —
+# the gate lives HERE, in the shared resolver, so every consumer (defense
+# context, Project Report, Work Passport) excludes such sessions centrally
+# instead of each re-implementing the filter.
+USABLE_WEBSITE_SESSION_STATUSES = frozenset({"completed"})
+
+
+def _website_session_status_usable(session: dict[str, Any]) -> bool:
+    return (
+        str(session.get("status") or "").strip().lower()
+        in USABLE_WEBSITE_SESSION_STATUSES
+    )
+
 
 def owned_rows(
     db: Any, table: str, user_id: str, *, user_key: str = "user_id"
@@ -155,25 +171,47 @@ def canonical_website_session_ids(
     whose ``project_id`` (or ``metadata.project_id``) matches, plus the shared
     relationship/artifact edges. Deterministic order: session-create edges by
     ``(created_at, id)`` first, then relationship/artifact edges.
+
+    Usability gate: only sessions whose status is in
+    ``USABLE_WEBSITE_SESSION_STATUSES`` are admitted. Website Proof creation
+    writes its project edge (session metadata + relationship row) BEFORE any
+    recording exists, so an abandoned recording would otherwise stay
+    project-linked forever. A relationship/artifact edge whose session row is
+    visibly non-usable is excluded for the same reason; an edge whose session
+    row no longer exists is kept (legacy retained-artifact edges predate the
+    session lifecycle and are already summary-gated downstream).
     """
     wanted = {str(pid) for pid in project_ids if str(pid)}
     if not wanted:
         return []
+    sessions = sorted(
+        owned_rows(db, "extension_proof_sessions", user_id), key=_edge_sort_key
+    )
+    usable_by_id = {
+        str(session.get("id") or ""): _website_session_status_usable(session)
+        for session in sessions
+        if session.get("id")
+    }
     ids: list[str] = []
     seen: set[str] = set()
-    for session in sorted(
-        owned_rows(db, "extension_proof_sessions", user_id), key=_edge_sort_key
-    ):
+    for session in sessions:
         metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
         pid = str(session.get("project_id") or metadata.get("project_id") or "")
         sid = str(session.get("id") or "")
-        if pid in wanted and sid and sid not in seen:
+        if (
+            pid in wanted
+            and sid
+            and sid not in seen
+            and _website_session_status_usable(session)
+        ):
             seen.add(sid)
             ids.append(sid)
     for sid in canonical_proof_ids_for_projects(
         db, user_id=user_id, project_ids=wanted, proof_type="website"
     ):
-        if sid not in seen:
+        if sid in seen:
+            continue
+        if usable_by_id.get(sid, True):  # unknown session rows keep legacy behavior
             seen.add(sid)
             ids.append(sid)
     return ids

@@ -31,6 +31,7 @@ from app.schemas.vbr_project_defense import (
     SubmitDefenseAnswersRequest,
 )
 from app.services.canonical_project_evidence import (
+    USABLE_WEBSITE_SESSION_STATUSES,
     canonical_proof_ids_for_projects,
     canonical_website_session_ids,
     github_identity_conflict,
@@ -1085,7 +1086,9 @@ def build_merged_project(db: Any, group: list[dict[str, Any]]) -> dict[str, Any]
 
 # Website sessions in these states have a finished recording; anything earlier
 # (created / recording / abandoned) is honestly NOT usable website evidence.
-_USABLE_WEBSITE_SESSION_STATUSES = {"completed"}
+# The canonical definition lives in canonical_project_evidence (shared with the
+# resolver's central usability gate); this alias keeps existing call sites.
+_USABLE_WEBSITE_SESSION_STATUSES = USABLE_WEBSITE_SESSION_STATUSES
 
 
 def _degraded_website_summary(db: Any, user_id: str, session_id: str) -> dict[str, Any] | None:
