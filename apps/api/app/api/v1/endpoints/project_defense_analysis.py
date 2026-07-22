@@ -36,6 +36,7 @@ from app.services.extension_proof_service import (
 from app.services.project_defense_analysis_service import (
     ProjectDefenseAnalysisService,
     analyze_defense_transcript,
+    coherent_overall_defense_score,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,7 +117,10 @@ def _row_to_response(
         explanation_clarity_score=int(row.get("explanation_clarity_score") or 0),
         ownership_signal_score=int(row.get("ownership_signal_score") or 0),
         technical_depth_score=int(row.get("technical_depth_score") or 0),
-        overall_defense_score=int(row.get("overall_defense_score") or 0),
+        # Coherence: a legacy stored overall may exceed what its component
+        # scores support (pre-proportional-rubric rows). Serve the derived
+        # coherent value instead — stored rows are never mutated.
+        overall_defense_score=coherent_overall_defense_score(row),
         risk_flags=row.get("risk_flags") or [],
         recruiter_summary=str(row.get("recruiter_summary") or ""),
         recommended_improvements=row.get("recommended_improvements") or [],

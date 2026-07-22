@@ -30,13 +30,18 @@ USER_ID = "00000000-0000-0000-0000-000000000042"
 OTHER_USER_ID = "00000000-0000-0000-0000-000000000099"
 
 
+# ≥100 words so the rubric's length criterion is earned: under the coherent
+# proportional rubric (ownership/depth credit scales with the component
+# gauges) a sub-100-word defense with partial gauges no longer reaches 60.
 DEFENSE_TRANSCRIPT = (
     "I built this project to solve the problem of tracking student skill evidence. "
     "My approach was to design a REST API backend using Python and FastAPI with a "
     "PostgreSQL database, and a React frontend for the dashboard. I implemented the "
     "authentication middleware myself and designed the database schema for storing "
     "evidence records. I also configured the API endpoints and built the component "
-    "architecture for the React frontend. One limitation of the current version is "
+    "architecture for the React frontend. The evidence pipeline validates each "
+    "uploaded record before it is stored and links it to the matching skill claim. "
+    "One limitation of the current version is "
     "that it does not yet support real-time updates, and in the future I would "
     "improve the caching layer for better performance."
 )

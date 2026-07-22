@@ -18,6 +18,9 @@ from app.core.config import settings
 from app.schemas.ai_domain_review import AiDomainReviewResultResponse
 from app.services.ai_domain_reviewer_rubrics import COMMON_LIMITATION, get_rubric
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
+from app.services.project_defense_analysis_service import (
+    coherent_overall_defense_score,
+)
 from app.services.verification_readiness_service import compute_readiness_report
 
 logger = logging.getLogger(__name__)
@@ -561,7 +564,14 @@ def _snippets_for_sources(evidence: dict[str, Any], sources: list[str]) -> list[
             snippets.append(f"Privacy scan status: {row.get('status', 'available')}.")
         elif source == "project_defense_analysis":
             row = evidence.get(source) or {}
-            snippets.append(f"Project defense score: {row.get('overall_defense_score', 'available')}.")
+            # Coherence: quote the derived coherent overall, never a legacy
+            # stored value that its own component scores contradict.
+            defense_score = (
+                coherent_overall_defense_score(row)
+                if row.get("overall_defense_score") is not None
+                else "available"
+            )
+            snippets.append(f"Project defense score: {defense_score}.")
         elif source == "workflow_analysis":
             row = evidence.get(source) or {}
             snippets.append(f"Workflow supported skills: {', '.join((row.get('supported_skills') or [])[:5])}.")
