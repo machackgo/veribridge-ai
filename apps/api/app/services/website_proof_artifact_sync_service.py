@@ -20,6 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.services import proof_artifact_service as _artifacts
 from app.schemas.skill_evidence_pipeline import (
     SkillEvidenceArtifactCreate,
     SkillEvidencePipelineCreate,
@@ -674,6 +675,13 @@ class WebsiteProofArtifactSyncService:
             "workflow_summary": _truncate(str(wf.get("workflow_summary") or ""), 400),
             "score": score,
             "matched_skills": matched[:10],
+            # Recording availability rides on the workflow artifact so Proof
+            # Center / Work Passport / Skill Report can show a "recording
+            # available" chip without a new source_type. Absent when no replay
+            # was retained (legacy session / storage disabled). The open URL is
+            # access-gated — recruiters cannot open a private recording by
+            # default; sharing is student-controlled via the artifact policy.
+            **( self._recording_descriptor(session_id) or {"recording_retained": False} ),
         })
         self._add_artifact(
             user_id,
@@ -692,6 +700,36 @@ class WebsiteProofArtifactSyncService:
             result,
             "workflow",
         )
+
+    def _recording_descriptor(self, session_id: str) -> dict[str, Any] | None:
+        """Owner-safe descriptor of the retained replay recording, or None.
+
+        Reads the ``website_replay_video`` proof_artifact (migration 056). The
+        replay stays PRIVATE: the open URL is the access-gated
+        ``/api/v1/proofs/website/{session}/replay`` route (owner by default;
+        recruiters only when the student shares). No storage path is exposed.
+        """
+        try:
+            rows = _artifacts.list_artifacts_for_proof(
+                self._db,
+                proof_type="website",
+                proof_id=session_id,
+                artifact_type="website_replay_video",
+            )
+        except Exception as exc:
+            logger.warning("sync: recording lookup failed for session %s: %s", session_id, exc)
+            return None
+        if not rows:
+            return None
+        replay = rows[-1]
+        policy = str(replay.get("access_policy") or "owner_only")
+        return {
+            "recording_retained": True,
+            "recording_artifact_id": str(replay.get("id")),
+            "recording_duration_seconds": replay.get("duration_seconds"),
+            "recording_open_url": f"/api/v1/proofs/website/{session_id}/replay",
+            "recording_shared_with_recruiters": policy in ("recruiter_safe", "public_safe"),
+        }
 
     def _create_ocr_artifact(
         self,

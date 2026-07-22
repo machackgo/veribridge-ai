@@ -265,6 +265,45 @@ class TestWorkflowArtifact:
                     found = True
         assert found
 
+    def _workflow_artifact_data(self, pipeline_db) -> dict:
+        pipeline_svc = SkillEvidencePipelineService(pipeline_db)
+        for p in pipeline_svc.list_pipelines_for_student(STUDENT_A):
+            for a in pipeline_svc._list_artifacts_for_pipeline_by_id(p.id):
+                if a.source_type == "workflow":
+                    return a.artifact_data
+        return {}
+
+    def test_workflow_artifact_surfaces_retained_recording_privately(self, svc, proof_db, pipeline_db):
+        from app.services import proof_artifact_service as artifacts
+
+        _seed_workflow(proof_db, STUDENT_A, SESSION_1)
+        # A retained (owner_only) replay exists for this session.
+        artifacts.retain_website_replay_video(
+            proof_db,
+            owner_user_id=STUDENT_A,
+            session_id=SESSION_1,
+            data=b"webm",
+            mime_type="video/webm",
+            file_name="recording.webm",
+            duration_seconds=42.0,
+        )
+        svc.sync(STUDENT_A, SESSION_1)
+        data = self._workflow_artifact_data(pipeline_db)
+        assert data.get("recording_retained") is True
+        assert data.get("recording_duration_seconds") == 42.0
+        # Open URL is the access-gated route, never a storage path/bucket.
+        assert data.get("recording_open_url") == f"/api/v1/proofs/website/{SESSION_1}/replay"
+        assert "storage_path" not in data and "storage_bucket" not in data
+        # Private by default — recruiters cannot open it until the student shares.
+        assert data.get("recording_shared_with_recruiters") is False
+
+    def test_workflow_artifact_reports_no_recording_for_legacy_session(self, svc, proof_db, pipeline_db):
+        _seed_workflow(proof_db, STUDENT_A, SESSION_1)  # no retained replay
+        svc.sync(STUDENT_A, SESSION_1)
+        data = self._workflow_artifact_data(pipeline_db)
+        assert data.get("recording_retained") is False
+        assert "recording_open_url" not in data
+
 
 class TestOcrArtifact:
     def test_creates_ocr_artifact_when_evidence_exists(self, svc, proof_db, pipeline_db):

@@ -291,6 +291,87 @@ def register_artifact_with_bytes(
     return inserted
 
 
+# ── Website replay video retention (idempotent per session) ────────────────────
+
+# Canonical recording states surfaced to the Website Proof UI. Retention runs
+# synchronously inside the video upload request (keyframe extraction + byte
+# retention happen before the response), so by the time a session is queried the
+# recording is either fully ``ready`` or was never retained. The transient
+# uploading/processing states are owned by the frontend during the upload
+# request itself — the backend never reports a recording as "processing" while
+# also claiming "no video", which was the old contradiction.
+RECORDING_STATE_READY = "ready"                # bytes retained + accessible to caller
+RECORDING_STATE_NOT_RETAINED = "not_retained"  # storage disabled / legacy session
+RECORDING_STATE_NOT_STARTED = "not_started"    # no recording ever uploaded
+
+
+def retain_website_replay_video(
+    db: Any,
+    *,
+    owner_user_id: str,
+    session_id: str,
+    data: bytes,
+    mime_type: str,
+    file_name: str | None,
+    duration_seconds: float | None = None,
+    project_id: str | None = None,
+    access_policy: str = "owner_only",
+) -> dict[str, Any] | None:
+    """Retain a website workflow recording as the session's replay artifact.
+
+    Idempotent per session: any previously retained ``website_replay_video`` for
+    this session is tombstoned (``retained = False``) once the new one is
+    registered, so a re-upload / retry REPLACES the prior recording instead of
+    accumulating duplicates. The replay route always serves the newest retained
+    artifact.
+
+    Returns the new artifact row, or ``None`` when storage is not configured or
+    registration failed — the caller degrades honestly (no fake artifact row).
+    Private by default (``owner_only``); sharing is a separate, explicit step.
+    """
+    new_row = register_artifact_with_bytes(
+        db,
+        owner_user_id=owner_user_id,
+        proof_type="website",
+        artifact_type="website_replay_video",
+        data=data,
+        file_name=file_name,
+        mime_type=mime_type,
+        proof_id=session_id,
+        project_id=project_id,
+        access_policy=access_policy,
+        duration_seconds=duration_seconds,
+    )
+    if new_row is None:
+        return None
+    # Tombstone older replays for this session so only the newest is served.
+    for prior in list_artifacts_for_proof(
+        db,
+        proof_type="website",
+        proof_id=session_id,
+        artifact_type="website_replay_video",
+        retained_only=True,
+    ):
+        if prior.get("id") != new_row["id"]:
+            update_artifact(db, prior["id"], {"retained": False})
+    return new_row
+
+
+def get_website_replay_artifact(
+    db: Any, session_id: str, caller_user_id: str | None
+) -> dict[str, Any] | None:
+    """Newest retained website replay artifact this caller may access, or None."""
+    rows = list_artifacts_for_proof(
+        db,
+        proof_type="website",
+        proof_id=session_id,
+        artifact_type="website_replay_video",
+        retained_only=True,
+    )
+    accessible = [r for r in rows if can_access_artifact(r, caller_user_id)]
+    return accessible[-1] if accessible else None
+
+
 # ── Access control (single source of truth) ────────────────────────────────────
 
 

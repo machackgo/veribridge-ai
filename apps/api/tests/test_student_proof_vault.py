@@ -340,6 +340,64 @@ def test_private_passport_uses_compact_skill_summaries(mem_store: dict, pipeline
     assert any("not attached to any vbr project" in lim.lower() for lim in passport["limitations"])
 
 
+# ── Canonical relationship enrichment (skill-evidence-map-fix) ────────────────
+
+
+def test_vault_summary_flags_skill_graph_only_skill_as_unretained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A skill supported ONLY by the derived Skill-Graph signal has no retained,
+    # inspectable proof — it must be flagged so the map never shows it as evidence.
+    _seed_skill_pipeline(pipeline_db, skill_name="Kubernetes", support_status="strongly_supported")
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID)
+    k = next(s for s in summaries if s["skill"] == "Kubernetes")
+    assert k["has_retained_proof"] is False
+    assert set(k["proof_source_counts"]) == {"Skill Graph"}
+    assert k["connected_project_ids"] == []
+
+
+def test_vault_summary_marks_github_backed_skill_as_retained(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    _seed_github_proof(mem_store, detected_skills=["Python"])
+
+    summaries = collect_skill_summaries(mem_store, pipeline_db, USER_ID)
+    py = next(s for s in summaries if s["skill"] == "Python")
+    assert py["has_retained_proof"] is True
+
+
+def test_private_passport_resolves_connected_projects_for_attached_vault_skill(
+    mem_store: dict, pipeline_db: dict
+) -> None:
+    # A GitHub proof detecting "Docker" is ATTACHED to a real VBR project. The
+    # vault summary must resolve its raw attachment to the grouped, on-passport
+    # project (the honest connected-project set), and flag retained proof.
+    gh_id = _seed_github_proof(
+        mem_store,
+        detected_skills=["Docker"],
+        submitted_skill_claims=["Docker"],
+        analysis_snapshot={
+            "skill_code_evidence": [
+                {"skill": "Docker", "file_path": "Dockerfile", "line_start": 1, "line_end": 5}
+            ]
+        },
+    )
+    pid = _seed_project(
+        mem_store,
+        title="Boston Smart Accident Risk Rerouting",
+        repo_full_name="octocat/Hello-World",
+        attached_proofs={"github_proof": {"github_proof_id": gh_id}},
+    )
+
+    passport = build_private_passport(mem_store, pipeline_db, USER_ID)
+    docker = next(s for s in passport["vault_skill_summaries"] if s["skill"] == "Docker")
+    assert docker["has_retained_proof"] is True
+    # The raw attachment resolves to the single grouped project on the passport.
+    assert docker["connected_project_ids"] == [pid]
+    assert docker["connected_project_titles"] == ["Boston Smart Accident Risk Rerouting"]
+
+
 # ── Layer 2: full Skill Report for one selected skill ─────────────────────────
 
 

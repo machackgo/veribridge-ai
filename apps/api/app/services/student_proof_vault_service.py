@@ -116,6 +116,14 @@ PROOF_DEFENSE = "Project Defense"
 PROOF_VIDEO = "Video Evidence"
 PROOF_SKILL_GRAPH = "Skill Graph"
 
+# First-class, RETAINED proof types — a real artifact a recruiter can inspect.
+# The derived "Skill Graph" pipeline signal is deliberately excluded: a skill
+# supported ONLY by Skill Graph is an AI suggestion with no retained proof and
+# must never render as demonstrated/observed evidence.
+_RETAINED_PROOF_TYPES = frozenset(
+    {PROOF_GITHUB, PROOF_DOCUMENT, PROOF_WEBSITE, PROOF_DEFENSE, PROOF_VIDEO}
+)
+
 _PROJECTS_TABLE = "vbr_projects"
 _DOCUMENTS_TABLE = "optional_evidence_submissions"
 _WORKFLOW_TABLE = "workflow_analysis_results"
@@ -1545,6 +1553,18 @@ def collect_skill_summaries(
                 "project_ids": group["project_ids"],
                 "project_titles": project_titles,
                 "project_count": len(group["project_ids"]),
+                # Grouped/on-passport relationship is resolved by the passport
+                # builder (it owns the duplicate-attempt grouping); default empty
+                # so the Skill Report endpoint, which also emits summaries, stays
+                # honest without that context.
+                "connected_project_ids": [],
+                "connected_project_titles": [],
+                # A skill backed only by the derived Skill-Graph signal has no
+                # retained, inspectable proof — flag it so it is never shown as
+                # established evidence.
+                "has_retained_proof": any(
+                    pt in _RETAINED_PROOF_TYPES for pt in proof_types
+                ),
                 "proof_source_counts": group["proof_source_counts"],
                 "proof_count": total,
                 "attached_count": attached,
