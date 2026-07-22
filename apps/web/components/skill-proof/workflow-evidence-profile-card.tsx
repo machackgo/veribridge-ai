@@ -10,6 +10,7 @@ import type {
   VisibleEvidenceStatus,
 } from "@/lib/api"
 import { getWorkflowAnalysis } from "@/lib/api"
+import { workflowAnalysisReviewLabel } from "@/lib/analysis-review-labels"
 
 // ── Style helpers ─────────────────────────────────────────────────────────────
 
@@ -1890,7 +1891,8 @@ function InlineAnalysisView({ analysis, sessionId, claimedSkills }: { analysis: 
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#64748b" }}>
-          Workflow Evidence Analysis — AI Reviewed
+          {/* Honest wording: "AI Reviewed" only for a full multimodal analysis. */}
+          Workflow Evidence Analysis — {workflowAnalysisReviewLabel(analysis.analysis_type)}
         </div>
         <VisibleEvidenceBadge status={visStatus} />
       </div>

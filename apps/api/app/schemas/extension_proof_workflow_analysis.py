@@ -12,6 +12,36 @@ WorkflowAnalysisType = Literal[
     "full_multimodal_analysis",
 ]
 
+# ── Honest review-stage labels per analysis type ──────────────────────────────
+# The label shown for a completed analysis must never imply an AI model ran
+# when it did not:
+#   - "timeline_only"            : deterministic browser-event/timeline analysis
+#                                  (the degraded-mode default — no AI involved)
+#   - "video_frame_analysis"     : frame extraction/OCR evidence (provider may
+#                                  be local OCR — still not an AI review claim)
+#   - "full_multimodal_analysis" : an AI multimodal provider actually analysed
+#                                  the evidence — the only type allowed to say
+#                                  "AI reviewed"
+# Unknown/legacy values fall back to a neutral, honest label.
+ANALYSIS_REVIEW_STAGE_LABELS: dict[str, str] = {
+    "timeline_only": "Timeline evidence reviewed",
+    "video_frame_analysis": "Video frame evidence reviewed",
+    "full_multimodal_analysis": "AI reviewed",
+}
+
+_ANALYSIS_REVIEW_STAGE_FALLBACK = "Analysis complete"
+
+
+def analysis_review_stage_label(analysis_type: str | None) -> str:
+    """Return the honest completed-stage label for an analysis type.
+
+    Only ``full_multimodal_analysis`` may claim an AI review; every other
+    (or unknown) type gets wording that describes what actually happened.
+    """
+    return ANALYSIS_REVIEW_STAGE_LABELS.get(
+        str(analysis_type or ""), _ANALYSIS_REVIEW_STAGE_FALLBACK
+    )
+
 WorkflowConfidence = Literal["high", "medium", "low", "insufficient"]
 
 AnalysisStageStatus = Literal["pending", "in_progress", "complete", "failed", "coming_soon"]
@@ -314,8 +344,10 @@ class WorkflowAnalysisResponse(BaseModel):
 
     # Computed at response time, not stored in DB.
     # After successful analysis all stages are "complete" and progress = 100.
+    # current_stage must be derived via analysis_review_stage_label() — never
+    # claim "AI reviewed" for a deterministic (timeline_only) analysis.
     progress: int = Field(default=100, ge=0, le=100)
-    current_stage: str = "AI reviewed"
+    current_stage: str = _ANALYSIS_REVIEW_STAGE_FALLBACK
     stages: list[AnalysisStage] = Field(default_factory=list)
 
     # ── Analysis metadata ──────────────────────────────────────────────────────

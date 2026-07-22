@@ -21,11 +21,16 @@ EvidenceLevel = Literal[
     "final_verification_ready",
 ]
 
+# Human-readable labels. The workflow analyzer currently only ever produces a
+# deterministic timeline_only analysis (no AI provider runs in degraded mode),
+# so these labels must not claim an "AI review" happened. The level KEYS are
+# stable machine identifiers shared with the frontend union type and are kept
+# unchanged for compatibility.
 EVIDENCE_LEVEL_LABELS: dict[str, str] = {
     "self_claimed":                  "Self Claimed",
     "workflow_evidence_complete":     "Workflow Evidence Complete",
-    "workflow_analysis_ai_reviewed":  "Workflow Analysis — AI Reviewed",
-    "multi_source_ai_reviewed":       "Multi-Source AI Reviewed",
+    "workflow_analysis_ai_reviewed":  "Workflow Analysis Reviewed",
+    "multi_source_ai_reviewed":       "Multi-Source Evidence Reviewed",
     "final_verification_ready":       "Final Verification Ready",
 }
 
