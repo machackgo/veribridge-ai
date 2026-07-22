@@ -305,6 +305,8 @@ class TestArchiveDetachesLinkage:
         assert rel["project_id"] is None
         assert rel["provenance"]["detached_from_project_id"] == PROJECT
         assert rel["provenance"]["previous_relationship_state"] == "directly_linked"
+        assert rel["provenance"]["previous_confirmed_by_user"] is True
+        assert rel["confirmed_by_user"] is False
 
     def test_archive_deletes_nothing(self) -> None:
         db = _make_db()

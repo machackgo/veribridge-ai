@@ -527,6 +527,7 @@ class ProofSessionCleanupService:
                     {
                         "detached_from_project_id": str(row.get("project_id") or ""),
                         "previous_relationship_state": str(row.get("relationship_state") or ""),
+                        "previous_confirmed_by_user": bool(row.get("confirmed_by_user")),
                         "detached_by": _ARCHIVE_SOURCE,
                         "detached_at": now,
                     }
@@ -550,6 +551,7 @@ class ProofSessionCleanupService:
                 {
                     "detached_from_project_id": str(row.get("project_id") or ""),
                     "previous_relationship_state": str(row.get("relationship_state") or ""),
+                    "previous_confirmed_by_user": bool(row.get("confirmed_by_user")),
                     "detached_by": _ARCHIVE_SOURCE,
                     "detached_at": now,
                 }
