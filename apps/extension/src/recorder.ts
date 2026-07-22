@@ -24,6 +24,13 @@
 //   getDisplayMedia at OS level captures what is actually displayed on screen.
 
 import type { ExtensionState } from "./types"
+import {
+  authorizedUploadHeaders,
+  MISSING_RECORDER_AUTH_MESSAGE,
+  RECORDER_AUTH_BUILD_FINGERPRINT,
+  recorderTokenMetadata,
+  uploadEndpointUrl,
+} from "./recorderAuth"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 /** Maximum recording duration in ms (5 minutes) after which capture auto-stops. */
@@ -64,6 +71,30 @@ let uploadError: string | null = null
 
 let statePoll: ReturnType<typeof setInterval> | null = null
 let contextInvalidated = false
+
+async function recorderPageAuthDebug(): Promise<Record<string, unknown>> {
+  const tokenMetadata = recorderTokenMetadata(currentAuthToken)
+  let background: Record<string, unknown> | null = null
+  try {
+    background = await chrome.runtime.sendMessage({ type: "GET_RECORDER_AUTH_DEBUG_STATE" }) as Record<string, unknown>
+  } catch { /* extension reload/context invalidation is reflected by null */ }
+  return {
+    component: "recorder-page",
+    buildFingerprint: RECORDER_AUTH_BUILD_FINGERPRINT,
+    extensionId: chrome.runtime.id,
+    sessionId: currentSessionId,
+    apiUrl: currentApiUrl,
+    ...tokenMetadata,
+    background,
+  }
+}
+
+;(globalThis as Record<string, unknown>).__VB_RECORDER_AUTH_DEBUG__ = recorderPageAuthDebug
+console.info("[RecorderAuth] recorder page loaded", {
+  component: "recorder-page",
+  buildFingerprint: RECORDER_AUTH_BUILD_FINGERPRINT,
+  extensionId: chrome.runtime.id,
+})
 
 // ── DOM helpers ────────────────────────────────────────────────────────────────
 function el<T extends HTMLElement>(id: string): T {
@@ -198,8 +229,6 @@ async function uploadVideo(blob: Blob): Promise<void> {
   const sessionId = currentSessionId
   const apiUrl    = currentApiUrl
   const authToken = currentAuthToken
-  const missingAuthMessage =
-    "Recording isn't signed in. Open the VeriBridge Website Proof page while signed in, then restart the recording from there."
 
   if (!sessionId) {
     uploadError = "No session ID — cannot upload video"
@@ -210,8 +239,9 @@ async function uploadVideo(blob: Blob): Promise<void> {
     return
   }
 
-  if (!authToken) {
-    uploadError = missingAuthMessage
+  const headers = authorizedUploadHeaders(authToken)
+  if (!headers) {
+    uploadError = MISSING_RECORDER_AUTH_MESSAGE
     isUploading = false
     uploadDone = false
     updateDurationBadge()
@@ -233,9 +263,7 @@ async function uploadVideo(blob: Blob): Promise<void> {
   const form = new FormData()
   form.append("video", blob, `recording.${ext}`)
 
-  const url = `${apiUrl}/api/v1/student/extension-proof/sessions/${sessionId}/workflow/video`
-  const headers: HeadersInit = {}
-  if (authToken) headers["Authorization"] = `Bearer ${authToken}`
+  const url = uploadEndpointUrl(apiUrl, sessionId, "video")
 
   try {
     const resp = await fetch(url, { method: "POST", headers, body: form })
@@ -253,7 +281,7 @@ async function uploadVideo(blob: Blob): Promise<void> {
       if (resp.status === 401) {
         // Backend failed closed on a missing/expired token. Point the user at
         // the recovery path instead of the raw backend auth message.
-        reason = missingAuthMessage
+        reason = MISSING_RECORDER_AUTH_MESSAGE
       }
 
       uploadError = reason

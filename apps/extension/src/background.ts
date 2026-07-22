@@ -3,6 +3,27 @@
 import type { WorkflowEvent, ExtensionState, RecordingStatus, VisibleEvidenceEvent } from "./types"
 import { computeLiveCoach } from "./liveFeedback"
 import type { LiveCoachState } from "./liveFeedback"
+import {
+  authorizedJsonHeaders,
+  buildRecorderAuthAck,
+  buildRecorderAuthDebugState,
+  MISSING_RECORDER_AUTH_MESSAGE,
+  normalizeApiUrl,
+  persistRecorderAuthAndVerify,
+  RECORDER_AUTH_BUILD_FINGERPRINT,
+  RECORDER_AUTH_STORAGE_KEY,
+  recorderTokenMetadata,
+  resolveStartRecordingAuth,
+  restoreRecorderAuth,
+  uploadEndpointUrl,
+  validateRecorderAuthPayload,
+  type RecorderAuthFailureCategory,
+  type RecorderAuthPersistenceResult,
+  type RecorderAuthStorageArea,
+  type RecorderAuthSource,
+} from "./recorderAuth"
+
+const VB_BUILD_ID = RECORDER_AUTH_BUILD_FINGERPRINT
 
 // ── Debug flag ────────────────────────────────────────────────────────────────
 const DEBUG_VISIBLE_EVIDENCE = true
@@ -134,6 +155,11 @@ interface InternalState {
   sensitiveWarningSeen: boolean
   /** Event count at which the last snapshot was pushed to the backend. */
   lastSnapshotEventCount: number
+  // ── Recorder auth lifecycle (debug metadata only — token lives in authToken) ──
+  /** Where the current authToken came from — for GET_RECORDER_AUTH_DEBUG_STATE. */
+  authTokenSource: RecorderAuthSource
+  /** When the app last handed us a token (SET_RECORDER_AUTH). Never the token. */
+  lastAuthHandoffAt: string | null
 }
 
 const state: InternalState = {
@@ -164,15 +190,25 @@ const state: InternalState = {
   liveCoach: null,
   sensitiveWarningSeen: false,
   lastSnapshotEventCount: 0,
+  authTokenSource: "none",
+  lastAuthHandoffAt: null,
 }
+
+let lastAuthPersistence: RecorderAuthPersistenceResult = {
+  ok: false,
+  persistenceAttempted: false,
+  persistenceSucceeded: false,
+  readBackSucceeded: false,
+  storedSessionMatches: false,
+  failureCategory: "none",
+}
+let lastAuthFailureCategory: RecorderAuthFailureCategory = "none"
 
 // ── Persisted recording state key ────────────────────────────────────────────
 // Written on START_RECORDING; cleared on STOP_RECORDING and successful upload.
 // Lets the service worker restore recording context after Chrome kills it.
 const _SW_STATE_KEY = "vb_sw_recording"
 const WEBSITE_PROOF_UPLOAD_STATE_KEY = "websiteProofUploadState"
-const MISSING_RECORDER_AUTH_MESSAGE =
-  "Recording isn't signed in. Open the VeriBridge Website Proof page while signed in, then restart the recording from there."
 
 interface PersistedRecordingState {
   sessionId: string
@@ -217,6 +253,15 @@ function clearPersistedRecordingState(): void {
   dbgVE("clearPersistedRecordingState: cleared")
 }
 
+/** Clear the privileged recorder auth handoff after the proof is fully uploaded. */
+function clearStoredRecorderAuth(): void {
+  state.authToken = ""
+  state.authTokenSource = "none"
+  state.lastAuthHandoffAt = null
+  void chrome.storage.local.remove([RECORDER_AUTH_STORAGE_KEY, "authToken"])
+  dbgVE("[RecorderAuth] cleared stored token after upload")
+}
+
 function persistWebsiteProofUploadState(uploadState: WebsiteProofUploadState): void {
   void chrome.storage.local.set({ [WEBSITE_PROOF_UPLOAD_STATE_KEY]: uploadState })
 }
@@ -224,36 +269,109 @@ function persistWebsiteProofUploadState(uploadState: WebsiteProofUploadState): v
 // On service-worker startup, check whether a recording was active before the SW
 // was killed.  If so, restore the core fields so VISIBLE_EVIDENCE_EVENT messages
 // are accepted again and re-broadcast START_CAPTURING to all open tabs.
-void chrome.storage.local.get([_SW_STATE_KEY, "authToken", "apiUrl"]).then((data) => {
-  const stored = data as Record<string, unknown>
-  // Restore the app-handed recorder auth (SET_RECORDER_AUTH persists these
-  // top-level keys) so a session started AFTER an MV3 service-worker restart
-  // still uploads with Authorization: Bearer instead of anonymously 401ing.
-  // The in-recording snapshot below takes precedence when one exists.
-  if (typeof stored.authToken === "string" && stored.authToken) {
-    state.authToken = stored.authToken
+//
+// The promise is retained so message handlers and upload paths can AWAIT the
+// restore instead of racing it — an upload that fires right after an MV3
+// service-worker wake must never observe the pre-restore empty authToken and
+// either skip or (worse) attempt an anonymous POST.
+const recorderAuthRestored: Promise<void> = chrome.storage.local
+  .get([_SW_STATE_KEY, RECORDER_AUTH_STORAGE_KEY, "authToken", "apiUrl"])
+  .then((data) => {
+    const stored = data as Record<string, unknown>
+    // Restore the app-handed recorder auth (SET_RECORDER_AUTH persists the
+    // structured record; older builds used loose top-level keys) so a session
+    // started AFTER an MV3 service-worker restart still uploads with
+    // Authorization: Bearer instead of anonymously 401ing.
+    // The in-recording snapshot below takes precedence when one exists.
+    const restored = restoreRecorderAuth(stored, state.apiUrl || "http://localhost:8000")
+    if (restored.authToken) {
+      state.authToken = restored.authToken
+      state.authTokenSource = "storage"
+      dbgVE(
+        "[RecorderAuth] restored token from storage — length=%d build=%s",
+        restored.authToken.length, VB_BUILD_ID,
+      )
+    }
+    state.apiUrl = restored.apiUrl
+    const rs = stored[_SW_STATE_KEY] as PersistedRecordingState | undefined
+    if (!rs?.sessionId) return
+    dbgVE("service-worker restarted — restoring recording state for session:", rs.sessionId)
+    state.sessionId    = rs.sessionId
+    state.apiUrl       = normalizeApiUrl(rs.apiUrl || state.apiUrl, "http://localhost:8000")
+    state.authToken    = rs.authToken || state.authToken || ""
+    if (rs.authToken) state.authTokenSource = "storage"
+    state.isRecording  = true
+    state.startedAt    = rs.startedAt
+    state.originalTabId = rs.originalTabId ?? null
+    state.proofBuilderTabId = rs.proofBuilderTabId ?? null
+    state.trackedTabIds = new Set()
+    if (state.originalTabId !== null) state.trackedTabIds.add(state.originalTabId)
+    state.status       = "recording"
+    state.statusMessage = "Recording resumed after extension restart…"
+    // Re-broadcast START_CAPTURING so any content scripts that missed the original
+    // broadcast (because the SW was dead) begin capturing immediately.
+    void broadcastToAllTabs({ type: "START_CAPTURING" })
+  })
+  .catch(() => undefined)
+
+dbgVE("[RecorderAuth] background loaded — build", VB_BUILD_ID)
+
+/**
+ * Resolve the auth token for a recorder upload, waiting out the storage
+ * restore first. Returns "" when no token exists — the caller MUST then skip
+ * the request (fail closed). Never returns a token to any page context.
+ */
+async function ensureUploadAuth(): Promise<string> {
+  await recorderAuthRestored
+  if (state.authToken) return state.authToken
+  // Last-resort re-read: SET_RECORDER_AUTH may have persisted a token from a
+  // different SW lifetime after our startup snapshot was taken.
+  try {
+    const stored = (await chrome.storage.local.get([RECORDER_AUTH_STORAGE_KEY, "authToken", "apiUrl"])) as Record<string, unknown>
+    const restored = restoreRecorderAuth(stored, state.apiUrl || "http://localhost:8000")
+    if (restored.authToken) {
+      state.authToken = restored.authToken
+      state.apiUrl = restored.apiUrl
+      state.authTokenSource = "storage"
+      dbgVE("[RecorderAuth] late-restored token from storage — length=%d", restored.authToken.length)
+    }
+  } catch { /* fail closed below */ }
+  return state.authToken
+}
+
+/** Safe (token-free) debug snapshot — GET_RECORDER_AUTH_DEBUG_STATE + SW console. */
+function recorderAuthDebugState() {
+  const tokenMetadata = recorderTokenMetadata(state.authToken)
+  return {
+    ...buildRecorderAuthDebugState({
+      sessionId: state.sessionId,
+      hasAuthToken: !!state.authToken,
+      authTokenSource: state.authToken ? state.authTokenSource : "none",
+    apiUrl: state.apiUrl,
+    buildId: VB_BUILD_ID,
+    lastAuthHandoffAt: state.lastAuthHandoffAt,
+    isRecording: state.isRecording,
+    visibleEvidenceCount: state.visibleEvidenceEvents.length,
+      visualFrameCount: state.visualFrames.length,
+      recordingStoppedPendingSend: state.status === "stopped",
+    }),
+    component: "background-service-worker",
+    buildFingerprint: VB_BUILD_ID,
+    extensionId: chrome.runtime.id,
+    tokenPresent: tokenMetadata.tokenPresent,
+    tokenLength: tokenMetadata.tokenLength,
+    jwtSegmentCount: tokenMetadata.jwtSegmentCount,
+    startsWithEy: tokenMetadata.startsWithEy,
+    expiresAt: tokenMetadata.expiresAt,
+    expired: tokenMetadata.expired,
+    ...lastAuthPersistence,
+    failureCategory: lastAuthFailureCategory,
   }
-  if (typeof stored.apiUrl === "string" && stored.apiUrl) {
-    state.apiUrl = stored.apiUrl.replace(/\/$/, "")
-  }
-  const rs = stored[_SW_STATE_KEY] as PersistedRecordingState | undefined
-  if (!rs?.sessionId) return
-  dbgVE("service-worker restarted — restoring recording state for session:", rs.sessionId)
-  state.sessionId    = rs.sessionId
-  state.apiUrl       = (rs.apiUrl || state.apiUrl || "http://localhost:8000").replace(/\/$/, "")
-  state.authToken    = rs.authToken || state.authToken || ""
-  state.isRecording  = true
-  state.startedAt    = rs.startedAt
-  state.originalTabId = rs.originalTabId ?? null
-  state.proofBuilderTabId = rs.proofBuilderTabId ?? null
-  state.trackedTabIds = new Set()
-  if (state.originalTabId !== null) state.trackedTabIds.add(state.originalTabId)
-  state.status       = "recording"
-  state.statusMessage = "Recording resumed after extension restart…"
-  // Re-broadcast START_CAPTURING so any content scripts that missed the original
-  // broadcast (because the SW was dead) begin capturing immediately.
-  void broadcastToAllTabs({ type: "START_CAPTURING" })
-})
+}
+
+// Inspectable from the service-worker DevTools console:
+//   __VB_RECORDER_AUTH_DEBUG__()
+;(globalThis as Record<string, unknown>).__VB_RECORDER_AUTH_DEBUG__ = recorderAuthDebugState
 
 // ── Visual frame capture ──────────────────────────────────────────────────────
 
@@ -373,16 +491,16 @@ async function sendVisualFrames(): Promise<void> {
     )
     return
   }
-  if (!state.authToken) {
+  // Fail closed: restore-aware token lookup; a missing token means NO request.
+  const headers = authorizedJsonHeaders(await ensureUploadAuth())
+  if (!headers) {
     dbgVE("[VisualFrame] upload skipped — missing recorder auth token")
     console.warn("VeriBridge: visual frame upload skipped because recorder auth is missing. Restart from the VeriBridge app.")
     return
   }
 
   const frames = [...state.visualFrames]  // snapshot
-  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visual-frames`
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+  const url = uploadEndpointUrl(state.apiUrl, state.sessionId, "visual-frames")
 
   const body = JSON.stringify({
     frames: frames.map((f) => ({
@@ -447,11 +565,19 @@ async function focusProofBuilderTab(): Promise<void> {
   }
 }
 
-function publicState(): ExtensionState {
+/**
+ * State snapshot for GET_STATE consumers.
+ *
+ * @param includeAuthToken only true for the extension's own pages (popup /
+ * recorder tab, which attaches Authorization to the video POST itself).
+ * Content scripts run inside the external target website and never need the
+ * token, so they always receive a redacted snapshot.
+ */
+function publicState(includeAuthToken = false): ExtensionState {
   return {
     sessionId: state.sessionId,
     apiUrl: state.apiUrl,
-    authToken: state.authToken,
+    authToken: includeAuthToken ? state.authToken : "",
     isRecording: state.isRecording,
     eventCount: state.events.length,
     startedAt: state.startedAt,
@@ -498,12 +624,107 @@ function broadcastProofUploadStarted(): void {
   })
 }
 
+/**
+ * Begin a recording session. Only called once START_RECORDING has resolved a
+ * non-empty auth token — recording must never start in a state where its
+ * uploads are guaranteed to 401.
+ */
+function startRecording(
+  sessionId: string,
+  apiUrl: string,
+  authToken: string,
+  claimedSkills?: string[],
+): void {
+  state.sessionId = sessionId
+  state.apiUrl = normalizeApiUrl(apiUrl || state.apiUrl, "http://localhost:8000")
+  state.authToken = authToken
+  state.isRecording = true
+  state.events = []
+  state.visibleEvidenceEvents = []
+  state.visualFrames = []
+  state.lastFrameCaptureMs = 0
+  state.startedAt = new Date().toISOString()
+  state.stoppedAt = null
+  state.status = "recording"
+  state.statusMessage = "Recording…"
+  state.lastUploadError = null
+  state.dismissedForSessionId = ""  // new session clears any prior dismiss
+  // Reset video upload state for new session
+  state.videoUploadStatus = "none"
+  state.videoUploadError  = null
+  state.videoKeyframeCount = 0
+  state.recorderTabStreamActive = false
+  // Reset live coach state for new session
+  state.claimedSkills = claimedSkills ?? []
+  state.liveCoach = null
+  state.sensitiveWarningSeen = false
+  state.lastSnapshotEventCount = 0
+  // Reset tab tracking — seed with the original tab detected from the page URL.
+  state.trackedTabIds = new Set()
+  state.trackedTabUrls = new Map()
+  if (state.originalTabId !== null) {
+    state.trackedTabIds.add(state.originalTabId)
+  }
+  // Persist recording state (including the token, keyed by this sessionId) so
+  // a service-worker restart can restore it mid-recording.
+  persistRecordingState()
+  void rememberProofBuilderTab()
+  void broadcastToAllTabs({ type: "START_CAPTURING" })
+  // Auto-open the recorder tab so the user can start screen capture immediately.
+  // If the recorder tab is already open (recorderTabId set), focus it instead.
+  const recorderUrl = chrome.runtime.getURL("recorder.html")
+  const existingRecorderTabId = state.recorderTabId
+  if (existingRecorderTabId !== null) {
+    chrome.tabs.get(existingRecorderTabId, (existingTab) => {
+      if (chrome.runtime.lastError || !existingTab) {
+        // Tab was closed — open a fresh one
+        chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+          if (tab?.id !== undefined) state.recorderTabId = tab.id
+        })
+      } else {
+        // Focus the existing recorder tab
+        chrome.tabs.update(existingRecorderTabId, { active: true })
+        if (existingTab.windowId) {
+          chrome.windows.update(existingTab.windowId, { focused: true })
+        }
+      }
+    })
+  } else {
+    chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
+      if (tab?.id !== undefined) state.recorderTabId = tab.id
+    })
+  }
+  // DOM-event frame capture at recording start (background helper — not primary)
+  setTimeout(() => { void captureVisualFrame("recording_start") }, 1200)
+}
+
 chrome.runtime.onMessage.addListener(
   (msg: { type: string; payload?: unknown }, sender: chrome.runtime.MessageSender, sendResponse) => {
     switch (msg.type) {
-      case "GET_STATE":
-        sendResponse(publicState())
-        break
+      case "GET_STATE": {
+        // Await the storage restore so a recorder tab / popup polling right
+        // after an MV3 service-worker wake never sees a transiently-empty
+        // authToken and caches it for the video upload.
+        // SECURITY: the raw token is only included for the extension's own
+        // pages (popup / recorder tab). Content scripts — which also run on
+        // the external target website — get a redacted snapshot; they never
+        // need the token (the background attaches Authorization itself).
+        const senderIsExtensionPage =
+          typeof sender.url === "string" && sender.url.startsWith(chrome.runtime.getURL(""))
+        void recorderAuthRestored.then(() => {
+          sendResponse(publicState(senderIsExtensionPage))
+        })
+        return true // async sendResponse
+      }
+
+      case "GET_RECORDER_AUTH_DEBUG_STATE": {
+        // Safe diagnostics for QA: has-token booleans, source, build id — never
+        // the token value.
+        void ensureUploadAuth().then(() => {
+          sendResponse(recorderAuthDebugState())
+        })
+        return true // async sendResponse
+      }
 
       case "SET_RECORDER_AUTH": {
         // The authenticated VeriBridge app (relayed by the content script on its
@@ -513,23 +734,115 @@ chrome.runtime.onMessage.addListener(
         // TODO(security): replace the raw Supabase access token with a
         // short-lived, recorder-scoped upload token minted by the backend
         // (audience-limited to the session's upload endpoints).
-        const { authToken, apiUrl } = (msg.payload ?? {}) as {
-          authToken?: string
-          apiUrl?: string
-        }
-        if (typeof authToken === "string" && authToken) {
-          state.authToken = authToken
-          const persist: Record<string, string> = { authToken }
-          if (typeof apiUrl === "string" && apiUrl) {
-            state.apiUrl = apiUrl.replace(/\/$/, "")
-            persist.apiUrl = state.apiUrl
+        void (async () => {
+          // Startup restoration must finish first; otherwise its stale snapshot
+          // can overwrite the fresh token immediately after this handoff.
+          await recorderAuthRestored
+          const validation = validateRecorderAuthPayload(
+            (msg.payload ?? {}) as { authToken?: unknown; apiUrl?: unknown; sessionId?: unknown },
+          )
+          const requestedSessionId =
+            typeof (msg.payload as { sessionId?: unknown } | undefined)?.sessionId === "string"
+              ? ((msg.payload as { sessionId: string }).sessionId)
+              : ""
+
+          if (!validation.ok) {
+            lastAuthFailureCategory = validation.failureCategory
+            console.warn("[RecorderAuth] background rejected handoff", {
+              component: "background-service-worker",
+              buildFingerprint: VB_BUILD_ID,
+              extensionId: chrome.runtime.id,
+              sessionId: requestedSessionId,
+              ...validation.tokenMetadata,
+              failureCategory: validation.failureCategory,
+            })
+            sendResponse(buildRecorderAuthAck({
+              ok: false,
+              hasAuthToken: false,
+              buildId: VB_BUILD_ID,
+              extensionId: chrome.runtime.id,
+              sessionId: requestedSessionId,
+              failureCategory: validation.failureCategory,
+            }))
+            return
           }
-          void chrome.storage.local.set(persist)
-          // Keep a token refreshed mid-recording durable across SW restarts.
+
+          if (state.isRecording && state.sessionId && state.sessionId !== validation.value.sessionId) {
+            lastAuthFailureCategory = "session_mismatch"
+            sendResponse(buildRecorderAuthAck({
+              ok: false,
+              hasAuthToken: !!state.authToken,
+              buildId: VB_BUILD_ID,
+              extensionId: chrome.runtime.id,
+              sessionId: validation.value.sessionId,
+              failureCategory: "session_mismatch",
+            }))
+            return
+          }
+
+          const handoffAt = new Date().toISOString()
+          lastAuthPersistence = await persistRecorderAuthAndVerify(
+            chrome.storage.local as unknown as RecorderAuthStorageArea,
+            validation.value,
+            handoffAt,
+          )
+          lastAuthFailureCategory = lastAuthPersistence.failureCategory
+          if (!lastAuthPersistence.ok) {
+            console.warn("[RecorderAuth] background persistence failed", {
+              component: "background-service-worker",
+              buildFingerprint: VB_BUILD_ID,
+              extensionId: chrome.runtime.id,
+              sessionId: validation.value.sessionId,
+              ...validation.tokenMetadata,
+              ...lastAuthPersistence,
+            })
+            sendResponse(buildRecorderAuthAck({
+              ...lastAuthPersistence,
+              ok: false,
+              hasAuthToken: false,
+              buildId: VB_BUILD_ID,
+              extensionId: chrome.runtime.id,
+              sessionId: validation.value.sessionId,
+            }))
+            return
+          }
+
+          state.authToken = validation.value.authToken
+          state.authTokenSource = "storage"
+          state.lastAuthHandoffAt = handoffAt
+          state.sessionId = validation.value.sessionId
+          state.apiUrl = validation.value.apiUrl
           if (state.isRecording) persistRecordingState()
-        }
-        sendResponse({ ok: true })
-        break
+          console.info("[RecorderAuth] background persisted handoff", {
+            component: "background-service-worker",
+            buildFingerprint: VB_BUILD_ID,
+            extensionId: chrome.runtime.id,
+            sessionId: state.sessionId,
+            apiUrl: state.apiUrl,
+            ...validation.tokenMetadata,
+            ...lastAuthPersistence,
+            ackEmitted: true,
+          })
+          sendResponse(buildRecorderAuthAck({
+            ...lastAuthPersistence,
+            ok: true,
+            hasAuthToken: true,
+            buildId: VB_BUILD_ID,
+            extensionId: chrome.runtime.id,
+            sessionId: state.sessionId,
+          }))
+        })().catch(() => {
+          lastAuthFailureCategory = "storage_write_failed"
+          sendResponse(buildRecorderAuthAck({
+            ok: false,
+            hasAuthToken: false,
+            buildId: VB_BUILD_ID,
+            extensionId: chrome.runtime.id,
+            sessionId: "",
+            failureCategory: "storage_write_failed",
+          }))
+        })
+        return true // async sendResponse after validated persistence + read-back
       }
 
       case "START_RECORDING": {
@@ -539,71 +852,23 @@ chrome.runtime.onMessage.addListener(
           authToken: string
           claimedSkills?: string[]
         }
-        state.sessionId = sessionId
-        state.apiUrl = (apiUrl || state.apiUrl || "http://localhost:8000").replace(/\/$/, "")
-        // Prefer an explicit token from the popup, but fall back to a token the
-        // authenticated app already handed us via SET_RECORDER_AUTH so the
-        // automatic Website Proof flow records with a Bearer without a paste.
-        state.authToken = authToken || state.authToken
-        state.isRecording = true
-        state.events = []
-        state.visibleEvidenceEvents = []
-        state.visualFrames = []
-        state.lastFrameCaptureMs = 0
-        state.startedAt = new Date().toISOString()
-        state.stoppedAt = null
-        state.status = "recording"
-        state.statusMessage = "Recording…"
-        state.lastUploadError = null
-        state.dismissedForSessionId = ""  // new session clears any prior dismiss
-        // Reset video upload state for new session
-        state.videoUploadStatus = "none"
-        state.videoUploadError  = null
-        state.videoKeyframeCount = 0
-        state.recorderTabStreamActive = false
-        // Reset live coach state for new session
-        state.claimedSkills = claimedSkills ?? []
-        state.liveCoach = null
-        state.sensitiveWarningSeen = false
-        state.lastSnapshotEventCount = 0
-        // Reset tab tracking — seed with the original tab detected from the page URL.
-        state.trackedTabIds = new Set()
-        state.trackedTabUrls = new Map()
-        if (state.originalTabId !== null) {
-          state.trackedTabIds.add(state.originalTabId)
-        }
-        // Persist recording state so a service-worker restart can restore it.
-        persistRecordingState()
-        void rememberProofBuilderTab()
-        void broadcastToAllTabs({ type: "START_CAPTURING" })
-        // Auto-open the recorder tab so the user can start screen capture immediately.
-        // If the recorder tab is already open (recorderTabId set), focus it instead.
-        const recorderUrl = chrome.runtime.getURL("recorder.html")
-        const existingRecorderTabId = state.recorderTabId
-        if (existingRecorderTabId !== null) {
-          chrome.tabs.get(existingRecorderTabId, (existingTab) => {
-            if (chrome.runtime.lastError || !existingTab) {
-              // Tab was closed — open a fresh one
-              chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-                if (tab?.id !== undefined) state.recorderTabId = tab.id
-              })
-            } else {
-              // Focus the existing recorder tab
-              chrome.tabs.update(existingRecorderTabId, { active: true })
-              if (existingTab.windowId) {
-                chrome.windows.update(existingTab.windowId, { focused: true })
-              }
-            }
-          })
-        } else {
-          chrome.tabs.create({ url: recorderUrl, active: true }, (tab) => {
-            if (tab?.id !== undefined) state.recorderTabId = tab.id
-          })
-        }
-        // DOM-event frame capture at recording start (background helper — not primary)
-        setTimeout(() => { void captureVisualFrame("recording_start") }, 1200)
-        sendResponse({ ok: true })
-        break
+        // Wait out the storage restore, then require a token BEFORE anything
+        // starts: recording an entire session whose uploads can only 401 is the
+        // exact failure this guards against. Prefer an explicit token from the
+        // popup, falling back to the app-handed SET_RECORDER_AUTH token.
+        void ensureUploadAuth().then((restoredToken) => {
+          const auth = resolveStartRecordingAuth(authToken, restoredToken)
+          if (!auth.ok) {
+            state.status = "error"
+            state.statusMessage = auth.error
+            dbgVE("[RecorderAuth] START_RECORDING rejected — no auth token (build=%s)", VB_BUILD_ID)
+            sendResponse({ ok: false, error: auth.error })
+            return
+          }
+          startRecording(sessionId, apiUrl, auth.authToken, claimedSkills)
+          sendResponse({ ok: true })
+        })
+        return true // async sendResponse
       }
 
       case "STOP_RECORDING":
@@ -956,7 +1221,9 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
  */
 async function pushLiveSnapshot(): Promise<void> {
   if (!state.sessionId || !state.isRecording) return
-  if (!state.authToken) return
+  // Fail closed: no token → no request (restore-aware lookup).
+  const authHeaders = authorizedJsonHeaders(await ensureUploadAuth())
+  if (!authHeaders) return
 
   const events = state.visibleEvidenceEvents
   const allText = events.flatMap(e => e.visible_text_blocks).join(" ")
@@ -981,9 +1248,8 @@ async function pushLiveSnapshot(): Promise<void> {
     sensitive_warning_seen: state.sensitiveWarningSeen,
   }
 
-  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/live-feedback`
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+  const url = uploadEndpointUrl(state.apiUrl, state.sessionId, "live-feedback")
+  const headers = authHeaders
 
   dbgVE("[LiveCoach] pushing snapshot — events=%d score=%d", events.length, state.liveCoach?.live_score ?? 0)
 
@@ -1005,15 +1271,15 @@ async function sendVisibleEvidence(): Promise<void> {
       "events:", state.visibleEvidenceEvents.length)
     return
   }
-  if (!state.authToken) {
+  // Fail closed: restore-aware token lookup; a missing token means NO request.
+  const headers = authorizedJsonHeaders(await ensureUploadAuth())
+  if (!headers) {
     dbgVE("sendVisibleEvidence: upload skipped — missing recorder auth token")
     console.warn("VeriBridge: visible evidence upload skipped because recorder auth is missing. Restart from the VeriBridge app.")
     return
   }
   const events = [...state.visibleEvidenceEvents]          // snapshot — don't hold the reference
-  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/workflow/visible-evidence`
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+  const url = uploadEndpointUrl(state.apiUrl, state.sessionId, "visible-evidence")
   const body = JSON.stringify({ events })
 
   dbgVE("sendVisibleEvidence: POSTing", events.length, "events")
@@ -1053,7 +1319,11 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     const err = "No session ID. Enter a session ID in the extension popup."
     return { ok: false, error: err }
   }
-  if (!state.authToken) {
+  // Fail closed: restore-aware token lookup (covers Stop & Send right after an
+  // MV3 service-worker restart). No token → surface the restart message, never
+  // POST anonymously.
+  const authHeaders = authorizedJsonHeaders(await ensureUploadAuth())
+  if (!authHeaders) {
     state.status = "upload_failed"
     state.statusMessage = `Upload failed: ${MISSING_RECORDER_AUTH_MESSAGE}`
     state.lastUploadError = MISSING_RECORDER_AUTH_MESSAGE
@@ -1118,12 +1388,11 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     external_tabs_opened: state.events.filter((e) => e.type === "tab_opened").length,
   }
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
+  const headers = authHeaders
 
   try {
     const resp = await fetch(
-      `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/upload`,
+      uploadEndpointUrl(state.apiUrl, state.sessionId, "upload"),
       { method: "POST", headers, body: JSON.stringify(payload) }
     )
 
@@ -1174,8 +1443,10 @@ async function sendProof(finalNote: string | null): Promise<{ ok: boolean; error
     })
     broadcastStateUpdate()
     // Proof uploaded — clear persisted recording state so a future SW restart
-    // doesn't incorrectly resume a completed recording.
+    // doesn't incorrectly resume a completed recording, and clear the
+    // extension-private auth handoff so it must be refreshed for the next proof.
     clearPersistedRecordingState()
+    clearStoredRecorderAuth()
     void chrome.storage.local.set({
       currentSessionId: state.sessionId,
       lastUploadedSessionId: state.sessionId,

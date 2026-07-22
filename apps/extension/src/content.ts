@@ -2,6 +2,12 @@
 // Never collects cookies, localStorage, sessionStorage, or password values.
 
 import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./types"
+import {
+  isTrustedVeriBridgeAppUrl,
+  RECORDER_AUTH_BUILD_FINGERPRINT,
+  recorderTokenMetadata,
+  type RecorderAuthAck,
+} from "./recorderAuth"
 
 // ── Debug flag — set to false to silence visible evidence logs in production ──
 const DEBUG_VISIBLE_EVIDENCE = true
@@ -11,6 +17,43 @@ function dbgVE(...args: unknown[]): void {
 }
 
 dbgVE("content script loaded on", location.href)
+
+const contentAuthDebug = {
+  component: "content-script",
+  buildFingerprint: RECORDER_AUTH_BUILD_FINGERPRINT,
+  extensionId: chrome.runtime.id,
+  pageOrigin: location.origin,
+  trustedOrigin: isTrustedVeriBridgeAppUrl(location.href),
+  messageDirection: "idle",
+  messageType: null as string | null,
+  sessionId: "",
+  tokenPresent: false,
+  tokenLength: 0,
+  jwtSegmentCount: 0,
+  startsWithEy: false,
+  persistenceAttempted: false,
+  persistenceSucceeded: false,
+  readBackSucceeded: false,
+  storedSessionMatches: false,
+  ackEmitted: false,
+  failureCategory: "none",
+}
+
+function publishRecorderAuthDiagnostic(): void {
+  try {
+    window.postMessage(
+      {
+        source: "veribridge-extension",
+        type: "VERIBRIDGE_RECORDER_AUTH_DIAGNOSTIC",
+        payload: { ...contentAuthDebug },
+      },
+      location.origin,
+    )
+  } catch { /* diagnostics are best-effort */ }
+}
+
+;(globalThis as Record<string, unknown>).__VB_RECORDER_AUTH_DEBUG__ = () => ({ ...contentAuthDebug })
+console.info("[RecorderAuth] content loaded", { ...contentAuthDebug })
 
 // ── Sensitive field detection ──────────────────────────────────────────────────
 
@@ -143,18 +186,7 @@ function isVeriBridgeInternal(): boolean {
  * token into — or read one from — the extension.
  */
 function isVeriBridgeAppOrigin(): boolean {
-  const { hostname, pathname } = location
-  if (hostname.endsWith("veribridge.ai")) return true
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    return (
-      pathname.startsWith("/student") ||
-      pathname.startsWith("/dashboard") ||
-      pathname.startsWith("/passport") ||
-      pathname.startsWith("/admin") ||
-      pathname.startsWith("/vbr")
-    )
-  }
-  return false
+  return isTrustedVeriBridgeAppUrl(location.href)
 }
 
 /** Collect a safe snapshot of current non-sensitive form input values. */
@@ -960,18 +992,97 @@ if (isVeriBridgeAppOrigin()) {
     if (event.source !== window) return
     if (event.origin !== location.origin) return
     const data = event.data as
-      | { source?: string; type?: string; payload?: { authToken?: unknown; apiUrl?: unknown } }
+      | {
+          source?: string
+          type?: string
+          payload?: { authToken?: unknown; apiUrl?: unknown; sessionId?: unknown }
+        }
       | null
     if (!data || data.source !== "veribridge-app") return
     if (data.type !== "VERIBRIDGE_SET_RECORDER_AUTH") return
     const authToken = data.payload?.authToken
+    const tokenMetadata = recorderTokenMetadata(typeof authToken === "string" ? authToken : "")
+    const incomingSessionId =
+      typeof data.payload?.sessionId === "string" ? data.payload.sessionId : ""
+    Object.assign(contentAuthDebug, {
+      messageDirection: "page-to-content",
+      messageType: data.type,
+      sessionId: incomingSessionId,
+      tokenPresent: tokenMetadata.tokenPresent,
+      tokenLength: tokenMetadata.tokenLength,
+      jwtSegmentCount: tokenMetadata.jwtSegmentCount,
+      startsWithEy: tokenMetadata.startsWithEy,
+      failureCategory: tokenMetadata.tokenPresent ? "none" : "missing_token",
+    })
+    console.info("[RecorderAuth] content received page handoff", { ...contentAuthDebug })
+    publishRecorderAuthDiagnostic()
     if (typeof authToken !== "string" || !authToken) return
     const apiUrl = typeof data.payload?.apiUrl === "string" ? data.payload.apiUrl : undefined
-    void safeSendMessage({
+    const sessionId =
+      typeof data.payload?.sessionId === "string" ? data.payload.sessionId : undefined
+    contentAuthDebug.messageDirection = "content-to-background"
+    void safeSendMessage<RecorderAuthAck>({
       type: "SET_RECORDER_AUTH",
-      payload: { authToken, apiUrl },
+      payload: { authToken, apiUrl, sessionId },
+    }).then((resp) => {
+      // ACK back to the app (token-free) so it can BLOCK recording start until
+      // the background has confirmed it holds the token. A null response means
+      // the background was unreachable — report that honestly as not-confirmed.
+      try {
+        window.postMessage(
+          {
+            source: "veribridge-extension",
+            type: "VERIBRIDGE_RECORDER_AUTH_ACK",
+            payload: {
+              ok: resp?.ok === true && resp?.hasAuthToken === true,
+              hasAuthToken: resp?.hasAuthToken === true,
+              buildId: resp?.buildId ?? RECORDER_AUTH_BUILD_FINGERPRINT,
+              extensionId: resp?.extensionId ?? chrome.runtime.id,
+              sessionId: resp?.sessionId ?? null,
+              ackAt: resp?.ackAt ?? nowIso(),
+              persistenceAttempted: resp?.persistenceAttempted === true,
+              persistenceSucceeded: resp?.persistenceSucceeded === true,
+              readBackSucceeded: resp?.readBackSucceeded === true,
+              storedSessionMatches: resp?.storedSessionMatches === true,
+              failureCategory: resp?.failureCategory ?? "background_unreachable",
+            },
+          },
+          location.origin,
+        )
+        Object.assign(contentAuthDebug, {
+          messageDirection: "content-to-page",
+          messageType: "VERIBRIDGE_RECORDER_AUTH_ACK",
+          buildFingerprint: resp?.buildId ?? RECORDER_AUTH_BUILD_FINGERPRINT,
+          extensionId: resp?.extensionId ?? chrome.runtime.id,
+          sessionId: resp?.sessionId ?? incomingSessionId,
+          persistenceAttempted: resp?.persistenceAttempted === true,
+          persistenceSucceeded: resp?.persistenceSucceeded === true,
+          readBackSucceeded: resp?.readBackSucceeded === true,
+          storedSessionMatches: resp?.storedSessionMatches === true,
+          ackEmitted: true,
+          failureCategory: resp?.failureCategory ?? "background_unreachable",
+        })
+        console.info("[RecorderAuth] content relayed ACK", { ...contentAuthDebug })
+        publishRecorderAuthDiagnostic()
+      } catch { /* ACK is best-effort; the app treats "no ACK" as failure */ }
     })
   })
+
+  // PULL side of the handoff: the app's publish burst can fire before this
+  // content script is injected (document_idle on a slow page) and would be
+  // lost. Asking the app to re-publish once we are actually listening makes
+  // the handoff independent of load order.
+  const requestAuthFromApp = (): void => {
+    try {
+      window.postMessage(
+        { source: "veribridge-extension", type: "VERIBRIDGE_RECORDER_AUTH_REQUEST" },
+        location.origin,
+      )
+    } catch { /* best-effort */ }
+  }
+  requestAuthFromApp()
+  window.setTimeout(requestAuthFromApp, 1000)
+  publishRecorderAuthDiagnostic()
 }
 
 // On init, check if recording is already active (handles page navigation during a session).

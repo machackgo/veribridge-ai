@@ -159,7 +159,161 @@ export async function fetchAPI(
 export const RECORDER_AUTH_MESSAGE_TYPE = "VERIBRIDGE_SET_RECORDER_AUTH"
 /** postMessage `source` tag identifying the authenticated app as the sender. */
 export const RECORDER_AUTH_MESSAGE_SOURCE = "veribridge-app"
+/** postMessage `source` tag the extension's content script uses on this origin. */
+export const RECORDER_EXTENSION_MESSAGE_SOURCE = "veribridge-extension"
+/** Token-free ACK the extension posts back once the background holds the token. */
+export const RECORDER_AUTH_ACK_MESSAGE_TYPE = "VERIBRIDGE_RECORDER_AUTH_ACK"
+/** Sent by the extension when its content script loads and wants a (re)publish. */
+export const RECORDER_AUTH_REQUEST_MESSAGE_TYPE = "VERIBRIDGE_RECORDER_AUTH_REQUEST"
+/** Shown when recording must not start because the extension never confirmed auth. */
+export const RECORDER_AUTH_NOT_ESTABLISHED_MESSAGE =
+  "Recorder authentication was not established. Reload the extension and start again."
+export const RECORDER_AUTH_BUILD_FINGERPRINT = "recorder-auth-5.6-debug-28284748"
 const RECORDER_AUTH_PUBLISH_DELAYS_MS = [0, 250, 750, 1500] as const
+
+/** Safe (token-free) ACK payload posted by the extension's content script. */
+export type RecorderAuthAckPayload = {
+  ok?: boolean
+  hasAuthToken?: boolean
+  buildId?: string | null
+  extensionId?: string | null
+  sessionId?: string | null
+  ackAt?: string
+  persistenceAttempted?: boolean
+  persistenceSucceeded?: boolean
+  readBackSucceeded?: boolean
+  storedSessionMatches?: boolean
+  failureCategory?: string
+}
+
+type RecorderAuthPageDebug = {
+  component: "web-page"
+  buildFingerprint: string
+  extensionId: string | null
+  pageOrigin: string
+  sessionId: string
+  apiUrl: string
+  tokenPresent: boolean
+  tokenLength: number
+  jwtSegmentCount: number
+  startsWithEy: boolean
+  expiresAt: number | null
+  expired: boolean
+  refreshAttempted: boolean
+  refreshSucceeded: boolean
+  messageType: string | null
+  messageDirection: string
+  ackReceived: boolean
+  ackSessionMatches: boolean
+  ackBuildMatches: boolean
+  timeoutElapsed: boolean
+  failureCategory: string
+  extensionDiagnostic: Record<string, unknown> | null
+}
+
+const recorderAuthPageDebug: RecorderAuthPageDebug = {
+  component: "web-page",
+  buildFingerprint: RECORDER_AUTH_BUILD_FINGERPRINT,
+  extensionId: null,
+  pageOrigin: typeof window === "undefined" ? "" : window.location.origin,
+  sessionId: "",
+  apiUrl: API_BASE,
+  tokenPresent: false,
+  tokenLength: 0,
+  jwtSegmentCount: 0,
+  startsWithEy: false,
+  expiresAt: null,
+  expired: false,
+  refreshAttempted: false,
+  refreshSucceeded: false,
+  messageType: null,
+  messageDirection: "idle",
+  ackReceived: false,
+  ackSessionMatches: false,
+  ackBuildMatches: false,
+  timeoutElapsed: false,
+  failureCategory: "none",
+  extensionDiagnostic: null,
+}
+
+if (typeof window !== "undefined") {
+  ;(window as unknown as Record<string, unknown>).__VB_RECORDER_AUTH_DEBUG__ = () => ({
+    ...recorderAuthPageDebug,
+    extensionDiagnostic: recorderAuthPageDebug.extensionDiagnostic
+      ? { ...recorderAuthPageDebug.extensionDiagnostic }
+      : null,
+  })
+}
+
+function decodeRecorderJwtExpiry(token: string): number | null {
+  const payload = token.split(".")[1]
+  if (!payload) return null
+  try {
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")
+    const parsed = JSON.parse(atob(padded)) as { exp?: unknown }
+    return typeof parsed.exp === "number" && Number.isFinite(parsed.exp) ? parsed.exp : null
+  } catch {
+    return null
+  }
+}
+
+function updateRecorderTokenDebug(
+  token: string | null | undefined,
+  sessionExpiresAt?: number | null,
+): { valid: boolean; expired: boolean } {
+  const value = typeof token === "string" ? token.trim() : ""
+  const jwtExpiresAt = value ? decodeRecorderJwtExpiry(value) : null
+  const expiresAt = typeof sessionExpiresAt === "number" ? sessionExpiresAt : jwtExpiresAt
+  const expired = expiresAt !== null && expiresAt * 1000 <= Date.now() + 30_000
+  Object.assign(recorderAuthPageDebug, {
+    tokenPresent: !!value,
+    tokenLength: value.length,
+    jwtSegmentCount: value ? value.split(".").length : 0,
+    startsWithEy: value.startsWith("ey"),
+    expiresAt,
+    expired,
+  })
+  return { valid: !!value && value.split(".").length === 3 && value.startsWith("ey") && !expired, expired }
+}
+
+async function getFreshRecorderAuthToken(): Promise<string | null> {
+  const supabase = createSupabaseBrowserClient()
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  const current = updateRecorderTokenDebug(session?.access_token, session?.expires_at)
+  if (current.valid) return session?.access_token ?? null
+
+  if (!session?.access_token && !current.expired) {
+    recorderAuthPageDebug.failureCategory = "missing_supabase_session"
+    return null
+  }
+
+  recorderAuthPageDebug.refreshAttempted = true
+  const {
+    data: { session: refreshed },
+  } = await supabase.auth.refreshSession()
+  const fresh = updateRecorderTokenDebug(refreshed?.access_token, refreshed?.expires_at)
+  recorderAuthPageDebug.refreshSucceeded = fresh.valid
+  recorderAuthPageDebug.failureCategory = fresh.valid
+    ? "none"
+    : fresh.expired
+      ? "expired_token"
+      : "invalid_token_shape"
+  return fresh.valid ? refreshed?.access_token ?? null : null
+}
+
+/** True when a message event is the extension asking us to (re)publish auth. */
+export function isRecorderAuthRequestMessage(event: MessageEvent): boolean {
+  if (event.source !== window || event.origin !== window.location.origin) return false
+  const data = event.data as { source?: string; type?: string } | null
+  return (
+    !!data &&
+    data.source === RECORDER_EXTENSION_MESSAGE_SOURCE &&
+    data.type === RECORDER_AUTH_REQUEST_MESSAGE_TYPE
+  )
+}
 
 /**
  * Publish the current Supabase access token (and API base) to the recorder
@@ -169,21 +323,34 @@ const RECORDER_AUTH_PUBLISH_DELAYS_MS = [0, 250, 750, 1500] as const
  * off-browser. Never throws: if the bridge is unavailable the recorder simply
  * falls back to its popup's manual token field, and a missing/expired token
  * still surfaces the backend's safe 401 rather than recording anonymously.
+ *
+ * `sessionId` (when known) lets the extension key its persisted auth record to
+ * the proof session it will upload for.
  */
-export async function publishRecorderAuthToExtension(): Promise<boolean> {
+export async function publishRecorderAuthToExtension(sessionId?: string): Promise<boolean> {
   if (typeof window === "undefined") return false
   try {
-    const supabase = createSupabaseBrowserClient()
-    const {
-      data: { session },
-    } = await supabase.auth.getSession()
-    const accessToken = session?.access_token
+    const accessToken = await getFreshRecorderAuthToken()
     if (!accessToken) return false
+    Object.assign(recorderAuthPageDebug, {
+      sessionId: sessionId ?? "",
+      pageOrigin: window.location.origin,
+      apiUrl: API_BASE,
+      messageType: RECORDER_AUTH_MESSAGE_TYPE,
+      messageDirection: "page-to-content",
+      failureCategory: "none",
+    })
     const message = {
       source: RECORDER_AUTH_MESSAGE_SOURCE,
       type: RECORDER_AUTH_MESSAGE_TYPE,
-      payload: { authToken: accessToken, apiUrl: API_BASE },
+      payload: {
+        authToken: accessToken,
+        apiUrl: API_BASE,
+        sessionId,
+        buildFingerprint: RECORDER_AUTH_BUILD_FINGERPRINT,
+      },
     }
+    console.info("[RecorderAuth] page publishing handoff", { ...recorderAuthPageDebug })
     for (const delayMs of RECORDER_AUTH_PUBLISH_DELAYS_MS) {
       window.setTimeout(() => {
         window.postMessage(message, window.location.origin)
@@ -192,6 +359,93 @@ export async function publishRecorderAuthToExtension(): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+/**
+ * Publish the recorder auth token AND wait for the extension's token-free ACK
+ * confirming the background service worker now holds it.
+ *
+ * `confirmed: false` means the handoff could not be proven (extension missing,
+ * stale build without ACK support, content script not loaded, or signed out) —
+ * callers must then BLOCK recording start instead of letting the user record a
+ * session whose uploads can only 401.
+ */
+export async function confirmRecorderAuthWithExtension(
+  sessionId?: string,
+  timeoutMs = 3000,
+): Promise<{ published: boolean; confirmed: boolean; ack: RecorderAuthAckPayload | null }> {
+  if (typeof window === "undefined") return { published: false, confirmed: false, ack: null }
+
+  let resolveAck: (ack: RecorderAuthAckPayload | null) => void
+  const ackPromise = new Promise<RecorderAuthAckPayload | null>((resolve) => {
+    resolveAck = resolve
+  })
+
+  const onMessage = (event: MessageEvent) => {
+    if (event.source !== window || event.origin !== window.location.origin) return
+    const data = event.data as
+      | { source?: string; type?: string; payload?: RecorderAuthAckPayload }
+      | null
+    if (!data || data.source !== RECORDER_EXTENSION_MESSAGE_SOURCE) return
+    if (data.type === "VERIBRIDGE_RECORDER_AUTH_DIAGNOSTIC") {
+      recorderAuthPageDebug.extensionDiagnostic =
+        (data.payload as unknown as Record<string, unknown> | undefined) ?? null
+      return
+    }
+    if (data.type !== RECORDER_AUTH_ACK_MESSAGE_TYPE) return
+    const ack = data.payload ?? null
+    const sessionMatches = !sessionId || ack?.sessionId === sessionId
+    const buildMatches = ack?.buildId === RECORDER_AUTH_BUILD_FINGERPRINT
+    Object.assign(recorderAuthPageDebug, {
+      extensionId: ack?.extensionId ?? null,
+      messageType: RECORDER_AUTH_ACK_MESSAGE_TYPE,
+      messageDirection: "content-to-page",
+      ackReceived: true,
+      ackSessionMatches: sessionMatches,
+      ackBuildMatches: buildMatches,
+      failureCategory: !sessionMatches
+        ? "ack_session_mismatch"
+        : !buildMatches
+          ? "ack_build_mismatch"
+          : ack?.failureCategory ?? "none",
+    })
+    console.info("[RecorderAuth] page received ACK", { ...recorderAuthPageDebug })
+    // Ignore stale-session/build ACKs; a correct ACK from the current publish
+    // burst may still arrive before the timeout.
+    if (!sessionMatches || !buildMatches) return
+    resolveAck(ack)
+  }
+  window.addEventListener("message", onMessage)
+  const timeoutId = window.setTimeout(() => {
+    recorderAuthPageDebug.timeoutElapsed = true
+    recorderAuthPageDebug.failureCategory = recorderAuthPageDebug.ackReceived
+      ? recorderAuthPageDebug.failureCategory
+      : "ack_timeout"
+    resolveAck(null)
+  }, timeoutMs)
+
+  try {
+    const published = await publishRecorderAuthToExtension(sessionId)
+    if (!published) return { published: false, confirmed: false, ack: null }
+    const ack = await ackPromise
+    const sessionMatches = !sessionId || ack?.sessionId === sessionId
+    const buildMatches = ack?.buildId === RECORDER_AUTH_BUILD_FINGERPRINT
+    return {
+      published,
+      confirmed:
+        ack?.ok === true &&
+        ack?.hasAuthToken === true &&
+        sessionMatches &&
+        buildMatches &&
+        ack?.persistenceSucceeded === true &&
+        ack?.readBackSucceeded === true &&
+        ack?.storedSessionMatches === true,
+      ack,
+    }
+  } finally {
+    window.clearTimeout(timeoutId)
+    window.removeEventListener("message", onMessage)
   }
 }
 
@@ -1127,6 +1381,102 @@ export async function startExtensionProofSession(
   }
   if (!res.ok) throw new Error(`Start session failed (HTTP ${res.status}).`)
   return res.json()
+}
+
+// ── Website Proof workflow recording replay ──────────────────────────────────
+
+/**
+ * Result of requesting the retained website-workflow walkthrough recording for a
+ * proof session. The bytes are streamed by the backend through the access-gated
+ * `GET /api/v1/proofs/website/{proof_id}/replay` route (owner-only), so the
+ * Bearer token travels in the request header — never in a public/permanent URL.
+ * The object URL is created client-side from the streamed blob and MUST be
+ * revoked by the caller (URL.revokeObjectURL) when it is no longer displayed.
+ *
+ * States mirror the honest retention design: Website Proof capture does not
+ * retain a walkthrough recording for every session, so "unavailable" (404) is a
+ * normal, non-error outcome and is reported distinctly from a transient error.
+ */
+export type WebsiteProofReplayResult =
+  | { status: "available"; objectUrl: string; mimeType: string }
+  | { status: "unavailable" }
+  | { status: "error"; message: string }
+
+export async function fetchWebsiteProofReplayVideo(
+  sessionId: string,
+): Promise<WebsiteProofReplayResult> {
+  let res: Response
+  try {
+    res = await fetchAPI(
+      `/api/v1/proofs/website/${encodeURIComponent(sessionId)}/replay`,
+    )
+  } catch {
+    return { status: "error", message: "Could not reach the recording service." }
+  }
+  // 404 = no walkthrough recording was retained for this proof (or not visible
+  // to this caller). This is an expected end-state, not a failure.
+  if (res.status === 404) return { status: "unavailable" }
+  if (!res.ok) {
+    return { status: "error", message: `Recording unavailable (HTTP ${res.status}).` }
+  }
+  try {
+    const blob = await res.blob()
+    if (blob.size === 0) return { status: "unavailable" }
+    const objectUrl = URL.createObjectURL(blob)
+    return { status: "available", objectUrl, mimeType: blob.type || "video/webm" }
+  } catch {
+    return { status: "error", message: "Recording could not be loaded." }
+  }
+}
+
+/**
+ * Canonical recording/replay state for a Website Proof session, from the
+ * owner-gated `GET /api/v1/student/extension-proof/sessions/{id}/workflow/video/replay`
+ * endpoint. This is the SINGLE SOURCE OF TRUTH the UI uses for the recording
+ * state machine — the backend never reports a recording as "processing" while
+ * also claiming "no video".
+ *
+ * `signed_url` is a short-lived URL to the private recording object; the player
+ * streams it directly (no Authorization header needed) and refreshes it by
+ * re-calling this endpoint. The private storage path/bucket are never exposed.
+ */
+export type WebsiteProofReplayStatus = {
+  session_id: string
+  recording_state: "ready" | "not_retained"
+  replay_available: boolean
+  signed_url: string | null
+  expires_at: string | null
+  expires_in_seconds: number | null
+  duration_seconds: number | null
+  mime_type: string | null
+  artifact_id: string | null
+  message: string
+}
+
+export type WebsiteProofReplayStatusResult =
+  | { status: "ok"; data: WebsiteProofReplayStatus }
+  | { status: "error"; message: string }
+
+export async function fetchWebsiteProofReplayStatus(
+  sessionId: string,
+): Promise<WebsiteProofReplayStatusResult> {
+  let res: Response
+  try {
+    res = await fetchAPI(
+      `/api/v1/student/extension-proof/sessions/${encodeURIComponent(sessionId)}/workflow/video/replay`,
+    )
+  } catch {
+    return { status: "error", message: "Could not reach the recording service." }
+  }
+  if (!res.ok) {
+    return { status: "error", message: `Recording status unavailable (HTTP ${res.status}).` }
+  }
+  try {
+    const data = (await res.json()) as WebsiteProofReplayStatus
+    return { status: "ok", data }
+  } catch {
+    return { status: "error", message: "Recording status could not be loaded." }
+  }
 }
 
 // ── Extension Proof GitHub Analysis ──────────────────────────────────────────

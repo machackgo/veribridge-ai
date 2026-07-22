@@ -226,7 +226,14 @@ btnStart.addEventListener("click", () => {
 
   chrome.runtime.sendMessage(
     { type: "START_RECORDING", payload: { sessionId, apiUrl, authToken, claimedSkills } },
-    () => refreshState()
+    (resp: { ok?: boolean; error?: string } | undefined) => {
+      // The background REJECTS tokenless starts (recording would only produce
+      // 401 uploads) — show that reason instead of pretending recording began.
+      if (resp && resp.ok === false && resp.error) {
+        statusText.textContent = resp.error
+      }
+      refreshState()
+    }
   )
 })
 
