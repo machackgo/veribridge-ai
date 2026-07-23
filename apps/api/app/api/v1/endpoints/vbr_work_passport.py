@@ -18,7 +18,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
-from app.api.deps import get_current_user_id, get_db, get_pipeline_db
+from app.api.deps import (
+    get_current_user_id,
+    get_db,
+    get_pipeline_db,
+    get_provisioned_user_id,
+)
 from app.core.config import settings
 from app.schemas.proof_reanalysis import (
     ProofReanalysisRequestBody,
@@ -244,7 +249,9 @@ def get_passport_status_route(
 )
 def publish_passport_route(
     body: PublishPassportRequest | None = None,
-    user_id: str = Depends(get_current_user_id),
+    # First write for a brand-new account: vbr_work_passports.user_id FKs
+    # public.users(id), so the caller's row must exist before the insert.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> WorkPassportStatusResponse:
     payload = body or PublishPassportRequest()
@@ -271,7 +278,9 @@ def unpublish_passport_route(
 )
 async def set_passport_photo_route(
     file: UploadFile = File(...),
-    user_id: str = Depends(get_current_user_id),
+    # Upserts student_onboarding_profiles, which FKs public.users(id) — a fresh
+    # account's first photo upload must provision that row first.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> PassportPhotoResponse:
     """Validate and store the caller's OWN profile photo (auth token → owner).

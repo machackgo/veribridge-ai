@@ -59,6 +59,14 @@ function isAuthRequiredPath(path: string): boolean {
 /** Error code fetchAPI uses for its locally synthesized signed-out 401. */
 export const AUTH_SESSION_MISSING_CODE = "auth_session_missing"
 
+/**
+ * Human message thrown when the request never got an HTTP response at all
+ * (connection drop, DNS failure, CORS block). The browser's own rejection is a
+ * bare `TypeError: Failed to fetch`, which must never reach the UI verbatim.
+ */
+export const NETWORK_UNREACHABLE_MESSAGE =
+  "We couldn't reach the VeriBridge server. Check your connection and try again."
+
 function authSessionMissingResponse(): Response {
   return new Response(
     JSON.stringify({
@@ -161,10 +169,18 @@ export async function fetchAPI(
     return fetch(`${API_BASE}${path}`, { ...options, headers })
   }
 
-  const res = await fetchWithTransientRetry(
-    () => doFetch(session?.access_token),
-    isReplayableRequest(options),
-  )
+  let res: Response
+  try {
+    res = await fetchWithTransientRetry(
+      () => doFetch(session?.access_token),
+      isReplayableRequest(options),
+    )
+  } catch (err) {
+    // Transport failure — no HTTP response exists. Surface a stable, friendly,
+    // retryable message instead of the browser's raw "Failed to fetch".
+    console.error(`fetchAPI transport failure for ${path}:`, err)
+    throw new Error(NETWORK_UNREACHABLE_MESSAGE, { cause: err })
+  }
 
   // A request body (stream/FormData) may not be replayable — only retry
   // idempotent-safe bodyless requests after a token refresh.
