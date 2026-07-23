@@ -22,3 +22,6 @@ class VBRPublicReportResponse(BaseModel):
     claims: list[VBRPublicReportClaim] = Field(default_factory=list)
     methodology: list[str] = Field(default_factory=list)
     verification_note: str
+    # When this legacy report's project has an ACTIVE canonical public report,
+    # the client redirects to this ``/vbr/report/{token}`` path (else null).
+    canonical_report_path: str | None = None

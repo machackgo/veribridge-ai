@@ -194,4 +194,40 @@ def get_public_report(db: Any, public_token: str) -> dict[str, Any]:
         "claims": _build_public_claims(body),
         "methodology": list(body.get("methodology") or []),
         "verification_note": _VERIFICATION_NOTE,
+        # Migration path to the canonical renderer: when this legacy report's
+        # project also has an ACTIVE new-style public report token, the client
+        # redirects the recruiter to /vbr/report/{token}. Never a private
+        # route; None when no published canonical report exists.
+        "canonical_report_path": _canonical_report_path(db, report.get("project_id")),
     }
+
+
+def _canonical_report_path(db: Any, project_id: Any) -> str | None:
+    """``/vbr/report/{token}`` for this project's active canonical report.
+
+    Best-effort: any lookup problem returns ``None`` so the legacy report
+    still renders rather than breaking an old shared link.
+    """
+    if not project_id:
+        return None
+    try:
+        if isinstance(db, dict):
+            row = db.setdefault("vbr_projects", {}).get(str(project_id))
+        else:
+            result = (
+                db.table("vbr_projects")
+                .select("public_report_token")
+                .eq("id", str(project_id))
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - the redirect is optional
+        return None
+    if not isinstance(row, dict):
+        return None
+    token = row.get("public_report_token")
+    if isinstance(token, str) and token.strip():
+        return f"/vbr/report/{token.strip()}"
+    return None

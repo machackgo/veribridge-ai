@@ -34,6 +34,10 @@ from app.schemas.canonical_evidence import (
     ProjectRelationshipConfirmRequest,
     ProjectRelationshipDescriptor,
 )
+from app.schemas.passport_profile import (
+    PassportProfileResponse,
+    PassportProfileUpsert,
+)
 from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
     PassportPhotoResponse,
@@ -50,6 +54,11 @@ from app.services.passport_avatar_service import (
     AvatarValidationError,
     clear_avatar,
     set_avatar,
+)
+from app.services.passport_profile_service import (
+    PassportProfileValidationError,
+    get_editor_context,
+    upsert_passport_profile,
 )
 from app.services.proof_reanalysis_service import (
     ProofReanalysisRequest,
@@ -269,6 +278,49 @@ def unpublish_passport_route(
     db: Any = Depends(get_db),
 ) -> WorkPassportStatusResponse:
     return WorkPassportStatusResponse(**unpublish_passport(db, user_id))
+
+
+@student_router.get(
+    "/passport/profile",
+    response_model=PassportProfileResponse,
+    summary="Get the current user's Passport Profile (public identity editor)",
+)
+def get_passport_profile_route(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PassportProfileResponse:
+    """Owner view of the consented candidate identity shown on the public
+    passport, plus best-effort prefill from existing account data."""
+    return PassportProfileResponse(**get_editor_context(db, str(user_id)))
+
+
+@student_router.put(
+    "/passport/profile",
+    response_model=PassportProfileResponse,
+    summary="Update the current user's Passport Profile",
+)
+def update_passport_profile_route(
+    body: PassportProfileUpsert,
+    # First write for a brand-new account: passport_profiles.user_id FKs
+    # public.users(id), so the caller's row must exist before the insert.
+    user_id: str = Depends(get_provisioned_user_id),
+    db: Any = Depends(get_db),
+) -> PassportProfileResponse:
+    """PATCH-style upsert: only the provided fields change; explicit ``null``
+    or empty clears a field. Field-level validation errors return 422."""
+    updates = body.model_dump(exclude_unset=True)
+    try:
+        upsert_passport_profile(db, str(user_id), updates)
+    except PassportProfileValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "passport_profile_invalid",
+                "field": exc.field,
+                "message": exc.message,
+            },
+        ) from exc
+    return PassportProfileResponse(**get_editor_context(db, str(user_id)))
 
 
 @student_router.put(

@@ -319,29 +319,51 @@ def _lookup_public_passport_path(db: Any, user_id: str) -> str | None:
     return None
 
 
-def _lookup_display_name(db: Any, user_id: str) -> str | None:
-    """Best-effort safe candidate display name; omitted (None) on any issue.
-
-    Only ``full_name`` is read — never the student's email or auth ID.
-    """
+def _table_full_name(db: Any, table: str, user_id: str, *, by_user_id: bool) -> str | None:
+    """``full_name`` from one table (by ``user_id`` column or primary key)."""
     try:
         if isinstance(db, dict):
-            row = db.setdefault(_USERS_TABLE, {}).get(user_id)
+            if by_user_id:
+                row = next(
+                    (
+                        r
+                        for r in db.setdefault(table, {}).values()
+                        if str(r.get("user_id")) == str(user_id)
+                    ),
+                    None,
+                )
+            else:
+                row = db.setdefault(table, {}).get(user_id)
         else:
-            result = (
-                db.table(_USERS_TABLE).select("full_name").eq("id", user_id).limit(1).execute()
-            )
+            query = db.table(table).select("full_name")
+            query = query.eq("user_id", user_id) if by_user_id else query.eq("id", user_id)
+            result = query.limit(1).execute()
             rows = getattr(result, "data", []) or []
             row = rows[0] if rows else None
     except Exception:  # pragma: no cover - display name is optional
         return None
-
     if not isinstance(row, dict):
         return None
     name = row.get("full_name")
     if isinstance(name, str) and name.strip():
         return name.strip()
     return None
+
+
+def _lookup_display_name(db: Any, user_id: str) -> str | None:
+    """Best-effort safe candidate display name; omitted (None) on any issue.
+
+    The CANONICAL candidate-name resolver for every public surface (passport,
+    project report, skill report), so a student's identity always matches
+    across them: the consented Passport Profile first, then the legacy
+    student-maintained profile, then the users row. Only ``full_name`` is ever
+    read — never the student's email or auth ID.
+    """
+    return (
+        _table_full_name(db, "passport_profiles", user_id, by_user_id=True)
+        or _table_full_name(db, "student_profiles", user_id, by_user_id=True)
+        or _table_full_name(db, _USERS_TABLE, user_id, by_user_id=False)
+    )
 
 
 # ── Response builders ────────────────────────────────────────────────────────

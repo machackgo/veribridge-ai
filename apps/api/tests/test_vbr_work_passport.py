@@ -2253,13 +2253,18 @@ def test_student_profile_private_fields_never_leak(
             "linkedin_url": "https://linkedin.com/in/private-handle",
         },
     )
-    blob = str(_get_private(client).json()["identity"])
+    identity = _get_private(client).json()["identity"]
+    blob = str(identity)
     assert "F1" not in blob
     assert "OPT" not in blob
     assert "Boston" not in blob
-    assert "linkedin" not in blob.lower()
     assert "private-handle" not in blob
-    assert "work_authorization" not in blob
+    # student_profiles links are private: they must never feed the consented
+    # link fields (those come only from the passport_profiles model), and the
+    # opt-in work-authorization note must stay empty.
+    assert identity["github_url"] is None
+    assert identity["linkedin_url"] is None
+    assert identity["work_authorization_note"] is None
 
 
 # ── Must-fix: identity header scrubs UUID / private-id / email onboarding values ─

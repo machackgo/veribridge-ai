@@ -367,6 +367,8 @@ def test_public_report_response_shape(client: TestClient, mem_store: dict) -> No
         "claims",
         "methodology",
         "verification_note",
+        # Legacy → canonical migration pointer (null when no canonical report).
+        "canonical_report_path",
     }
 
     for claim in body["claims"]:

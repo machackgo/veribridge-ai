@@ -3052,11 +3052,63 @@ export function PrivatePassportView() {
           "Verified candidate profile" block competing with it. */}
       <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectRoleAreaId={selectRoleAreaFromCard} />
 
+      {/* 1b — Passport Profile prompt: the consented public identity lives at
+          /student/vbr/passport/profile. Until the student completes it, the
+          public Passport can only show a neutral placeholder, so surface a
+          clear call-to-action (and a quiet edit link once it exists). */}
+      {!passport.identity?.has_custom_profile && (
+        <Card style={{ background: TOKEN.indigoSoft, borderColor: "#c7d2fe" }}>
+          <div
+            data-testid="passport-profile-prompt"
+            style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}
+          >
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <p style={{ fontSize: 14, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
+                Complete your Passport Profile
+              </p>
+              <p style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: "4px 0 0", lineHeight: 1.55 }}>
+                Recruiters currently see a neutral placeholder instead of you. Add your name, photo,
+                university, and links so your public Passport opens with a real identity.
+              </p>
+            </div>
+            <Link
+              href="/student/vbr/passport/profile"
+              data-testid="edit-passport-profile-cta"
+              style={{
+                background: TOKEN.indigo,
+                color: "#fff",
+                borderRadius: 10,
+                padding: "9px 16px",
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: "none",
+                flexShrink: 0,
+              }}
+            >
+              Edit Passport Profile →
+            </Link>
+          </div>
+        </Card>
+      )}
+
       {/* 2 — Candidate detail: education, public-status summary, and the full
           summary text that the compact card intentionally omits. */}
       <Card>
         <div data-testid="passport-header" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <CardHeader title="Candidate summary" eyebrow="Passport detail" icon="🎓" />
+          <CardHeader
+            title="Candidate summary"
+            eyebrow="Passport detail"
+            icon="🎓"
+            action={
+              <Link
+                href="/student/vbr/passport/profile"
+                data-testid="edit-passport-profile-link"
+                style={{ fontSize: 12.5, color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}
+              >
+                Edit Passport Profile
+              </Link>
+            }
+          />
           <p style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>
             {passport.identity?.display_name ?? passport.candidate_display_name ?? "Verified candidate profile"}
           </p>
