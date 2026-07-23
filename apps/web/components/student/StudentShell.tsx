@@ -18,9 +18,9 @@
 
 import { Suspense, useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { createSupabaseBrowserClient } from "@/lib/supabase/client"
+import { usePathname, useSearchParams } from "next/navigation"
 import { listVBRProjects, type VBRProjectResponse } from "@/lib/vbr-api"
+import { SignOutButton } from "./SignOutButton"
 import type { StudentPersona } from "./persona"
 
 type ShellNavItem = { label: string; href: string }
@@ -48,8 +48,8 @@ const NAV_SECTIONS: ShellNavSection[] = [
 ]
 
 const ACCOUNT_LINKS: ShellNavItem[] = [
-  { label: "Account", href: "/dashboard/profile" },
-  { label: "Settings", href: "/dashboard/settings" },
+  { label: "Account", href: "/student/account" },
+  { label: "Settings", href: "/student/settings" },
 ]
 
 /**
@@ -90,6 +90,8 @@ export function studentBreadcrumbs(pathname: string): Crumb[] {
   else if (pathname.startsWith("/student/proofs/website")) tail = [{ label: "Website Proof" }]
   else if (pathname.startsWith("/student/proofs/documents")) tail = [{ label: "Document Proof" }]
   else if (pathname.startsWith("/student/proofs/project-defense")) tail = [{ label: "Project Defense" }]
+  else if (pathname.startsWith("/student/account")) tail = [{ label: "Account" }]
+  else if (pathname.startsWith("/student/settings")) tail = [{ label: "Settings" }]
   else if (pathname.startsWith("/student/vbr/passport/vault"))
     tail = [{ label: "Work Passport", href: "/student/vbr/passport" }, { label: "Proof Vault" }]
   else if (pathname.startsWith("/student/vbr/passport/skills/"))
@@ -206,51 +208,6 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         </div>
       ))}
     </nav>
-  )
-}
-
-function SignOutButton({ onDone, testId }: { onDone?: () => void; testId: string }) {
-  const router = useRouter()
-  const [signingOut, setSigningOut] = useState(false)
-
-  const handleSignOut = async () => {
-    if (signingOut) return
-    setSigningOut(true)
-    try {
-      // The browser client owns the chunked sb-* auth cookies; signOut() clears them.
-      await createSupabaseBrowserClient().auth.signOut()
-    } catch {
-      // Even if revocation fails, proceed to /login — the proxy re-gates from there.
-    }
-    onDone?.()
-    router.push("/login")
-    router.refresh()
-  }
-
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      onClick={handleSignOut}
-      disabled={signingOut}
-      className="dash-nav-hover"
-      style={{
-        display: "block",
-        width: "100%",
-        textAlign: "left",
-        padding: "8px 10px",
-        borderRadius: 8,
-        border: "none",
-        background: "transparent",
-        fontSize: 13,
-        fontWeight: 600,
-        color: "var(--rose)",
-        cursor: signingOut ? "default" : "pointer",
-        opacity: signingOut ? 0.6 : 1,
-      }}
-    >
-      {signingOut ? "Signing out…" : "Sign out"}
-    </button>
   )
 }
 

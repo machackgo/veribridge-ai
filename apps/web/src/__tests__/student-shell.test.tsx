@@ -123,6 +123,17 @@ describe("StudentShell chrome", () => {
     ])
   })
 
+  it("labels the Account and Settings breadcrumbs on the new canonical routes", () => {
+    expect(studentBreadcrumbs("/student/account")).toEqual([
+      { label: "Dashboard", href: "/student" },
+      { label: "Account" },
+    ])
+    expect(studentBreadcrumbs("/student/settings")).toEqual([
+      { label: "Dashboard", href: "/student" },
+      { label: "Settings" },
+    ])
+  })
+
   it("labels the Skills & Gaps breadcrumb when the shell hosts /dashboard/skill-gaps", () => {
     expect(studentBreadcrumbs("/dashboard/skill-gaps")).toEqual([
       { label: "Dashboard", href: "/student" },
@@ -188,15 +199,20 @@ describe("profile menu and sign-out", () => {
       a.textContent,
       a.getAttribute("href"),
     ])
-    expect(links).toContainEqual(["Account", "/dashboard/profile"])
-    expect(links).toContainEqual(["Settings", "/dashboard/settings"])
+    expect(links).toContainEqual(["Account", "/student/account"])
+    expect(links).toContainEqual(["Settings", "/student/settings"])
+    // Regression: the menu must never point back into the legacy dashboard UI.
+    const hrefs = links.map(([, href]) => href)
+    expect(hrefs).not.toContain("/dashboard/profile")
+    expect(hrefs).not.toContain("/dashboard/settings")
   })
 
-  it("signs out via supabase.auth.signOut() and lands on /login", async () => {
+  it("signs out via supabase.auth.signOut() with local scope and lands on /login", async () => {
     renderShell()
     fireEvent.click(screen.getByTestId("student-shell-profile-toggle"))
     fireEvent.click(screen.getByTestId("student-shell-signout"))
     await waitFor(() => expect(signOutMock).toHaveBeenCalledTimes(1))
+    expect(signOutMock).toHaveBeenCalledWith({ scope: "local" })
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/login"))
     expect(mockRefresh).toHaveBeenCalled()
   })
