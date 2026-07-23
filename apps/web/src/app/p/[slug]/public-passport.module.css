@@ -1,0 +1,247 @@
+/* Public Work Passport — mobile-first responsive layout.
+ * The public passport is scanned from phones via QR, so this surface is the
+ * one place we use real media queries instead of the app's capped-width
+ * inline-style convention. */
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: clamp(16px, 4vw, 48px) clamp(14px, 4vw, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 2.5vw, 22px);
+  min-width: 0;
+}
+
+/* ── Hero ── */
+
+.hero {
+  display: flex;
+  gap: clamp(16px, 3vw, 28px);
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.heroAvatar {
+  width: clamp(72px, 16vw, 104px);
+  height: clamp(72px, 16vw, 104px);
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  background: #eef0ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e6e8ef;
+}
+
+.heroBody {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.heroName {
+  font-size: clamp(22px, 5.5vw, 30px);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: #0a0e1a;
+  margin: 0;
+  line-height: 1.15;
+  overflow-wrap: break-word;
+}
+
+.heroHeadline {
+  font-size: clamp(14px, 3.6vw, 16px);
+  color: #1f2a44;
+  font-weight: 550;
+  margin: 0;
+  line-height: 1.4;
+  overflow-wrap: break-word;
+}
+
+.heroMeta {
+  font-size: clamp(13px, 3.2vw, 14px);
+  color: #6b7280;
+  margin: 0;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+.heroBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.heroLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.heroLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  min-height: 38px;
+  border-radius: 10px;
+  border: 1px solid #e6e8ef;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2a44;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+.heroLink:hover {
+  border-color: #c7d2fe;
+  color: #4f46e5;
+}
+
+@media (max-width: 620px) {
+  .hero {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .heroBody {
+    align-items: center;
+  }
+  .heroBadges,
+  .heroLinks {
+    justify-content: center;
+  }
+}
+
+/* ── Sections ── */
+
+.sectionTitle {
+  font-size: clamp(16px, 4vw, 18px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #0a0e1a;
+  margin: 6px 0 0;
+}
+
+.projectCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.projectTitle {
+  font-size: clamp(15px, 4vw, 17px);
+  font-weight: 700;
+  color: #0a0e1a;
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+.projectSummary {
+  font-size: clamp(13px, 3.4vw, 13.5px);
+  color: #1f2a44;
+  margin: 0;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.skillChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #f4f5fb;
+  border: 1px solid #e6e8ef;
+  font-size: 12.5px;
+  color: #1f2a44;
+  font-weight: 550;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.reportButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 11px 18px;
+  min-height: 44px;
+  border-radius: 10px;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
+@media (max-width: 620px) {
+  .reportButton {
+    width: 100%;
+  }
+}
+
+.disclosureButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 6px 0;
+  min-height: 38px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4f46e5;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* ── Skill groups ── */
+
+.skillGroupGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.skillRowButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 8px 0;
+  min-height: 40px;
+  cursor: pointer;
+  text-align: left;
+}
+
+/* ── Footer / transparency ── */
+
+.footNote {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.6;
+  margin: 0;
+  overflow-wrap: break-word;
+}

@@ -1,25 +1,39 @@
 "use client"
 
-import { useEffect, useState } from "react"
+/**
+ * Public Verified Work Passport — recruiter-first candidate page.
+ *
+ * Information architecture (progressive disclosure):
+ *   L1  Candidate identity hero + short summary + featured projects + curated
+ *       top skills — a recruiter understands the candidate in ~10–20 seconds.
+ *   L2  Per-project detail and per-skill evidence, opened explicitly.
+ *   L3  Full traceability lives in the linked Verified Build Reports and the
+ *       public Skill Reports.
+ *
+ * The long "How to read this Passport" instructions and the recruiter
+ * checklist are collapsed behind "Learn how verification works" — available,
+ * never dominating. Identity comes from the consented Passport Profile: empty
+ * fields are omitted, never placeholdered.
+ */
+
+import { useEffect, useMemo, useState } from "react"
 import {
   fallbackSkillSlug,
   getPublicWorkPassportBySlug,
-  matrixTraceLabel,
   proofChainFromSources,
   publicSkillReportPath,
   PROOF_CHAIN_STEPS,
+  type PassportIdentity,
   type PublicPassportProject,
   type PublicPassportSkill,
   type PublicWorkPassport,
 } from "@/lib/vbr-api"
+import { publicSafeAvatarUrl } from "@/lib/passport-card"
 import {
   Badge,
   Card,
-  CardHeader,
   ErrorState,
   LoadingState,
-  Mono,
-  PassportIdentityHeader,
   TOKEN,
   type BadgeTone,
 } from "../../../../components/passport/shared"
@@ -30,6 +44,7 @@ import {
   RecruiterReviewChecklist,
   RecruiterTrustFraming,
 } from "../../../../components/passport/RecruiterTrustFraming"
+import styles from "./public-passport.module.css"
 
 const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   Demonstrated: "emerald",
@@ -40,13 +55,81 @@ const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
   "Not assessed": "slate",
 }
 
-const SOURCE_TONE: Record<string, BadgeTone> = {
-  "GitHub Proof": "indigo",
-  "Document Proof": "sky",
-  "Website Proof": "purple",
-  "Project Defense": "emerald",
-  "Video Evidence": "amber",
-  "VBR Report": "emerald",
+/**
+ * Simplified recruiter-facing tier for a backend qualitative label. The
+ * original label stays visible inside the expanded evidence detail — this is a
+ * presentation grouping, never an upgrade (every non-"Demonstrated" label maps
+ * to a weaker tier).
+ */
+export function skillTier(status: string): "Demonstrated" | "Supported" | "Emerging" {
+  if (status === "Demonstrated") return "Demonstrated"
+  if (
+    status === "Partially demonstrated" ||
+    status === "Evidence observed" ||
+    status === "Supporting evidence"
+  ) {
+    return "Supported"
+  }
+  return "Emerging"
+}
+
+const TIER_TONE: Record<string, BadgeTone> = {
+  Demonstrated: "emerald",
+  Supported: "sky",
+  Emerging: "slate",
+}
+
+/** Compact display label for an evidence source badge. */
+const SOURCE_SHORT: Record<string, string> = {
+  "GitHub Proof": "GitHub",
+  "Document Proof": "Documents",
+  "Website Proof": "Website",
+  "Project Defense": "Project Defense",
+  "Video Evidence": "Video",
+  "VBR Report": "Verified Build Report",
+}
+
+function shortSource(label: string): string {
+  return SOURCE_SHORT[label] ?? label
+}
+
+/** Deterministic keyword grouping for the curated Top Skills section. */
+const SKILL_GROUPS: { title: string; pattern: RegExp }[] = [
+  {
+    title: "AI & Machine Learning",
+    pattern:
+      /\b(ai|ml|machine.?learning|deep.?learning|neural|nlp|llm|vision|model|pytorch|tensorflow|scikit|data.?science)\b/i,
+  },
+  {
+    title: "Backend & APIs",
+    pattern:
+      /\b(api|backend|server|fastapi|flask|django|express|node(\.js)?|rest|graphql|database|sql|postgres|auth|python|java|go)\b/i,
+  },
+  {
+    title: "Frontend & Product",
+    pattern:
+      /\b(frontend|react|next(\.js)?|ui|ux|css|html|javascript|typescript|design|product)\b/i,
+  },
+  {
+    title: "Data & Cloud",
+    pattern:
+      /\b(data|cloud|aws|gcp|azure|docker|kubernetes|deploy|pipeline|etl|analytics|geospatial|infra)\b/i,
+  },
+]
+
+export function groupSkills(
+  skills: PublicPassportSkill[],
+): { title: string; skills: PublicPassportSkill[] }[] {
+  const groups = SKILL_GROUPS.map((g) => ({ title: g.title, skills: [] as PublicPassportSkill[] }))
+  const other: PublicPassportSkill[] = []
+  for (const skill of skills) {
+    const match = SKILL_GROUPS.findIndex((g) => g.pattern.test(skill.skill))
+    if (match >= 0) groups[match].skills.push(skill)
+    else other.push(skill)
+  }
+  const result = groups.filter((g) => g.skills.length > 0)
+  if (other.length > 0) result.push({ title: "More skills", skills: other })
+  return result
 }
 
 /** Stable in-page anchor id for a public skill row (safe slug only). */
@@ -54,260 +137,168 @@ function publicSkillAnchor(skillOrSlug: string): string {
   return `public-skill-${fallbackSkillSlug(skillOrSlug)}`
 }
 
-function SkillChip({ skill, passportSlug }: { skill: PublicPassportSkill; passportSlug: string }) {
-  const [open, setOpen] = useState(false)
-  const traces = skill.evidence_traces ?? []
-  const strongest = skill.strongest_project ?? null
-  const hasDetail =
-    skill.projects.length > 0 ||
-    skill.evidence_sources.length > 0 ||
-    skill.evidence_chips.length > 0 ||
-    traces.length > 0
+function initialsOf(name: string | null | undefined): string {
+  return (name ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase())
+    .join("")
+}
 
-  const headerStyle = {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    justifyContent: "space-between",
-    background: "none",
-    border: "none",
-    padding: 0,
-    width: "100%",
-    textAlign: "left" as const,
-  }
-  const headerInner = (
-    <>
-      <span style={{ fontSize: 13, fontWeight: 600, color: TOKEN.ink }}>
-        {hasDetail && <span style={{ color: TOKEN.muted, marginRight: 6 }}>{open ? "▾" : "▸"}</span>}
-        {skill.skill}
-      </span>
-      <Badge tone={QUALITATIVE_LABEL_TONE[skill.status] ?? "slate"}>{skill.status}</Badge>
-    </>
-  )
+// ── Section 1: Candidate identity hero ───────────────────────────────────────
+
+function PassportHero({
+  identity,
+  fallbackName,
+  fallbackHeadline,
+  publishedAt,
+}: {
+  identity: PassportIdentity | null | undefined
+  fallbackName: string | null
+  fallbackHeadline?: string
+  publishedAt: string | null
+}) {
+  const name = identity?.display_name ?? fallbackName ?? "Verified candidate profile"
+  const headline = identity?.headline?.trim() || fallbackHeadline?.trim() || ""
+  const avatar = publicSafeAvatarUrl(identity?.avatar_url ?? null)
+  const educationLine = [identity?.degree, identity?.institution].filter(Boolean).join(" · ")
+  // Fall back to the legacy education summary only when the consented profile
+  // supplied no education fields at all.
+  const legacyEducation = !educationLine ? identity?.education_summary?.trim() || "" : ""
+  const metaLine = [
+    identity?.graduation_year ? `Expected ${identity.graduation_year}` : "",
+    identity?.location ?? "",
+  ]
+    .filter(Boolean)
+    .join(" · ")
+  const lastUpdated = identity?.last_updated ?? publishedAt
+
+  const links: { label: string; href: string }[] = []
+  if (identity?.github_url) links.push({ label: "GitHub", href: identity.github_url })
+  if (identity?.linkedin_url) links.push({ label: "LinkedIn", href: identity.linkedin_url })
+  if (identity?.portfolio_url) links.push({ label: "Portfolio", href: identity.portfolio_url })
 
   return (
-    <div
-      data-testid="public-passport-skill"
-      id={publicSkillAnchor(skill.skill)}
-      style={{ display: "flex", flexDirection: "column", gap: 8, scrollMarginTop: 96 }}
-    >
-      {/* Skills with no safe drilldown stay non-interactive so the public
-          passport exposes no buttons beyond intentional expand toggles. */}
-      {hasDetail ? (
-        <button
-          type="button"
-          data-testid="public-skill-expand-toggle"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          style={{ ...headerStyle, cursor: "pointer" }}
-        >
-          {headerInner}
-        </button>
-      ) : (
-        <>
-          <div style={headerStyle}>{headerInner}</div>
-          {/* No inline drilldown — the public Skill Report is still reachable. */}
-          <a
-            data-testid="public-skill-report-link"
-            href={publicSkillReportPath(passportSlug, fallbackSkillSlug(skill.skill))}
-            style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
-          >
-            Open the full public skill report →
-          </a>
-        </>
-      )}
-
-      {open && hasDetail && (
-        <div
-          data-testid="public-skill-detail"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 8,
-            padding: "10px 12px",
-            background: TOKEN.bg,
-            border: `1px solid ${TOKEN.line}`,
-            borderRadius: 8,
-          }}
-        >
-          {skill.evidence_sources.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {skill.evidence_sources.map((src) => (
-                <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
-                  {src}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          {/* Public Skill Report drilldown — the recruiter-safe evidence
-              argument for THIS skill, on the same public passport slug. */}
-          <a
-            data-testid="public-skill-report-link"
-            href={publicSkillReportPath(passportSlug, fallbackSkillSlug(skill.skill))}
-            style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
-          >
-            Open the full public skill report →
-          </a>
-
-          {/* Skill → Project: where this skill is most strongly evidenced —
-              published report link only, never a private route or id. */}
-          {strongest && (
-            <div
-              data-testid="public-skill-strongest-project"
-              style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", fontSize: 12, color: TOKEN.inkSoft }}
-            >
-              <span>
-                This skill is strongest in <strong>{strongest.project_title}</strong>
-                {strongest.skill_status ? ` — ${strongest.skill_status}` : ""}
-              </span>
-              <a
-                href={strongest.public_report_path}
-                data-testid="public-strongest-project-link"
-                style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
-              >
-                View project evidence →
-              </a>
-            </div>
-          )}
-
-          {skill.projects.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Evidenced in
-              </Mono>
-              {skill.projects.map((p, i) => {
-                const projTraces = p.evidence_traces ?? []
-                return (
-                  <div
-                    key={`${p.project_title}-${i}`}
-                    data-testid="public-skill-project-ref"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 6,
-                      padding: "8px 10px",
-                      border: `1px solid ${TOKEN.line}`,
-                      borderRadius: 8,
-                      background: "#fff",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 12, color: TOKEN.ink, fontWeight: 600 }}>{p.project_title}</span>
-                      {p.skill_status && (
-                        <Badge tone={QUALITATIVE_LABEL_TONE[p.skill_status] ?? "slate"}>{p.skill_status}</Badge>
-                      )}
-                    </div>
-                    {p.evidence_sources.length > 0 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                        {p.evidence_sources.map((src) => (
-                          <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
-                            {src}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                    {/* Deep links straight to the exact trace cards in the public report. */}
-                    {projTraces.length > 0 && (
-                      <div data-testid="public-skill-project-trace-links" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {projTraces.map((t) => (
-                          <a
-                            key={t.trace_id}
-                            href={`${p.public_report_path}#${t.evidence_anchor}`}
-                            style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}
-                          >
-                            {matrixTraceLabel(t)} →
-                          </a>
-                        ))}
-                      </div>
-                    )}
-                    <a href={p.public_report_path} style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none" }}>
-                      View report →
-                    </a>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {skill.evidence_chips.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Evidence snippets
-              </Mono>
-              {skill.evidence_chips.map((c, i) => (
-                <div key={`${c.label}-${i}`} style={{ fontSize: 12, color: TOKEN.inkSoft }}>
-                  <Mono style={{ fontSize: 11, color: TOKEN.ink }}>{c.label}</Mono> — {c.short_summary}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {traces.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                Evidence traceability
-              </Mono>
-              <EvidenceTraceList traces={traces} />
-            </div>
-          )}
-
-          {skill.limitations.length > 0 && (
-            <ul style={{ margin: 0, paddingLeft: 16 }}>
-              {skill.limitations.map((line, i) => (
-                <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
-                  {line}
-                </li>
-              ))}
-            </ul>
+    <Card style={{ padding: "clamp(18px, 4vw, 28px)" }}>
+      <div className={styles.hero} data-testid="public-passport-hero">
+        <div className={styles.heroAvatar}>
+          {avatar ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={avatar}
+              alt={`${name} profile photo`}
+              style={{ width: "100%", height: "100%", objectFit: "cover" }}
+            />
+          ) : (
+            <span style={{ color: TOKEN.indigo, fontWeight: 700, fontSize: 28 }}>
+              {initialsOf(name) || "✓"}
+            </span>
           )}
         </div>
-      )}
-    </div>
+        <div className={styles.heroBody}>
+          <h1 className={styles.heroName} data-testid="passport-identity-name">
+            {name}
+          </h1>
+          {identity?.pronunciation && (
+            <p className={styles.heroMeta} style={{ fontSize: 12.5 }}>
+              Pronounced {identity.pronunciation}
+            </p>
+          )}
+          {headline && (
+            <p className={styles.heroHeadline} data-testid="public-hero-headline">
+              {headline}
+            </p>
+          )}
+          {educationLine && (
+            <p className={styles.heroMeta} data-testid="public-hero-education">
+              {educationLine}
+            </p>
+          )}
+          {legacyEducation && (
+            <p className={styles.heroMeta} data-testid="public-hero-education">
+              {legacyEducation}
+            </p>
+          )}
+          {metaLine && <p className={styles.heroMeta}>{metaLine}</p>}
+          <div className={styles.heroBadges}>
+            <Badge tone="emerald">✓ {identity?.verification_label || "Verified Work Passport"}</Badge>
+            {identity?.availability_label && (
+              <span data-testid="public-hero-availability">
+                <Badge tone="indigo">{identity.availability_label}</Badge>
+              </span>
+            )}
+            {identity?.work_authorization_note && (
+              <span data-testid="public-hero-work-auth">
+                <Badge tone="slate">{identity.work_authorization_note}</Badge>
+              </span>
+            )}
+          </div>
+          {links.length > 0 && (
+            <div className={styles.heroLinks} data-testid="public-hero-links">
+              {links.map((link) => (
+                <a
+                  key={link.label}
+                  className={styles.heroLink}
+                  href={link.href}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                >
+                  {link.label} ↗
+                </a>
+              ))}
+            </div>
+          )}
+          {lastUpdated && (
+            <p className={styles.heroMeta} style={{ fontSize: 12 }}>
+              Evidence-backed projects and skills · Updated{" "}
+              {new Date(lastUpdated).toLocaleDateString()}
+            </p>
+          )}
+        </div>
+      </div>
+    </Card>
   )
 }
+
+// ── Section 3: Featured project card ─────────────────────────────────────────
 
 function FeaturedProject({
   project,
   availableSkillAnchors,
 }: {
   project: PublicPassportProject
-  /** Anchor ids of skills rendered in the Top Skills section below. */
   availableSkillAnchors: Set<string>
 }) {
+  const [detailOpen, setDetailOpen] = useState(false)
   const chain = project.proof_chain ?? proofChainFromSources(project.evidence_sources)
-  const topSkills = project.top_skills ?? []
+  const topSkills = (project.top_skills ?? []).slice(0, 6)
+  const sources = project.evidence_sources.filter((s) => s !== "VBR Report").map(shortSource)
+
   return (
     <Card>
-      <div data-testid="public-passport-project" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: TOKEN.ink }}>{project.project_title || "Project"}</div>
+      <div data-testid="public-passport-project" className={styles.projectCard}>
+        <h3 className={styles.projectTitle}>{project.project_title || "Project"}</h3>
         {project.project_summary && (
-          <p style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>{project.project_summary}</p>
+          <p className={styles.projectSummary}>{project.project_summary}</p>
         )}
-        {/* Project → Skill links: chips anchor to this skill's evidence in the
-            Top Skills section on this same page — never to a private route. */}
+
+        {/* 3–6 strongest skills, plain chips — status detail lives below. */}
         {topSkills.length > 0 ? (
-          <div data-testid="public-project-top-skills" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          <div className={styles.chipRow} data-testid="public-project-top-skills">
             {topSkills.map((row) => {
-              // Derive the anchor from the display name (matching the Top
-              // Skills section) so both sides always agree.
               const anchor = publicSkillAnchor(row.skill)
               const linked = availableSkillAnchors.has(anchor)
-              const chip = (
-                <Badge tone={QUALITATIVE_LABEL_TONE[row.status] ?? "indigo"}>
-                  {row.skill} · {row.status}
-                </Badge>
-              )
+              const chip = <span className={styles.skillChip}>{row.skill}</span>
               return linked ? (
                 <a
                   key={row.skill}
                   href={`#${anchor}`}
                   data-testid="public-project-skill-link"
                   title={`See the evidence behind ${row.skill}`}
-                  style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}
+                  style={{ textDecoration: "none" }}
                 >
                   {chip}
-                  <span style={{ fontSize: 11, fontWeight: 600, color: TOKEN.indigo }}>View skill evidence ↓</span>
                 </a>
               ) : (
                 <span key={row.skill}>{chip}</span>
@@ -316,79 +307,338 @@ function FeaturedProject({
           </div>
         ) : (
           project.claimed_skills.length > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {project.claimed_skills.map((skill) => (
-                <Badge key={skill} tone="indigo">
+            <div className={styles.chipRow}>
+              {project.claimed_skills.slice(0, 6).map((skill) => (
+                <span key={skill} className={styles.skillChip}>
                   {skill}
-                </Badge>
+                </span>
               ))}
             </div>
           )
         )}
-        {project.evidence_relationship_note && (
-          <p
-            data-testid="public-project-relationship-note"
-            style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
-          >
-            {project.evidence_relationship_note}
+
+        {/* Compact evidence coverage line. */}
+        {sources.length > 0 && (
+          <p className={styles.footNote} data-testid="public-project-evidence-line">
+            Evidence: {sources.join(" · ")}
           </p>
         )}
-        {/* Proof-chain completeness: what evidence backs this project, and what
-            is missing — honest transparency, labels only, never a number grade. */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-            Evidence included
-          </Mono>
-          <div data-testid="public-project-proof-chain" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {PROOF_CHAIN_STEPS.map((step) => (
-              <span
-                key={step.key}
-                data-testid="public-proof-chain-item"
-                data-source={step.label}
-                data-present={chain[step.key] ? "true" : "false"}
-              >
-                <Badge tone={chain[step.key] ? (SOURCE_TONE[step.label] ?? "emerald") : "slate"}>
-                  {chain[step.key] ? "✓ " : "– "}
-                  {step.label}
-                </Badge>
-              </span>
-            ))}
-          </div>
-          {chain.missing.length > 0 && (
-            <p data-testid="public-project-gaps" style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>
-              Not included: {chain.missing.join(", ")}.
-            </p>
-          )}
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <a
+            data-testid="public-passport-report-link"
+            href={project.public_report_path}
+            className={styles.reportButton}
+          >
+            View Verified Build Report →
+          </a>
+          <button
+            type="button"
+            className={styles.disclosureButton}
+            data-testid="public-project-detail-toggle"
+            aria-expanded={detailOpen}
+            onClick={() => setDetailOpen((v) => !v)}
+          >
+            {detailOpen ? "Hide evidence detail ▴" : "Evidence detail ▾"}
+          </button>
         </div>
-        {/* Recruiter-safe Project Defense inspection, only when the public
-            passport DTO carries it. Fail-closed cards show a withheld
-            placeholder; never raw transcript, segments, or internal ids. */}
-        {(project.project_defense_inspection?.length ?? 0) > 0 && (
-          <ProjectDefenseInspectionSection
-            cards={project.project_defense_inspection}
-            testId="public-passport-project-defense-inspection"
-          />
+
+        {detailOpen && (
+          <div
+            data-testid="public-project-detail"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+              padding: "12px 14px",
+              background: TOKEN.bg,
+              border: `1px solid ${TOKEN.line}`,
+              borderRadius: 10,
+            }}
+          >
+            {/* Per-skill qualitative labels for this project. */}
+            {topSkills.length > 0 && (
+              <div className={styles.chipRow}>
+                {topSkills.map((row) => (
+                  <Badge key={row.skill} tone={QUALITATIVE_LABEL_TONE[row.status] ?? "slate"}>
+                    {row.skill} · {row.status}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            {project.evidence_relationship_note && (
+              <p data-testid="public-project-relationship-note" className={styles.footNote}>
+                {project.evidence_relationship_note}
+              </p>
+            )}
+            {/* Proof-chain completeness — honest ✓/– labels, never a number. */}
+            <div data-testid="public-project-proof-chain" className={styles.chipRow}>
+              {PROOF_CHAIN_STEPS.map((step) => (
+                <span
+                  key={step.key}
+                  data-testid="public-proof-chain-item"
+                  data-source={step.label}
+                  data-present={chain[step.key] ? "true" : "false"}
+                >
+                  <Badge tone={chain[step.key] ? "emerald" : "slate"}>
+                    {chain[step.key] ? "✓ " : "– "}
+                    {shortSource(step.label)}
+                  </Badge>
+                </span>
+              ))}
+            </div>
+            {chain.missing.length > 0 && (
+              <p data-testid="public-project-gaps" className={styles.footNote}>
+                Not included: {chain.missing.map(shortSource).join(", ")}.
+              </p>
+            )}
+            {(project.project_defense_inspection?.length ?? 0) > 0 && (
+              <ProjectDefenseInspectionSection
+                cards={project.project_defense_inspection}
+                testId="public-passport-project-defense-inspection"
+              />
+            )}
+          </div>
         )}
-        <a
-          data-testid="public-passport-report-link"
-          href={project.public_report_path}
-          style={{
-            alignSelf: "flex-start",
-            padding: "8px 14px",
-            borderRadius: 8,
-            background: TOKEN.indigo,
-            color: "#fff",
-            fontSize: 13,
-            fontWeight: 600,
-            textDecoration: "none",
-          }}
-        >
-          View Verified Build Report →
-        </a>
       </div>
     </Card>
   )
 }
+
+// ── Section 4: Curated skill row (expandable to full evidence detail) ────────
+
+function SkillRow({ skill, passportSlug }: { skill: PublicPassportSkill; passportSlug: string }) {
+  const [open, setOpen] = useState(false)
+  const traces = skill.evidence_traces ?? []
+  const strongest = skill.strongest_project ?? null
+  const tier = skillTier(skill.status)
+  const hasDetail =
+    skill.projects.length > 0 ||
+    skill.evidence_sources.length > 0 ||
+    skill.evidence_chips.length > 0 ||
+    traces.length > 0
+
+  return (
+    <div
+      data-testid="public-passport-skill"
+      id={publicSkillAnchor(skill.skill)}
+      style={{ scrollMarginTop: 96, borderBottom: `1px solid ${TOKEN.line}` }}
+    >
+      <button
+        type="button"
+        className={styles.skillRowButton}
+        data-testid="public-skill-expand-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: TOKEN.ink, minWidth: 0, overflowWrap: "anywhere" }}>
+          {skill.skill}
+        </span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <Badge tone={TIER_TONE[tier]}>{tier}</Badge>
+          <span style={{ color: TOKEN.muted, fontSize: 12 }}>{open ? "▴" : "▾"}</span>
+        </span>
+      </button>
+
+      {open && (
+        <div
+          data-testid="public-skill-detail"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: "10px 12px 14px",
+            marginBottom: 10,
+            background: TOKEN.bg,
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 10,
+          }}
+        >
+          {/* The exact backend qualitative label — the tier above is only a
+              presentation grouping. */}
+          <div className={styles.chipRow}>
+            <Badge tone={QUALITATIVE_LABEL_TONE[skill.status] ?? "slate"}>{skill.status}</Badge>
+            {skill.evidence_sources.map((src) => (
+              <Badge key={src} tone="slate">
+                {shortSource(src)}
+              </Badge>
+            ))}
+          </div>
+
+          {hasDetail && strongest && (
+            <div data-testid="public-skill-strongest-project" className={styles.footNote}>
+              Strongest in <strong>{strongest.project_title}</strong>
+              {strongest.skill_status ? ` — ${strongest.skill_status}` : ""}{" "}
+              <a
+                href={strongest.public_report_path}
+                data-testid="public-strongest-project-link"
+                style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}
+              >
+                View project evidence →
+              </a>
+            </div>
+          )}
+
+          {skill.projects.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {skill.projects.map((p, i) => (
+                <div key={`${p.project_title}-${i}`} data-testid="public-skill-project-ref" className={styles.footNote}>
+                  <strong style={{ color: TOKEN.inkSoft }}>{p.project_title}</strong>
+                  {p.skill_status ? ` · ${p.skill_status}` : ""}
+                  {" — "}
+                  <a href={p.public_report_path} style={{ color: TOKEN.indigo, textDecoration: "none" }}>
+                    View report →
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {skill.evidence_chips.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {skill.evidence_chips.map((c, i) => (
+                <div key={`${c.label}-${i}`} className={styles.footNote}>
+                  <strong style={{ color: TOKEN.inkSoft }}>{c.label}</strong> — {c.short_summary}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {traces.length > 0 && <EvidenceTraceList traces={traces} />}
+
+          {skill.limitations.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 16 }}>
+              {skill.limitations.map((line, i) => (
+                <li key={i} className={styles.footNote}>
+                  {line}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <a
+            data-testid="public-skill-report-link"
+            href={publicSkillReportPath(passportSlug, fallbackSkillSlug(skill.skill))}
+            style={{ fontSize: 12.5, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+          >
+            Open the full public skill report →
+          </a>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const TOP_SKILLS_COLLAPSED = 10
+
+function SkillsSection({
+  skills,
+  passportSlug,
+}: {
+  skills: PublicPassportSkill[]
+  passportSlug: string
+}) {
+  const [showAll, setShowAll] = useState(false)
+  const visible = showAll ? skills : skills.slice(0, TOP_SKILLS_COLLAPSED)
+  const groups = useMemo(() => groupSkills(visible), [visible])
+  const hiddenCount = skills.length - visible.length
+
+  if (skills.length === 0) {
+    return (
+      <Card>
+        <p data-testid="public-passport-no-skills" className={styles.footNote}>
+          Evidence not assessed yet.
+        </p>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {groups.map((group) => (
+          <div key={group.title} data-testid="public-skill-group">
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: TOKEN.muted,
+                margin: "2px 0 4px",
+              }}
+            >
+              {group.title}
+            </div>
+            {group.skills.map((skill) => (
+              <SkillRow key={skill.skill} skill={skill} passportSlug={passportSlug} />
+            ))}
+          </div>
+        ))}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            className={styles.disclosureButton}
+            data-testid="public-skills-show-all"
+            onClick={() => setShowAll(true)}
+          >
+            View all evidence-backed skills ({skills.length}) ▾
+          </button>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+// ── Section 6: compact transparency + collapsed methodology ──────────────────
+
+function TransparencySection({ passport }: { passport: PublicWorkPassport }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <p className={styles.footNote} data-testid="public-passport-disclosure" style={{ textAlign: "center" }}>
+        VeriBridge summarizes evidence submitted by the candidate. Recruiters should review linked
+        reports and public sources before making decisions.
+      </p>
+      <button
+        type="button"
+        className={styles.disclosureButton}
+        style={{ alignSelf: "center" }}
+        data-testid="public-passport-methodology-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "Hide verification details ▴" : "Learn how verification works ▾"}
+      </button>
+      {open && (
+        <div
+          data-testid="public-passport-methodology"
+          style={{ display: "flex", flexDirection: "column", gap: 12 }}
+        >
+          <RecruiterTrustFraming />
+          <RecruiterReviewChecklist />
+          {passport.limitations.length > 0 && (
+            <Card>
+              <div style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink, marginBottom: 8 }}>
+                Limitations & transparency
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
+                {passport.limitations.map((line, i) => (
+                  <li key={i} className={styles.footNote}>
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+          {passport.verification_note && <p className={styles.footNote}>{passport.verification_note}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
 
 export function PublicPassportView({ slug }: { slug: string }) {
   const [passport, setPassport] = useState<PublicWorkPassport | null>(null)
@@ -437,64 +687,38 @@ export function PublicPassportView({ slug }: { slug: string }) {
   if (error || !passport) return <ErrorState message={error ?? "Passport not found."} onRetry={load} />
 
   const sourceCounts = Object.entries(passport.evidence_source_counts).filter(([, n]) => n > 0)
-  // Skills actually rendered in the Top Skills section — a project skill chip
-  // only becomes an in-page link when its target anchor exists.
   const availableSkillAnchors = new Set(passport.top_skills.map((s) => publicSkillAnchor(s.skill)))
+  // Section 2 candidate summary: the student's own bio wins; the generic
+  // passport summary is the fallback so older passports keep a description.
+  const summaryText = passport.identity?.bio?.trim() || passport.summary
 
   return (
-    <div
-      data-testid="public-passport"
-      style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px", display: "flex", flexDirection: "column", gap: 16 }}
-    >
-      {/* Header — passport-style candidate identity area (recruiter-safe) */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
-        <PassportIdentityHeader
-          identity={passport.identity}
-          fallbackName={passport.candidate_display_name}
-          fallbackHeadline={passport.headline}
-          align="center"
-        />
-        <p style={{ fontSize: 13, color: TOKEN.muted, margin: "0 auto", maxWidth: 620, lineHeight: 1.6, textAlign: "center" }}>
-          {passport.summary}
+    <div data-testid="public-passport" className={styles.page}>
+      {/* 1 — Candidate identity hero */}
+      <PassportHero
+        identity={passport.identity}
+        fallbackName={passport.candidate_display_name}
+        fallbackHeadline={passport.headline}
+        publishedAt={passport.published_at}
+      />
+
+      {/* 2 — Candidate summary (short) */}
+      {summaryText && (
+        <p
+          data-testid="public-passport-summary"
+          className={styles.footNote}
+          style={{ fontSize: 13.5, color: TOKEN.inkSoft, maxWidth: 720 }}
+        >
+          {summaryText}
         </p>
-        {passport.published_at && (
-          <Mono style={{ fontSize: 11, color: TOKEN.muted }}>
-            Published {new Date(passport.published_at).toLocaleDateString()}
-          </Mono>
-        )}
-      </div>
-
-      {/* Recruiter trust framing — what this Passport is, and what it is NOT */}
-      <RecruiterTrustFraming />
-
-      {/* Evidence graph at a glance + evidence source counts */}
-      {sourceCounts.length > 0 && (
-        <Card>
-          <CardHeader title="Evidence by Source" eyebrow="Across featured projects" icon="📎" />
-          <p data-testid="public-passport-overview" style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
-            {passport.featured_project_count} verified project
-            {passport.featured_project_count === 1 ? "" : "s"} · {passport.top_skills.length} evidence-backed skill
-            {passport.top_skills.length === 1 ? "" : "s"}. Every claim below links to inspectable evidence in a
-            published Verified Build Report.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {sourceCounts.map(([label, count]) => (
-              <span key={label} data-testid="public-evidence-source-count">
-                <Badge tone={SOURCE_TONE[label] ?? "slate"}>
-                  {label} · {count}
-                </Badge>
-              </span>
-            ))}
-          </div>
-        </Card>
       )}
 
-      {/* Featured projects + reports — what this candidate built comes first */}
+      {/* 3 — Featured projects: the primary recruiter content */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: TOKEN.ink, margin: 0 }}>Featured Verified Build Reports</h2>
+        <h2 className={styles.sectionTitle}>Featured projects</h2>
         {passport.featured_projects.length === 0 ? (
           <Card>
-            <p data-testid="public-passport-no-projects" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+            <p data-testid="public-passport-no-projects" className={styles.footNote}>
               No published project reports yet.
             </p>
           </Card>
@@ -509,43 +733,27 @@ export function PublicPassportView({ slug }: { slug: string }) {
         )}
       </section>
 
-      {/* Top skills — the second lens: what those projects prove */}
-      <Card>
-        <CardHeader title="Top Evidence-Backed Skills" eyebrow="Qualitative labels" icon="🧩" />
-        {passport.top_skills.length === 0 ? (
-          <p data-testid="public-passport-no-skills" style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-            Evidence not assessed yet.
-          </p>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {passport.top_skills.map((skill) => (
-              <SkillChip key={skill.skill} skill={skill} passportSlug={slug} />
-            ))}
-          </div>
-        )}
-      </Card>
+      {/* 4 — Curated top skills */}
+      <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <h2 className={styles.sectionTitle}>Top evidence-backed skills</h2>
+        <SkillsSection skills={passport.top_skills} passportSlug={slug} />
+      </section>
 
-      {/* Limitations / transparency */}
-      <Card>
-        <CardHeader title="Limitations / Transparency" eyebrow="In good faith" icon="⚠️" />
-        <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
-          {passport.limitations.map((line, i) => (
-            <li key={i} style={{ fontSize: 12, color: TOKEN.muted }}>
-              {line}
-            </li>
+      {/* 5 — Compact evidence coverage summary */}
+      {sourceCounts.length > 0 && (
+        <div className={styles.chipRow} style={{ justifyContent: "center" }} data-testid="public-passport-overview">
+          {sourceCounts.map(([label, count]) => (
+            <span key={label} data-testid="public-evidence-source-count">
+              <Badge tone="slate">
+                {shortSource(label)} · {count}
+              </Badge>
+            </span>
           ))}
-        </ul>
-      </Card>
-
-      {/* Recruiter review checklist — how to actually inspect this evidence */}
-      <RecruiterReviewChecklist />
-
-      {/* Verification note */}
-      {passport.verification_note && (
-        <p style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.6, textAlign: "center", margin: 0 }}>
-          {passport.verification_note}
-        </p>
+        </div>
       )}
+
+      {/* 6/7 — Transparency (compact) + methodology and deep detail collapsed */}
+      <TransparencySection passport={passport} />
 
       {/* Recruiter CTA */}
       <div data-testid="public-passport-cta">

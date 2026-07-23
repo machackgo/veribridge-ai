@@ -204,10 +204,16 @@ describe("PublicPassportView", () => {
     expect(screen.queryByTestId("unpublish-passport-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("copy-passport-link-button")).not.toBeInTheDocument()
-    // The only buttons allowed on the public passport are read-only skill
-    // expand/collapse toggles — never any mutating edit control.
+    // The only buttons allowed on the public passport are read-only
+    // expand/collapse disclosure toggles — never any mutating edit control.
+    const readOnlyToggles = new Set([
+      "public-skill-expand-toggle",
+      "public-project-detail-toggle",
+      "public-passport-methodology-toggle",
+      "public-skills-show-all",
+    ])
     for (const btn of screen.queryAllByRole("button")) {
-      expect(btn).toHaveAttribute("data-testid", "public-skill-expand-toggle")
+      expect(readOnlyToggles.has(btn.getAttribute("data-testid") ?? "")).toBe(true)
     }
   })
 
@@ -217,8 +223,8 @@ describe("PublicPassportView", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
-    const projectsHeading = screen.getByRole("heading", { name: "Featured Verified Build Reports" })
-    const skillsSection = screen.getByText("Top Evidence-Backed Skills")
+    const projectsHeading = screen.getByRole("heading", { name: "Featured projects" })
+    const skillsSection = screen.getByRole("heading", { name: "Top evidence-backed skills" })
     expect(
       projectsHeading.compareDocumentPosition(skillsSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
@@ -230,6 +236,9 @@ describe("PublicPassportView", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
+    // Proof-chain completeness is progressive disclosure: opened explicitly.
+    fireEvent.click(screen.getByTestId("public-project-detail-toggle"))
+
     expect(screen.getByTestId("public-project-proof-chain")).toBeInTheDocument()
     const items = screen.getAllByTestId("public-proof-chain-item")
     expect(items).toHaveLength(5)
@@ -239,18 +248,19 @@ describe("PublicPassportView", () => {
     expect(bySource["Project Defense"]).toBe("true")
     expect(bySource["Website Proof"]).toBe("false")
     // Missing sources are stated honestly, with labels only.
-    expect(screen.getByTestId("public-project-gaps")).toHaveTextContent("Website Proof")
+    expect(screen.getByTestId("public-project-gaps")).toHaveTextContent("Website")
   })
 
-  it("renders the compact evidence-graph overview line", async () => {
+  it("renders the compact evidence coverage summary chips", async () => {
     vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
 
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
     const overview = screen.getByTestId("public-passport-overview")
-    expect(overview).toHaveTextContent("1 verified project")
-    expect(overview).toHaveTextContent("2 evidence-backed skills")
+    expect(overview).toHaveTextContent("GitHub · 1")
+    expect(overview).toHaveTextContent("Project Defense · 1")
+    expect(screen.getAllByTestId("public-evidence-source-count").length).toBeGreaterThan(0)
   })
 
   it("links featured-project skill chips to the matching public skill section (Phase 2)", async () => {
@@ -280,7 +290,8 @@ describe("PublicPassportView", () => {
     expect(links[0]).toHaveAttribute("href", "#public-skill-python")
     // The anchor target exists on the skill row.
     expect(document.getElementById("public-skill-python")).toBeTruthy()
-    // The relationship note renders with safe labels only.
+    // The relationship note renders (progressive disclosure) with safe labels only.
+    fireEvent.click(screen.getByTestId("public-project-detail-toggle"))
     expect(screen.getByTestId("public-project-relationship-note")).toHaveTextContent(
       "This project demonstrates Python",
     )
@@ -319,7 +330,7 @@ describe("PublicPassportView", () => {
     fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
 
     const strongest = await screen.findByTestId("public-skill-strongest-project")
-    expect(strongest).toHaveTextContent("This skill is strongest in Skill Evidence Tracker")
+    expect(strongest).toHaveTextContent("Strongest in Skill Evidence Tracker")
     expect(screen.getByTestId("public-strongest-project-link")).toHaveAttribute(
       "href",
       "/vbr/report/tok-abc",
@@ -371,9 +382,159 @@ describe("PublicPassportView", () => {
     expect(raw).not.toMatch(/fully verified/i)
     expect(raw).not.toMatch(/\b\d{1,3}%/)
 
-    // Qualitative labels render instead.
-    expect(screen.getByText("Demonstrated")).toBeInTheDocument()
+    // Qualitative tiers render instead ("Demonstrated" / "Supported").
+    expect(screen.getAllByText("Demonstrated").length).toBeGreaterThan(0)
+    expect(screen.getAllByText("Supported").length).toBeGreaterThan(0)
+    // The exact backend label stays available inside the expanded detail —
+    // the tier is presentation grouping, never an upgrade.
+    fireEvent.click(screen.getAllByTestId("public-skill-expand-toggle")[1])
     expect(screen.getByText("Partially demonstrated")).toBeInTheDocument()
+  })
+})
+
+// ── Candidate identity hero (consented Passport Profile) ─────────────────────
+
+describe("PublicPassportView — candidate identity hero", () => {
+  const FULL_IDENTITY = {
+    display_name: "Ada Lovelace",
+    headline: "AI Engineer | M.S. in Artificial Intelligence",
+    program: null,
+    degree_level: null,
+    graduation_year: 2027,
+    region: null,
+    education_summary: "",
+    public_status: "Verified Work Passport",
+    public_path: null,
+    last_updated: "2026-01-02T00:00:00Z",
+    evidence_source_summary: [],
+    verification_label: "Verified Work Passport",
+    avatar_url: "https://cdn.example.com/avatars/ada.png",
+    bio: "I build evidence-backed AI products.",
+    institution: "Worcester Polytechnic Institute",
+    degree: "M.S. in Artificial Intelligence",
+    location: "Worcester, Massachusetts",
+    availability_label: "Seeking internship",
+    github_url: "https://github.com/ada",
+    linkedin_url: "https://www.linkedin.com/in/ada",
+    portfolio_url: "https://ada.dev",
+    role_areas: ["AI/ML"],
+    work_authorization_note: null,
+    has_custom_profile: true,
+  }
+
+  it("renders the full identity hero: photo, name, headline, education, links, availability", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({ identity: FULL_IDENTITY }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const hero = screen.getByTestId("public-passport-hero")
+    expect(screen.getByTestId("passport-identity-name")).toHaveTextContent("Ada Lovelace")
+    expect(screen.getByTestId("public-hero-headline")).toHaveTextContent(
+      "AI Engineer | M.S. in Artificial Intelligence",
+    )
+    expect(screen.getByTestId("public-hero-education")).toHaveTextContent(
+      "M.S. in Artificial Intelligence · Worcester Polytechnic Institute",
+    )
+    expect(hero).toHaveTextContent("Expected 2027 · Worcester, Massachusetts")
+    expect(screen.getByTestId("public-hero-availability")).toHaveTextContent("Seeking internship")
+    expect(hero.querySelector("img")).toHaveAttribute(
+      "src",
+      "https://cdn.example.com/avatars/ada.png",
+    )
+    const links = screen.getByTestId("public-hero-links")
+    const hrefs = Array.from(links.querySelectorAll("a")).map((a) => a.getAttribute("href"))
+    expect(hrefs).toEqual([
+      "https://github.com/ada",
+      "https://www.linkedin.com/in/ada",
+      "https://ada.dev",
+    ])
+    // The candidate summary uses the student's own bio.
+    expect(screen.getByTestId("public-passport-summary")).toHaveTextContent(
+      "I build evidence-backed AI products.",
+    )
+  })
+
+  it("omits empty identity fields cleanly — no fake placeholders, no 'Not provided'", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        identity: {
+          ...FULL_IDENTITY,
+          avatar_url: null,
+          bio: null,
+          institution: null,
+          degree: null,
+          graduation_year: null,
+          location: null,
+          availability_label: null,
+          github_url: null,
+          linkedin_url: null,
+          portfolio_url: null,
+          work_authorization_note: null,
+        },
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.queryByTestId("public-hero-education")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("public-hero-links")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("public-hero-availability")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("public-hero-work-auth")).not.toBeInTheDocument()
+    const raw = document.body.textContent ?? ""
+    expect(raw).not.toMatch(/not provided/i)
+    expect(raw).not.toMatch(/unknown/i)
+    // Name still renders; photo falls back to initials (no broken <img>).
+    expect(screen.getByTestId("passport-identity-name")).toHaveTextContent("Ada Lovelace")
+    expect(screen.getByTestId("public-passport-hero").querySelector("img")).toBeNull()
+  })
+
+  it("shows the work-authorization badge only when the note is present (opt-in)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        identity: { ...FULL_IDENTITY, work_authorization_note: "Authorized to work in the US" },
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByTestId("public-hero-work-auth")).toHaveTextContent(
+      "Authorized to work in the US",
+    )
+  })
+
+  it("never renders an unsafe avatar URL (signed/tokenized) — falls back to initials", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        identity: {
+          ...FULL_IDENTITY,
+          avatar_url: "https://cdn.example.com/avatars/ada.png?token=secret123",
+        },
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByTestId("public-passport-hero").querySelector("img")).toBeNull()
+    expect(document.body.innerHTML).not.toContain("token=secret123")
+  })
+
+  it("falls back to the placeholder identity when no profile exists (legacy payloads)", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({ candidate_display_name: null, identity: undefined }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    expect(screen.getByTestId("passport-identity-name")).toHaveTextContent(
+      "Verified candidate profile",
+    )
   })
 })
 
@@ -386,6 +547,9 @@ describe("PublicPassportView — recruiter link-review MVP", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
+    // The full trust framing sits behind "Learn how verification works" —
+    // available, never dominating the primary view.
+    fireEvent.click(screen.getByTestId("public-passport-methodology-toggle"))
     const framing = screen.getByTestId("recruiter-trust-framing")
     expect(framing).toHaveTextContent(
       "This Passport summarizes public-safe proof submitted by the candidate.",
@@ -402,6 +566,7 @@ describe("PublicPassportView — recruiter link-review MVP", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
+    fireEvent.click(screen.getByTestId("public-passport-methodology-toggle"))
     const checklist = screen.getByTestId("recruiter-review-checklist")
     expect(checklist).toHaveTextContent("GitHub / code evidence")
     expect(checklist).toHaveTextContent("website / runtime evidence")
@@ -415,16 +580,14 @@ describe("PublicPassportView — recruiter link-review MVP", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
-    // React (no drilldown detail) shows its report link inline.
-    expect(screen.getByTestId("public-skill-report-link")).toHaveAttribute(
-      "href",
-      "/p/slug123/skills/react",
-    )
-
-    // Python (has detail) shows its report link inside the expanded drilldown.
-    fireEvent.click(screen.getByTestId("public-skill-expand-toggle"))
+    // Each skill row's expanded detail links to its public skill report.
+    for (const toggle of screen.getAllByTestId("public-skill-expand-toggle")) {
+      fireEvent.click(toggle)
+    }
     const links = await screen.findAllByTestId("public-skill-report-link")
-    expect(links.map((a) => a.getAttribute("href"))).toContain("/p/slug123/skills/python")
+    const hrefs = links.map((a) => a.getAttribute("href"))
+    expect(hrefs).toContain("/p/slug123/skills/python")
+    expect(hrefs).toContain("/p/slug123/skills/react")
   })
 
   it("shows the recruiter CTA with the exact copy and request-vbr link", async () => {
@@ -510,6 +673,8 @@ describe("PublicPassportView — Phase 3 public safety", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
+    // Limitations live inside the collapsed verification-details section.
+    fireEvent.click(screen.getByTestId("public-passport-methodology-toggle"))
     expect(screen.getByText(limitation)).toBeInTheDocument()
     // No private ids, owner-only routes, or suggestion logic ride along.
     expect(document.body.innerHTML).not.toContain("/student/vbr/projects/")
@@ -669,6 +834,8 @@ describe("PublicPassportView — Project Defense inspection (fail-closed)", () =
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
+    // Defense inspection cards live inside the project's evidence detail.
+    fireEvent.click(screen.getByTestId("public-project-detail-toggle"))
     expect(screen.getByTestId("public-passport-project-defense-inspection")).toBeInTheDocument()
     expect(screen.getByTestId("pdi-withheld")).toHaveTextContent("withheld because this session is not public-safe")
     // No answer text / question / timestamp exposed in the withheld state.
@@ -710,6 +877,7 @@ describe("PublicPassportView — Project Defense inspection (fail-closed)", () =
     )
     const { container } = render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
+    fireEvent.click(screen.getByTestId("public-project-detail-toggle"))
 
     // No <video> element and no verbatim transcript excerpt on the recruiter view.
     expect(screen.queryByTestId("pdi-video")).toBeNull()

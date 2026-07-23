@@ -1,0 +1,116 @@
+/* Public Verified Build Report — mobile-first responsive layout.
+ * Recruiters open these links from phones (QR / chat), so primary content is
+ * stacked cards with no horizontal scrolling; deep evidence sits in
+ * expandable sections. */
+
+.page {
+  max-width: 880px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0 auto;
+  padding: clamp(16px, 4vw, 48px) clamp(14px, 4vw, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 2.5vw, 20px);
+}
+
+.reportTitle {
+  font-size: clamp(20px, 5.5vw, 27px);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: #0a0e1a;
+  margin: 0;
+  line-height: 1.2;
+  overflow-wrap: break-word;
+}
+
+.sectionTitle {
+  font-size: clamp(15px, 4vw, 17px);
+  font-weight: 700;
+  color: #0a0e1a;
+  margin: 0;
+}
+
+.bodyText {
+  font-size: clamp(13px, 3.4vw, 13.5px);
+  color: #1f2a44;
+  margin: 0;
+  line-height: 1.65;
+  overflow-wrap: break-word;
+}
+
+.mutedText {
+  font-size: 12.5px;
+  color: #6b7280;
+  margin: 0;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Stacked skill evidence card (replaces the desktop matrix table). */
+.skillCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #e6e8ef;
+  border-radius: 12px;
+  background: #fff;
+  min-width: 0;
+}
+
+.skillCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skillName {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0a0e1a;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.safeLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  min-height: 42px;
+  border-radius: 10px;
+  border: 1px solid #e6e8ef;
+  background: #fff;
+  color: #4f46e5;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+
+.disclosureButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 6px 0;
+  min-height: 40px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #4f46e5;
+  cursor: pointer;
+  text-align: left;
+}

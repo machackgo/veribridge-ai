@@ -6,7 +6,7 @@
  * fields, numeric scores, /100 bars, score wording, or "fully verified".
  */
 
-import { render, screen } from "@testing-library/react"
+import { render, screen, fireEvent } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { PublicReportView } from "../app/vbr/report/[token]/PublicReportView"
 import type { PublicVBRProjectReport } from "@/lib/vbr-api"
@@ -136,8 +136,10 @@ describe("PublicReportView", () => {
     expect(screen.getByRole("heading", { name: "Verified Build Report" })).toBeInTheDocument()
     expect(screen.getByText("Skill Evidence Tracker")).toBeInTheDocument()
     expect(screen.getByText("Jordan Rivera")).toBeInTheDocument()
-    expect(screen.getByText("Skill Evidence Matrix")).toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "Evidence-backed skills" })).toBeInTheDocument()
     expect(screen.getAllByTestId("public-skill-row")).toHaveLength(2)
+    // Timestamped video chips live in the collapsed deep-evidence section.
+    fireEvent.click(screen.getByTestId("public-report-deep-evidence-toggle"))
     expect(screen.getByTestId("public-video-chip").textContent).toContain("Video 03:12")
     // CTA present.
     expect(screen.getByTestId("public-report-cta")).toBeInTheDocument()
@@ -167,8 +169,9 @@ describe("PublicReportView", () => {
     render(<PublicReportView token="tok-1" />)
     await screen.findByTestId("public-report")
 
-    // Traceability section renders concrete traces.
-    expect(screen.getByText("Evidence Traceability")).toBeInTheDocument()
+    // Traceability is progressive disclosure: opened explicitly.
+    fireEvent.click(screen.getByTestId("public-report-deep-evidence-toggle"))
+    expect(screen.getByText("Evidence traceability")).toBeInTheDocument()
     expect(screen.getAllByTestId("evidence-trace").length).toBe(2)
     // Public source links directly; private source shows a generic note (no raw file).
     expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute(
@@ -199,6 +202,7 @@ describe("PublicReportView", () => {
 
     render(<PublicReportView token="tok-1" />)
     await screen.findByTestId("public-report")
+    fireEvent.click(screen.getByTestId("public-report-deep-evidence-toggle"))
 
     expect(screen.queryByTestId("evidence-trace-link")).not.toBeInTheDocument()
     expect(screen.getByTestId("evidence-trace-private-note")).toBeInTheDocument()
@@ -235,9 +239,9 @@ describe("PublicReportView", () => {
 
     const sourceBlocks = screen.getAllByTestId("public-skill-supporting-sources")
     expect(sourceBlocks).toHaveLength(1)
-    expect(sourceBlocks[0].textContent).toContain("GitHub Proof")
+    expect(sourceBlocks[0].textContent).toContain("GitHub")
     expect(sourceBlocks[0].textContent).toContain("Project Defense")
-    expect(sourceBlocks[0].textContent).toContain("Video Evidence")
+    expect(sourceBlocks[0].textContent).toContain("Video")
 
     expect(screen.getByTestId("public-skill-limitations").textContent).toContain("pending more proof")
 
@@ -325,6 +329,7 @@ describe("PublicReportView", () => {
 
     render(<PublicReportView token="tok-1" />)
     await screen.findByTestId("public-report")
+    fireEvent.click(screen.getByTestId("public-report-deep-evidence-toggle"))
 
     expect(screen.getByText(/Private\/internal link omitted/i)).toBeInTheDocument()
     const raw = document.body.textContent ?? ""
@@ -389,16 +394,19 @@ describe("PublicReportView", () => {
     render(<PublicReportView token="tok-1" />)
     const container = await screen.findByTestId("public-report")
 
-    // The app body is a flex container: without width:100% + minWidth:0 the
-    // report is a flex item pinned at min-content width, dragging the page
-    // wider than a phone viewport.
-    expect(container.style.width).toBe("100%")
-    expect(container.style.minWidth).toBe("0px")
+    // The width:100% + min-width:0 guard now lives in the CSS module's .page
+    // class — assert the class is applied so a flex parent can never pin the
+    // report at min-content width (VBR-RRO-D001).
+    expect(container.className).toMatch(/page/)
 
-    // The skill matrix (a table that cannot shrink below min-content) must
-    // scroll inside its own container rather than widening the page.
-    const scroller = screen.getByTestId("skill-matrix-scroll")
-    expect(scroller.style.overflowX).toBe("auto")
-    expect(scroller.contains(screen.getAllByTestId("public-skill-row")[0])).toBe(true)
+    // Skill evidence renders as stacked cards — there is no min-content table
+    // in the primary content that could drag the page wider than a phone
+    // viewport (tables cannot shrink below min-content width).
+    expect(container.querySelector("table")).toBeNull()
+    const rows = screen.getAllByTestId("public-skill-row")
+    expect(rows.length).toBeGreaterThan(0)
+    for (const row of rows) {
+      expect(row.tagName).toBe("DIV")
+    }
   })
 })

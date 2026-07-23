@@ -42,6 +42,7 @@ const NAV_SECTIONS: ShellNavSection[] = [
     title: "Passport",
     items: [
       { label: "Work Passport", href: "/student/vbr/passport" },
+      { label: "Passport Profile", href: "/student/vbr/passport/profile" },
       { label: "Proof Vault", href: "/student/vbr/passport/vault" },
     ],
   },
@@ -94,6 +95,8 @@ export function studentBreadcrumbs(pathname: string): Crumb[] {
   else if (pathname.startsWith("/student/settings")) tail = [{ label: "Settings" }]
   else if (pathname.startsWith("/student/vbr/passport/vault"))
     tail = [{ label: "Work Passport", href: "/student/vbr/passport" }, { label: "Proof Vault" }]
+  else if (pathname.startsWith("/student/vbr/passport/profile"))
+    tail = [{ label: "Work Passport", href: "/student/vbr/passport" }, { label: "Passport Profile" }]
   else if (pathname.startsWith("/student/vbr/passport/skills/"))
     tail = [{ label: "Work Passport", href: "/student/vbr/passport" }, { label: "Skill Report" }]
   else if (pathname.startsWith("/student/vbr/passport")) tail = [{ label: "Work Passport" }]

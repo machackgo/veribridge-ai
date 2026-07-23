@@ -507,6 +507,31 @@ class PassportIdentity(BaseModel):
     # initials. Sanitized in ``_build_identity`` before it is ever emitted.
     avatar_url: str | None = None
 
+    # ── Consented Passport Profile fields (migration 062) ────────────────────
+    # Student-authored, visibility-filtered identity. Every field is optional
+    # and omitted when empty — the surface never renders placeholders for them.
+    preferred_name: str | None = None
+    pronunciation: str | None = None
+    bio: str | None = None
+    institution: str | None = None
+    # Free-text degree/program line (e.g. "M.S. in Artificial Intelligence").
+    degree: str | None = None
+    # Broad location only (city/state) — never a street address.
+    location: str | None = None
+    # Recruiter-facing availability label (e.g. "Seeking internship"); present
+    # only when the student enabled the availability toggle.
+    availability_label: str | None = None
+    # Public links — validated plain https URLs (github/linkedin host-pinned).
+    github_url: str | None = None
+    linkedin_url: str | None = None
+    portfolio_url: str | None = None
+    role_areas: list[str] = Field(default_factory=list)
+    # Present ONLY when the student explicitly opted in (off by default).
+    work_authorization_note: str | None = None
+    # True when a consented Passport Profile exists (drives the student-side
+    # "Complete your Passport Profile" prompt; public surface may ignore it).
+    has_custom_profile: bool = False
+
     model_config = {"extra": "forbid"}
 
 

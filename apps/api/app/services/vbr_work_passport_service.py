@@ -53,11 +53,13 @@ from app.services.passport_attachment_intelligence import (
 )
 from app.services.proof_attachment_intelligence import classify_vault_attachments
 from app.services.proof_synthesis_agent_service import synthesize_skill_report
+from app.services.passport_profile_service import public_passport_profile
 from app.services.public_report_safety_service import (
     PublicReportUnsafeError,
     enforce_public_safe,
     public_safe_skill_name,
     public_safe_skill_report,
+    scrub_public_text,
 )
 from app.services.skill_normalization import skill_slug
 from app.services.safe_public_url import is_safe_public_url
@@ -1153,6 +1155,34 @@ def _public_safe_avatar_url(url: Any) -> str | None:
     return None
 
 
+def _safe_identity_long_text(value: Any, limit: int = 700) -> str | None:
+    """Scrub a longer student-authored paragraph (bio) for public display.
+
+    Uses the shared scrubber (emails / score-style / secret fragments redacted,
+    length-capped) without the single-line token filtering — a bio is a real
+    paragraph, not a label. Empty after scrubbing → ``None`` (omitted).
+    """
+    if value is None:
+        return None
+    scrubbed = scrub_public_text(value, limit=limit)
+    return scrubbed or None
+
+
+def _public_safe_link(url: Any) -> str | None:
+    """A student profile link, only when it is a plain public https URL.
+
+    Write-time validation already enforces https + host pinning; this read-time
+    guard re-checks so a value that bypassed validation (e.g. direct DB write)
+    still cannot ride out signed/tokenized or non-https.
+    """
+    raw = str(url).strip() if url is not None else ""
+    if not raw or not raw.lower().startswith("https://"):
+        return None
+    if _UNSAFE_AVATAR_MARKER_RE.search(raw):
+        return None
+    return raw
+
+
 def _build_identity(
     *,
     display_name: str | None,
@@ -1162,6 +1192,7 @@ def _build_identity(
     public_status: str,
     public_path: str | None,
     last_updated: str | None,
+    passport_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the recruiter-safe identity header (non-PII only).
 
@@ -1171,13 +1202,26 @@ def _build_identity(
     (``display_name``/``headline``) so a raw UUID, private id, email, path, or
     token can never surface on the identity header.
 
-    TODO(profile-model): this is an interim header assembled from the few safe
-    onboarding fields available today. When a dedicated, consented candidate
-    profile model exists (verified name, avatar, links), build the header from it
-    here — never invent profile fields; keep the "Verified candidate profile"
-    placeholder until real, recruiter-safe fields are supplied.
+    ``passport_profile`` is the consented candidate identity (migration 062,
+    already visibility-filtered by :func:`public_passport_profile`). Its fields
+    are the canonical source when present; onboarding/legacy fields remain the
+    fallback. Fields the student left empty are omitted — never invented.
     """
-    grad = profile.get("graduation_year")
+    pp = passport_profile or {}
+    # The consented profile's education fields win inside the education line.
+    edu_profile = dict(profile)
+    if pp.get("institution"):
+        edu_profile["university"] = pp["institution"]
+    if pp.get("degree"):
+        edu_profile["degree"] = pp["degree"]
+    if isinstance(pp.get("graduation_year"), int):
+        edu_profile["graduation_year"] = pp["graduation_year"]
+    grad = edu_profile.get("graduation_year")
+    role_areas = [
+        cleaned
+        for cleaned in (_safe_identity_text(r) for r in pp.get("role_areas") or [])
+        if cleaned
+    ][:6]
     return {
         "display_name": _safe_identity_text(display_name) or _SAFE_DISPLAY_NAME,
         "headline": _safe_identity_text(headline) or _DEFAULT_HEADLINE,
@@ -1187,13 +1231,27 @@ def _build_identity(
         ),
         "graduation_year": grad if isinstance(grad, int) and grad > 0 else None,
         "region": _safe_identity_text(profile.get("university_country")),
-        "education_summary": _safe_identity_text(_education_summary(profile)) or "",
+        "education_summary": _safe_identity_text(_education_summary(edu_profile)) or "",
         "public_status": public_status,
         "public_path": public_path,
         "last_updated": last_updated,
         "evidence_source_summary": _evidence_source_summary(evidence_source_counts),
         "verification_label": _VERIFICATION_LABEL,
         "avatar_url": _public_safe_avatar_url(profile.get("avatar_url")),
+        # Consented Passport Profile fields (already visibility-filtered).
+        "preferred_name": _safe_identity_text(pp.get("preferred_name")),
+        "pronunciation": _safe_identity_text(pp.get("pronunciation")),
+        "bio": _safe_identity_long_text(pp.get("bio")),
+        "institution": _safe_identity_text(pp.get("institution")),
+        "degree": _safe_identity_text(pp.get("degree")),
+        "location": _safe_identity_text(pp.get("location")),
+        "availability_label": _safe_identity_text(pp.get("availability_label")),
+        "github_url": _public_safe_link(pp.get("github_url")),
+        "linkedin_url": _public_safe_link(pp.get("linkedin_url")),
+        "portfolio_url": _public_safe_link(pp.get("portfolio_url")),
+        "role_areas": role_areas,
+        "work_authorization_note": _safe_identity_text(pp.get("work_authorization_note")),
+        "has_custom_profile": bool(pp),
     }
 
 
@@ -1803,18 +1861,24 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
     )
 
     status_part = _status_response(passport_row)
-    # Identity source order (private passport): the student-maintained profile
-    # (student_profiles.full_name) first, then the users row, then the neutral
+    # Identity source order (private passport): the consented Passport Profile
+    # (passport_profiles, migration 062) first, then the student-maintained
+    # profile (student_profiles.full_name), then the users row, then the neutral
     # safe placeholder applied inside ``_build_identity``. Only whitelisted safe
-    # profile fields are ever read — real identity, never invented.
+    # profile fields are ever read — real identity, never invented. The private
+    # header uses the SAME visibility-filtered projection the public surface
+    # serves, so the owner previews exactly what a recruiter will see.
+    passport_profile = public_passport_profile(db, str(user_id))
     student_profile = _lookup_student_profile_identity(db, str(user_id))
-    display_name = _student_profile_display_name(student_profile) or _lookup_display_name(
-        db, str(user_id)
+    display_name = (
+        passport_profile.get("full_name")
+        or _student_profile_display_name(student_profile)
+        or _lookup_display_name(db, str(user_id))
     )
-    # An explicitly saved passport headline wins; without one, the first safe
-    # target role from the student profile is an honest role line; the generic
-    # default headline remains only when neither exists.
-    identity_headline = status_part["headline"]
+    # The Passport Profile headline is the canonical personal headline; an
+    # explicitly saved passport headline is the next fallback; then the first
+    # safe target role; the generic default remains only when none exists.
+    identity_headline = passport_profile.get("headline") or status_part["headline"]
     if identity_headline == _DEFAULT_HEADLINE:
         identity_headline = _first_target_role(student_profile) or _DEFAULT_HEADLINE
     evidence_source_counts = _evidence_source_counts(project_summaries)
@@ -1828,6 +1892,7 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         public_status="Public passport live" if status_part["is_published"] else "Private only",
         public_path=status_part["public_path"],
         last_updated=status_part["published_at"] or _now(),
+        passport_profile=passport_profile,
     )
     return {
         "candidate_display_name": display_name,
@@ -1985,22 +2050,39 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         "Evidence is shown with qualitative labels only — never numeric scores or rankings."
     )
 
-    public_display_name = _lookup_display_name(db, owner_id)
+    # Identity source order (public passport): the consented Passport Profile
+    # first (visibility-filtered — only fields the student chose to publish),
+    # then the student-maintained profile name, then the users-row lookup, then
+    # the neutral placeholder. Identity is served LIVE at read time (the
+    # documented consistency policy): profile edits propagate immediately to an
+    # already-published passport, while evidence/report content stays
+    # publication-versioned behind its own report tokens.
+    passport_profile = public_passport_profile(db, owner_id)
+    student_profile = _lookup_student_profile_identity(db, owner_id)
+    public_display_name = (
+        passport_profile.get("full_name")
+        or _student_profile_display_name(student_profile)
+        or _lookup_display_name(db, owner_id)
+    )
+    public_headline = passport_profile.get("headline") or _headline_of(passport_row)
     public_evidence_counts = _evidence_source_counts(featured_summaries)
     public_identity = _build_identity(
         display_name=public_display_name,
-        headline=_headline_of(passport_row),
-        profile=_lookup_candidate_profile(db, owner_id),
+        headline=public_headline,
+        profile=_merge_identity_profile(
+            _lookup_candidate_profile(db, owner_id), student_profile
+        ),
         evidence_source_counts=public_evidence_counts,
         # The public surface is itself the passport — it never carries a private
         # owner link or owner-only publish-status text.
         public_status=_VERIFICATION_LABEL,
         public_path=None,
         last_updated=passport_row.get("published_at"),
+        passport_profile=passport_profile,
     )
     public = {
         "candidate_display_name": public_display_name,
-        "headline": _headline_of(passport_row),
+        "headline": public_headline,
         "summary": _summary_of(passport_row),
         "identity": public_identity,
         "top_skills": top_skills,

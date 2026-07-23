@@ -195,6 +195,9 @@ export type VBRPublicReportResponse = {
   claims: VBRPublicReportClaim[]
   methodology: string[]
   verification_note: string
+  /** `/vbr/report/{token}` when this project has an active canonical public
+   * report — the legacy page redirects there. Absent/null otherwise. */
+  canonical_report_path?: string | null
 }
 
 async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
@@ -2859,6 +2862,27 @@ export type PassportIdentity = {
    * unsafe. May be absent on older payloads.
    */
   avatar_url?: string | null
+  // ── Consented Passport Profile fields (student-authored, visibility-filtered).
+  // Every field is optional and omitted when empty — surfaces render nothing
+  // for missing fields, never a placeholder. May be absent on older payloads.
+  preferred_name?: string | null
+  pronunciation?: string | null
+  bio?: string | null
+  institution?: string | null
+  /** Free-text degree/program line (e.g. "M.S. in Artificial Intelligence"). */
+  degree?: string | null
+  /** Broad location only (city/state) — never a street address. */
+  location?: string | null
+  /** Recruiter-facing availability label (present only when enabled). */
+  availability_label?: string | null
+  github_url?: string | null
+  linkedin_url?: string | null
+  portfolio_url?: string | null
+  role_areas?: string[]
+  /** Present ONLY when the student explicitly opted in (off by default). */
+  work_authorization_note?: string | null
+  /** True when a consented Passport Profile exists (owner-side prompt). */
+  has_custom_profile?: boolean
 }
 
 export type PrivateWorkPassport = {
@@ -3300,6 +3324,84 @@ export async function uploadPassportPhoto(file: File): Promise<PassportPhotoResu
 export async function removePassportPhoto(): Promise<PassportPhotoResult> {
   const res = await fetchAPI("/api/v1/student/vbr/passport/identity/photo", { method: "DELETE" })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to remove photo (HTTP ${res.status}).`))
+  return res.json()
+}
+
+// ── Passport Profile (consented candidate identity) ──────────────────────────
+
+/** Closed availability vocabulary for the Passport Profile. */
+export const PASSPORT_AVAILABILITY_OPTIONS = [
+  { value: "", label: "Not shown" },
+  { value: "seeking_internship", label: "Seeking internship" },
+  { value: "seeking_full_time", label: "Seeking full-time roles" },
+  { value: "open_to_opportunities", label: "Open to opportunities" },
+] as const
+
+/** The student's Passport Profile as stored (owner view). */
+export type PassportProfile = {
+  full_name: string | null
+  preferred_name: string | null
+  pronunciation: string | null
+  headline: string | null
+  bio: string | null
+  institution: string | null
+  degree: string | null
+  graduation_year: number | null
+  location: string | null
+  github_url: string | null
+  linkedin_url: string | null
+  portfolio_url: string | null
+  role_areas: string[]
+  availability: string | null
+  work_authorization_note: string | null
+  show_location: boolean
+  show_availability: boolean
+  show_links: boolean
+  show_work_authorization: boolean
+  updated_at: string | null
+}
+
+/** Editor-only prefill hints from existing account data (never auto-published). */
+export type PassportProfilePrefill = {
+  full_name?: string | null
+  headline?: string | null
+  institution?: string | null
+  degree?: string | null
+  graduation_year?: number | null
+  location?: string | null
+  github_url?: string | null
+  linkedin_url?: string | null
+}
+
+export type PassportProfileResponse = {
+  profile: PassportProfile
+  has_profile: boolean
+  avatar_url: string | null
+  prefill: PassportProfilePrefill
+}
+
+/** PATCH-style update: omitted fields unchanged; null/empty clears a field. */
+export type PassportProfileUpdate = Partial<
+  Omit<PassportProfile, "updated_at">
+>
+
+/** Get the current user's Passport Profile (owner editor view). */
+export async function getPassportProfile(): Promise<PassportProfileResponse> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/profile")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load profile (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Update the current user's Passport Profile (PATCH semantics). */
+export async function updatePassportProfile(
+  update: PassportProfileUpdate,
+): Promise<PassportProfileResponse> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/profile", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(update),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to save profile (HTTP ${res.status}).`))
   return res.json()
 }
 

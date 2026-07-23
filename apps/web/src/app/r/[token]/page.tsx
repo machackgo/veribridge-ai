@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import { getPublicVBRReport, type VBRPublicReportResponse } from "@/lib/vbr-api"
 
 const JUDGMENT_LABELS: Record<string, string> = {
@@ -25,8 +25,16 @@ function formatDate(value: string | null): string | null {
   return date.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })
 }
 
+/** Strict shape guard for the canonical redirect target — same-origin
+ * `/vbr/report/{token}` only, so a tampered payload can never turn an old
+ * shared link into an open redirect. */
+function safeCanonicalReportPath(path: unknown): string | null {
+  return typeof path === "string" && /^\/vbr\/report\/[A-Za-z0-9_-]+$/.test(path) ? path : null
+}
+
 export default function PublicVBRReportPage() {
   const params = useParams()
+  const router = useRouter()
   const token = typeof params.token === "string" ? params.token : Array.isArray(params.token) ? params.token[0] : ""
 
   const [report, setReport] = useState<VBRPublicReportResponse | null>(null)
@@ -45,11 +53,19 @@ export default function PublicVBRReportPage() {
           setNotFound(true)
           return
         }
+        // Legacy → canonical migration: when this report's project has an
+        // active canonical public report, send the recruiter there instead of
+        // rendering the legacy view. The old URL keeps working either way.
+        const canonical = safeCanonicalReportPath(data.canonical_report_path)
+        if (canonical) {
+          router.replace(canonical)
+          return
+        }
         setReport(data)
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : "Failed to load report."))
       .finally(() => setLoading(false))
-  }, [token])
+  }, [token, router])
 
   return (
     <div
