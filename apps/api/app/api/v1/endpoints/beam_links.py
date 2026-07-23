@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.schemas.beam_link import (
     BeamLinkResponse,
     BeamResolveResponse,
@@ -45,7 +45,9 @@ public_router = APIRouter()
 )
 def create_beam_link_route(
     body: CreateBeamLinkRequest | None = None,
-    user_id: str = Depends(get_current_user_id),
+    # beam_links.user_id FKs public.users(id); a fresh account may reach this
+    # before any other first-write endpoint has provisioned its row.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> BeamLinkResponse:
     payload = body or CreateBeamLinkRequest()
