@@ -17,19 +17,20 @@ const APP_DIR = join(__dirname, "..", "app", "dashboard")
 // Routes whose body still renders illustrative placeholder content.
 // (skill-gaps was removed 2026-07-22: that route is now wired to the real
 // evidence-derived GET /api/v1/student/skill-gaps endpoint — see
-// skill-gaps-page.test.tsx for its no-mock guard.)
+// skill-gaps-page.test.tsx for its no-mock guard.
+// profile + settings were removed 2026-07-23: those routes no longer render
+// any content — they redirect to the canonical /student/account and
+// /student/settings pages, guarded by student-account-settings.test.tsx.)
 const MOCK_BACKED_ROUTES = [
-  "profile",
   "visa-fit",
   "jobs",
   "applications",
   "mock-interview",
-  "settings",
   "privacy",
 ] as const
 
 // Routes whose visible controls do not change any real sharing/exposure state.
-const INERT_CONTROL_ROUTES = ["visa-fit", "settings", "privacy"] as const
+const INERT_CONTROL_ROUTES = ["visa-fit", "privacy"] as const
 
 describe("dashboard sample-data honesty", () => {
   it.each(MOCK_BACKED_ROUTES)("%s renders the sample-data notice", (route) => {

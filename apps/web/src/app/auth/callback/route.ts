@@ -7,7 +7,7 @@
  *  1. User clicks a Supabase magic-link email
  *  2. Supabase redirects to: <site>/auth/callback?code=<PKCE_CODE>&next=<path>
  *  3. This handler exchanges the code for a session (sets auth cookies)
- *  4. Redirects the user to `next` (default: /dashboard)
+ *  4. Redirects the user to `next` (default: /student)
  *
  * Supabase dashboard setup:
  *   Authentication → URL Configuration → Site URL = http://localhost:3000
@@ -25,8 +25,8 @@ import { NextResponse } from "next/server"
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get("code")
-  const next = searchParams.get("next") ?? "/dashboard"
-  const safeNext = next.startsWith("/") ? next : "/dashboard"
+  const next = searchParams.get("next") ?? "/student"
+  const safeNext = next.startsWith("/") ? next : "/student"
 
   if (code) {
     const supabase = await createSupabaseServerClient()

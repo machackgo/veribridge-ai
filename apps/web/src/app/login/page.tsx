@@ -651,6 +651,12 @@ function LoginInner() {
         provider: "google",
         options: {
           redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(redirectTo || "/student")}`,
+          // Force Google's account chooser on every login. Without this,
+          // Google silently reuses its own active session, so after a
+          // VeriBridge sign-out the same account is picked again with no way
+          // to switch. select_account only prompts for the account — it does
+          // not revoke the user's existing Google authorization.
+          queryParams: { prompt: "select_account" },
         },
       })
       if (error) throw error
