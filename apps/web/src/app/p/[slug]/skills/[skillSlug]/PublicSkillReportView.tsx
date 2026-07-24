@@ -117,7 +117,8 @@ function EvidenceRow({ item }: { item: PublicSkillReportEvidence }) {
         <p style={{ fontSize: 11, color: TOKEN.muted, margin: 0 }}>{item.website_skill_relevance_label}</p>
       )}
       {/* Public access is honest and explicit: a real public link when the
-          projection kept one, otherwise a clear "summary only" label. */}
+          projection kept one, otherwise a compact "kept private" chip (the
+          full explanation renders ONCE per chain, not per item). */}
       {item.public_url ? (
         <a
           data-testid="public-skill-evidence-link"
@@ -129,8 +130,12 @@ function EvidenceRow({ item }: { item: PublicSkillReportEvidence }) {
           Open public evidence ↗
         </a>
       ) : (
-        <span data-testid="public-skill-evidence-private" style={{ fontSize: 11, color: TOKEN.muted }}>
-          Original artifact is not public — verified summary only.
+        <span
+          data-testid="public-skill-evidence-private"
+          title="The original artifact is kept private by the candidate — a verified summary is shown instead."
+          style={{ alignSelf: "flex-start" }}
+        >
+          <Badge tone="slate">Original kept private</Badge>
         </span>
       )}
       {item.website_screenshot_available === false && item.website_verification_note && (
@@ -177,6 +182,14 @@ function ProofChainCard({ chain }: { chain: PublicSkillReportChain }) {
             <EvidenceRow key={item.evidence_id ?? `${item.source_type}-${i}`} item={item} />
           ))}
         </div>
+        {/* ONE explanation line per chain for kept-private originals — never
+            repeated on every evidence card. */}
+        {chain.evidence.some((item) => !item.public_url) && (
+          <p data-testid="public-skill-private-note" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+            Items marked “Original kept private” show a verified summary — the candidate keeps the original
+            artifact private.
+          </p>
+        )}
         {chain.limitations.length > 0 && (
           <ul style={{ margin: 0, paddingLeft: 16 }}>
             {chain.limitations.map((line, i) => (

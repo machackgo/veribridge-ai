@@ -29,9 +29,11 @@ import {
   getPublicVBRProjectReport,
   isSafePublicUrl,
   type EvidenceTrace,
+  type PublicMediaView,
   type PublicVBRProjectReport,
   type PublicVideoEvidenceChip,
 } from "@/lib/vbr-api"
+import { PUBLIC_API_BASE } from "@/lib/api-base"
 import { recordPublicReportView } from "@/lib/report-view-beacon"
 import {
   Badge,
@@ -59,6 +61,32 @@ import styles from "./public-report.module.css"
 // Keeps an in-page anchor target clear of the sticky top chrome when a
 // trace link scrolls to it.
 const ANCHOR_OFFSET = { scrollMarginTop: 96 }
+
+/** Absolute API URL for a disclosure-gated media/document view path. */
+const apiViewUrl = (path: string) => `${PUBLIC_API_BASE}${path}`
+
+/** Candidate-shared captured screenshots — a small lazy horizontal strip. */
+function WebsiteFrameStrip({ frames }: { frames: PublicMediaView[] }) {
+  if (frames.length === 0) return null
+  return (
+    <div
+      data-testid="public-website-frames"
+      style={{ display: "flex", gap: 8, overflowX: "auto", padding: "6px 0", maxWidth: "100%" }}
+    >
+      {frames.map((frame, i) => (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          key={`${frame.view_path}-${i}`}
+          data-testid="public-website-frame"
+          src={apiViewUrl(frame.view_path)}
+          alt={`Candidate-shared workflow screenshot ${i + 1}`}
+          loading="lazy"
+          style={{ maxHeight: 140, borderRadius: 8, border: `1px solid ${TOKEN.line}`, flexShrink: 0 }}
+        />
+      ))}
+    </div>
+  )
+}
 
 function PublicVideoChip({ chip }: { chip: PublicVideoEvidenceChip }) {
   return (
@@ -143,13 +171,38 @@ function DeepEvidenceSection({
               <div id="documents" style={ANCHOR_OFFSET}>
                 <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Document Proof</Mono>
                 {report.documents.length > 0 ? (
-                  <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-                    {report.documents.map((doc, i) => (
-                      <li key={i} className={styles.bodyText}>
-                        {doc.title}
-                        {doc.status ? ` — ${doc.status}` : ""}
-                      </li>
-                    ))}
+                  <ul style={{ margin: "4px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
+                    {report.documents.map((doc, i) => {
+                      const sharedView = doc.disclosure === "viewable" ? doc.shared_view : null
+                      return (
+                        <li key={i} className={styles.bodyText}>
+                          {doc.title}
+                          {doc.status ? ` — ${doc.status}` : ""}
+                          {sharedView && (
+                            <span style={{ display: "inline-flex", gap: 10, marginLeft: 8, flexWrap: "wrap" }}>
+                              <a
+                                data-testid="public-doc-view-link"
+                                href={apiViewUrl(sharedView.open_path)}
+                                target="_blank"
+                                rel="noreferrer"
+                                style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+                              >
+                                View document ↗
+                              </a>
+                              {sharedView.can_download && sharedView.download_path && (
+                                <a
+                                  data-testid="public-doc-download-link"
+                                  href={apiViewUrl(sharedView.download_path)}
+                                  style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
+                                >
+                                  Download
+                                </a>
+                              )}
+                            </span>
+                          )}
+                        </li>
+                      )
+                    })}
                   </ul>
                 ) : (
                   <p className={styles.mutedText} style={{ marginTop: 4 }}>No document proof attached.</p>
@@ -162,12 +215,30 @@ function DeepEvidenceSection({
                   <ul style={{ margin: "4px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
                     {report.website_proofs.map((wp, i) => {
                       const safeTarget = isSafePublicUrl(wp.target_website) ? wp.target_website : null
+                      const frames = wp.frame_views ?? []
                       return (
                         <li key={i} className={styles.bodyText} style={{ overflowWrap: "anywhere" }}>
                           {safeTarget ?? <em style={{ color: TOKEN.muted }}>Private/internal link omitted</em>} —{" "}
                           {wp.workflow_confidence} confidence
                           {wp.supported_skills.length > 0 ? ` (${wp.supported_skills.join(", ")})` : ""}{" "}
                           <Badge tone={QUALITATIVE_LABEL_TONE[wp.evidence_strength] ?? "slate"}>{wp.evidence_strength}</Badge>
+                          {/* Candidate-shared runtime evidence (disclosure-gated). */}
+                          <WebsiteFrameStrip frames={frames} />
+                          {wp.replay_path && (
+                            <div style={{ marginTop: 6 }}>
+                              <p className={styles.mutedText} style={{ margin: "0 0 4px" }}>
+                                Candidate shared the recorded walkthrough of this workflow.
+                              </p>
+                              <video
+                                data-testid="public-website-replay"
+                                src={apiViewUrl(wp.replay_path)}
+                                controls
+                                preload="metadata"
+                                aria-label="Watch walkthrough recording"
+                                style={{ width: "100%", maxWidth: 520, borderRadius: 10, border: `1px solid ${TOKEN.line}`, background: "#000" }}
+                              />
+                            </div>
+                          )}
                         </li>
                       )
                     })}
@@ -326,8 +397,9 @@ export function PublicReportView({ token }: { token: string }) {
         )}
         {/* Repository identity appears ONLY when a GitHub Proof backs it — a
             public repo renders as a link; a scanned private repo is labelled;
-            no proof → no implied repository (the GitHub truth model). */}
-        {report.github_proof && report.repo_full_name && (
+            no proof → no implied repository (the GitHub truth model). A
+            summary-only candidate disclosure never shows repo identity. */}
+        {report.github_proof && report.github_proof.disclosure !== "summary" && report.repo_full_name && (
           <div style={{ marginBottom: 10 }}>
             {repoUrl ? (
               <a
@@ -426,6 +498,51 @@ export function PublicReportView({ token }: { token: string }) {
                 Ownership: {analysis.ownership_signal}
               </Badge>
             </div>
+          </div>
+        </Card>
+      )}
+
+      {/* 5b — Candidate-shared Project Defense media (disclosure-gated). Only
+          rendered when the candidate explicitly shared it — never an empty
+          shell, never error-like wording when absent. */}
+      {(report.defense_transcript_view || report.defense_video_view) && (
+        <Card>
+          <CardHeader title="Candidate-Shared Defense Recording" eyebrow="Shared by the candidate" icon="🎙️" />
+          <p className={styles.mutedText} style={{ marginBottom: 10 }}>
+            The candidate chose to share this Project Defense material with recruiters.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {report.defense_transcript_view && (
+              <a
+                data-testid="public-defense-transcript-link"
+                href={apiViewUrl(report.defense_transcript_view.view_path)}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  alignSelf: "flex-start",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: TOKEN.indigo,
+                  textDecoration: "none",
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${TOKEN.line}`,
+                  background: "#fff",
+                }}
+              >
+                📄 View transcript ↗
+              </a>
+            )}
+            {report.defense_video_view && (
+              <video
+                data-testid="public-defense-video"
+                src={apiViewUrl(report.defense_video_view.view_path)}
+                controls
+                preload="metadata"
+                aria-label="Candidate-shared defense recording"
+                style={{ width: "100%", maxWidth: 640, borderRadius: 10, border: `1px solid ${TOKEN.line}`, background: "#000" }}
+              />
+            )}
           </div>
         </Card>
       )}

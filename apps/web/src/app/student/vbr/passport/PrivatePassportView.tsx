@@ -2857,6 +2857,26 @@ function VerifiedPassportCardPreview({
             dialog). Lives directly above the sharing controls it governs. */}
         <PassportVisibilityControl isPublished={model.isPublished} changeVisibility={changeVisibility} />
 
+        {/* Granular disclosure lives in its own Privacy & Sharing center —
+            keep only a compact pointer here, right under the master switch. */}
+        <Link
+          href="/student/vbr/passport/privacy"
+          data-testid="privacy-center-link"
+          style={{
+            alignSelf: "flex-start",
+            fontSize: 12,
+            fontWeight: 600,
+            color: TOKEN.indigo,
+            textDecoration: "none",
+            padding: "6px 10px",
+            borderRadius: 8,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+          }}
+        >
+          ⚙ Privacy &amp; Sharing — choose what recruiters can inspect →
+        </Link>
+
         {/* Sharing controls — secondary, compact row directly below the card
             (replaces the old separate "Public Work Passport" block). */}
         <div

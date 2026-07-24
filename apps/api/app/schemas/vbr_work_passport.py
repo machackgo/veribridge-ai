@@ -648,6 +648,9 @@ class PublicWorkPassportResponse(BaseModel):
     published_at: str | None = None
     generated_at: str = ""
     verification_note: str = ""
+    # Monotonic disclosure-policy version (cache invalidation key). Carries no
+    # private information — it only changes when the owner edits their policy.
+    disclosure_version: int = 1
 
     model_config = {"extra": "forbid"}
 

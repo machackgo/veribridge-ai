@@ -16,6 +16,7 @@ from app.schemas.defense_answer_evidence import (
     PublicProjectDefenseInspectionCard,
 )
 from app.schemas.vbr_student_report import (
+    PublicArtifactViewRef,
     VBREvidenceTrace,
     VBRReportDocumentSummary,
     VBRReportEvidencePackageSummary,
@@ -98,12 +99,22 @@ class PublicVBRProjectReportResponse(BaseModel):
 
     limitations: list[str] = Field(default_factory=list)
 
+    # Candidate-shared Project Defense media (custom disclosure only): the
+    # access-gated transcript / recording view routes. None unless the student
+    # explicitly opened the aspect AND a retained artifact exists AND the
+    # transcript privacy review is clean.
+    defense_transcript_view: PublicArtifactViewRef | None = None
+    defense_video_view: PublicArtifactViewRef | None = None
+
     published_at: str | None = None
     generated_at: str = ""
     # Recruiter-safe link back to the candidate's published Work Passport
     # (`/p/{slug}`), or None when the passport is private/unpublished.
     public_passport_path: str | None = None
     verification_note: str = ""
+    # Monotonic disclosure-policy version (cache invalidation key). Carries no
+    # private information — it only changes when the owner edits their policy.
+    disclosure_version: int = 1
 
     model_config = {"extra": "forbid"}
 

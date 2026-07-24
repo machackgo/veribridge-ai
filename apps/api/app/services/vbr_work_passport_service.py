@@ -61,11 +61,19 @@ from app.services.public_report_safety_service import (
     public_safe_skill_report,
     scrub_public_text,
 )
+from app.services.passport_disclosure import (
+    HIDDEN as _DISCLOSURE_HIDDEN,
+    SUMMARY as _DISCLOSURE_SUMMARY,
+    VIEWABLE as _DISCLOSURE_VIEWABLE,
+    EffectiveDisclosure,
+    load_effective_disclosure,
+)
 from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
     _lookup_display_name,
     _scrub_public_report,
+    redact_hidden_skill_names,
 )
 from app.services.student_proof_vault_service import (
     collect_skill_report,
@@ -919,6 +927,8 @@ def _aggregate_skills_with_detail(
 def _public_safe_trace(trace: dict[str, Any]) -> dict[str, Any]:
     """Re-gate a trace's direct link for the public passport (defence in depth)."""
     row = dict(trace)
+    # Internal per-document disclosure key — never serialized publicly.
+    row.pop("document_key", None)
     if not is_safe_public_url(row.get("public_url")):
         row["public_url"] = None
         row["public_url_label"] = None
@@ -2038,6 +2048,105 @@ def _rank_public_projects(summaries: list[dict[str, Any]]) -> None:
     )
 
 
+def _document_states_for_report(
+    disclosure: EffectiveDisclosure, project_id: str, report: dict[str, Any]
+) -> dict[str, str]:
+    """Effective per-document states for one report's documents."""
+    states: dict[str, str] = {}
+    for doc in report.get("documents") or []:
+        if not isinstance(doc, dict):
+            continue
+        key = str(doc.get("document_key") or "")
+        if key:
+            states[key] = disclosure.document_state(project_id, key)
+    return states
+
+
+def _project_hidden_source_labels(
+    disclosure: EffectiveDisclosure, project_id: str, report: dict[str, Any]
+) -> set[str]:
+    """Proof-source labels the student hid for THIS project — these labels
+    must not appear in the project's public badges, chains, or counts."""
+    hidden: set[str] = set()
+    if disclosure.aspect(project_id, "github_repo") == _DISCLOSURE_HIDDEN:
+        hidden.add(_SRC_GITHUB)
+    if disclosure.aspect(project_id, "website_summary") == _DISCLOSURE_HIDDEN:
+        hidden.add(_SRC_WEBSITE)
+    if disclosure.aspect(project_id, "defense_summary") == _DISCLOSURE_HIDDEN:
+        hidden.add(_SRC_DEFENSE)
+    if disclosure.aspect(project_id, "video_summary") == _DISCLOSURE_HIDDEN:
+        hidden.add(_SRC_VIDEO)
+    doc_states = _document_states_for_report(disclosure, project_id, report)
+    if doc_states and all(state == _DISCLOSURE_HIDDEN for state in doc_states.values()):
+        hidden.add(_SRC_DOCUMENT)
+    return hidden
+
+
+def _apply_disclosure_to_trace(
+    disclosure: EffectiveDisclosure,
+    project_id: str,
+    trace: dict[str, Any],
+    doc_states: dict[str, str],
+) -> dict[str, Any] | None:
+    """One trace through the project's aspect states: None = drop entirely.
+
+    GitHub summary state withholds the repository identity and every exact
+    file/line/commit locator; a viewable repo with lines withheld keeps the
+    repo-level trace but no code reference. Website traces lose their direct
+    link when the live URL is hidden. Hidden documents/defense/video drop
+    their traces so nothing (not even a count) leaks.
+    """
+    source_type = trace.get("source_type")
+    if source_type == _SRC_GITHUB:
+        github_state = disclosure.aspect(project_id, "github_repo")
+        if github_state == _DISCLOSURE_HIDDEN:
+            return None
+        row = dict(trace)
+        lines_state = disclosure.aspect(project_id, "github_lines")
+        if github_state == _DISCLOSURE_SUMMARY or lines_state != _DISCLOSURE_VIEWABLE:
+            row["file_path"] = None
+            row["line_start"] = None
+            row["line_end"] = None
+            row["commit_sha"] = None
+            row["public_url"] = None
+            row["public_url_label"] = None
+            row["is_publicly_openable"] = False
+            row["location_detail"] = None
+            if github_state == _DISCLOSURE_SUMMARY:
+                row["source_title"] = _SRC_GITHUB
+                row["location_label"] = "verified summary"
+        return row
+    if source_type == _SRC_WEBSITE:
+        if disclosure.aspect(project_id, "website_summary") == _DISCLOSURE_HIDDEN:
+            return None
+        row = dict(trace)
+        if disclosure.aspect(project_id, "website_url") == _DISCLOSURE_HIDDEN:
+            row["public_url"] = None
+            row["public_url_label"] = None
+            row["is_publicly_openable"] = False
+            # A hidden live URL must not leak through the trace's title or
+            # human-readable locator either.
+            title = str(row.get("source_title") or "")
+            if "://" in title or "." in title:
+                row["source_title"] = _SRC_WEBSITE
+            row["location_detail"] = None
+        return row
+    if source_type == _SRC_DOCUMENT:
+        key = str(trace.get("document_key") or "")
+        if key and doc_states.get(key, _DISCLOSURE_SUMMARY) == _DISCLOSURE_HIDDEN:
+            return None
+        return dict(trace)
+    if source_type == _SRC_DEFENSE:
+        if disclosure.aspect(project_id, "defense_summary") == _DISCLOSURE_HIDDEN:
+            return None
+        return dict(trace)
+    if source_type == _SRC_VIDEO:
+        if disclosure.aspect(project_id, "video_summary") == _DISCLOSURE_HIDDEN:
+            return None
+        return dict(trace)
+    return dict(trace)
+
+
 def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any]:
     """Resolve a published passport by ``slug`` and return its public projection.
 
@@ -2056,13 +2165,35 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     owner_id = str(passport_row.get("user_id") or "")
     projects = _list_owned_projects(db, owner_id)
 
-    # Only projects with an active public report token are shown publicly, and
-    # duplicate rows of the same project are collapsed into a single card so a
-    # recruiter never sees the same report featured twice.
+    # ── Granular disclosure (migration 063) ─────────────────────────────────
+    # The canonical resolver decides which projects, skills, sources, and
+    # locators this public projection may contain. Loaded once; every filter
+    # below reads from it.
+    disclosure = load_effective_disclosure(db, owner_id, passport_public=True)
+
+    def _project_skill_is_visible(project_id: str, skill_name: str) -> bool:
+        name = str(skill_name or "").strip()
+        if not name:
+            return False
+        canonical = canonical_skill(name)
+        return disclosure.project_skill_visible(
+            project_id, skill_category(canonical), skill_slug(canonical)
+        )
+
+    # Only projects with an active public report token AND effective project/
+    # report visibility are shown publicly; duplicate rows of the same project
+    # are collapsed into a single card so a recruiter never sees the same
+    # report featured twice. A hidden project is absent from cards, skills,
+    # sources, and counts alike — it never inflates anything.
     published_pairs = _build_report_pairs(
         db,
         pipeline_db,
-        [project for project in projects if project.get("public_report_token")],
+        [
+            project
+            for project in projects
+            if project.get("public_report_token")
+            and disclosure.report_visible(str(project.get("id") or ""))
+        ],
         owner_id,
     )
 
@@ -2072,24 +2203,49 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     # featured list.
     featured_card_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     featured_groups = _group_project_pairs(published_pairs)
+    # Featured card's project id, hidden-source labels, and per-document states
+    # keyed by the card's public report path — the aggregation post-filter
+    # below re-uses these to keep skills consistent with the cards.
+    project_id_by_path: dict[str, str] = {}
+    hidden_sources_by_pid: dict[str, set[str]] = {}
+    doc_states_by_pid: dict[str, dict[str, str]] = {}
     for group in featured_groups:
         representative_project, representative_report = group[0]
         token = representative_project.get("public_report_token")
+        rep_project_id = str(representative_project.get("id") or "")
+        hidden_sources = _project_hidden_source_labels(
+            disclosure, rep_project_id, representative_report
+        )
+        hidden_sources_by_pid[rep_project_id] = hidden_sources
+        doc_states_by_pid[rep_project_id] = _document_states_for_report(
+            disclosure, rep_project_id, representative_report
+        )
         claimed_skills = _dedupe_preserve(
-            [s for _, report in group for s in (report.get("claimed_skills") or [])]
+            [
+                s
+                for _, report in group
+                for s in (report.get("claimed_skills") or [])
+                if _project_skill_is_visible(rep_project_id, str(s))
+            ]
         )
         # NAVIGATION-CONSISTENCY (fail-closed): the featured card links to the
         # representative's published report token, so its evidence badges/proof
         # chain/top skills come from the REPRESENTATIVE report ONLY — never unioned
         # across other collapsed published attempts (which would advertise a proof
-        # the linked report does not show).
-        evidence_sources = _dedupe_preserve(
-            _evidence_sources(representative_report, has_public_report=True)
-        )
+        # the linked report does not show). Sources the student hid are absent
+        # from badges, the proof chain, and the source counts alike.
+        evidence_sources = [
+            s
+            for s in _dedupe_preserve(
+                _evidence_sources(representative_report, has_public_report=True)
+            )
+            if s not in hidden_sources
+        ]
         # Public Project → Skill chips: skill name, qualitative status, and the
         # skill's stable slug ONLY (used for in-page anchors to the public
         # skills section). The owner-only skill_report_path is stripped — the
-        # public surface never links to private routes.
+        # public surface never links to private routes. A hidden project-skill
+        # claim never renders a chip.
         public_top_skills = [
             {
                 "skill": s["skill"],
@@ -2097,9 +2253,14 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
                 "skill_slug": s["skill_slug"],
                 # Proof types supporting this skill in this published project only
                 # (closed, safe labels — never scores, ids, or the project-wide union).
-                "supporting_proof_types": list(s.get("supporting_proof_types") or []),
+                "supporting_proof_types": [
+                    label
+                    for label in (s.get("supporting_proof_types") or [])
+                    if label not in hidden_sources
+                ],
             }
             for s in _project_top_skills([representative_report])
+            if _project_skill_is_visible(rep_project_id, str(s.get("skill") or ""))
         ]
         summary = {
             "project_title": representative_report.get("project_title") or "",
@@ -2119,6 +2280,15 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
             "published_at": representative_project.get("public_report_published_at"),
         }
         summary.update(_public_project_links(representative_report))
+        # Card links honor the project's aspects: the repository link renders
+        # only while GitHub access is Viewable; the live-site link only while
+        # the website URL aspect is visible.
+        if disclosure.aspect(rep_project_id, "github_repo") != _DISCLOSURE_VIEWABLE:
+            summary["github_repo_url"] = None
+            summary["github_repo_label"] = None
+        if disclosure.aspect(rep_project_id, "website_url") == _DISCLOSURE_HIDDEN:
+            summary["live_url"] = None
+        project_id_by_path[str(summary["public_report_path"])] = rep_project_id
         featured_summaries.append(summary)
         featured_card_pairs.append((summary, representative_report))
     _rank_public_projects(featured_summaries)
@@ -2127,13 +2297,124 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     # the published report the featured card links to — so a public skill row never
     # advertises a proof attached only to a different collapsed attempt. Qualitative
     # only, with a safe drilldown sourced exclusively from that published report.
-    # EVERY evidence-backed skill is returned (aliases already collapsed) — the
-    # public passport must never silently drop legitimate skills; progressive
-    # disclosure is the frontend's job.
-    top_skills = [
-        _to_public_skill(s)
-        for s in _aggregate_skills_with_detail(featured_card_pairs, public=True)
-    ]
+    # EVERY evidence-backed skill the student discloses is returned (aliases
+    # already collapsed) — progressive display is the frontend's job. The
+    # disclosure post-filter below removes hidden skill groups, hidden skills,
+    # and hidden project-skill claims, and re-derives every per-skill union
+    # (sources, traces, strongest project) from ONLY the surviving refs so a
+    # hidden claim can never leak through an aggregate.
+    disclosed_skill_entries: list[dict[str, Any]] = []
+    # Display names (canonical + raw aliases) of skills that end up fully
+    # hidden — redacted from free prose at the end so a hidden skill's NAME
+    # cannot leak through analyzer summaries or trace text.
+    hidden_skill_names: set[str] = set()
+
+    def _collect_hidden_names(entry: dict[str, Any]) -> None:
+        hidden_skill_names.add(str(entry.get("skill") or ""))
+        hidden_skill_names.update(str(alias) for alias in entry.get("aliases") or [])
+
+    for entry in _aggregate_skills_with_detail(featured_card_pairs, public=True):
+        entry_category = str(entry.get("category") or "")
+        entry_slug = str(entry.get("skill_slug") or "")
+        if not disclosure.skill_visible(entry_category, entry_slug):
+            _collect_hidden_names(entry)
+            continue
+        surviving_refs: list[dict[str, Any]] = []
+        for ref in entry.get("projects") or []:
+            ref_project_id = project_id_by_path.get(str(ref.get("public_report_path") or ""))
+            if not ref_project_id:
+                continue
+            if not disclosure.project_skill_visible(ref_project_id, entry_category, entry_slug):
+                continue
+            hidden_sources = hidden_sources_by_pid.get(ref_project_id, set())
+            doc_states = doc_states_by_pid.get(ref_project_id, {})
+            filtered_ref = dict(ref)
+            filtered_ref["evidence_sources"] = [
+                s for s in (ref.get("evidence_sources") or []) if s not in hidden_sources
+            ]
+            filtered_ref["supporting_proof_types"] = [
+                s for s in (ref.get("supporting_proof_types") or []) if s not in hidden_sources
+            ]
+            filtered_traces: list[dict[str, Any]] = []
+            for trace in ref.get("evidence_traces") or []:
+                filtered_trace = _apply_disclosure_to_trace(
+                    disclosure, ref_project_id, trace, doc_states
+                )
+                if filtered_trace is None:
+                    continue
+                # A hidden skill must not leak through a trace's skill labels.
+                filtered_trace["skill_names"] = [
+                    name
+                    for name in (filtered_trace.get("skill_names") or [])
+                    if _project_skill_is_visible(ref_project_id, str(name))
+                ]
+                filtered_traces.append(filtered_trace)
+            filtered_ref["evidence_traces"] = filtered_traces
+            surviving_refs.append(filtered_ref)
+        if not surviving_refs:
+            # The skill's every claim lives in hidden projects/claims — the
+            # skill itself must not appear (not in lists, not in counts, not
+            # in prose).
+            _collect_hidden_names(entry)
+            continue
+        entry = dict(entry)
+        entry["projects"] = surviving_refs
+        entry["project_count"] = len(surviving_refs)
+        entry["evidence_sources"] = _dedupe_preserve(
+            [s for ref in surviving_refs for s in ref["evidence_sources"]]
+        )
+        # Entry-level traces re-derived from surviving refs only (dedup + cap
+        # mirrors the aggregation's own logic).
+        seen_trace_keys: set[tuple[str, str, str]] = set()
+        entry_traces: list[dict[str, Any]] = []
+        for ref in surviving_refs:
+            for trace in ref["evidence_traces"]:
+                trace_key = (
+                    str(trace.get("source_type")),
+                    str(trace.get("source_title")),
+                    str(trace.get("safe_summary")),
+                )
+                if trace_key in seen_trace_keys:
+                    continue
+                seen_trace_keys.add(trace_key)
+                entry_traces.append(trace)
+        entry["evidence_traces"] = entry_traces[:_MAX_SKILL_TRACES]
+        # Evidence chips are defense-video transcript moments; they survive
+        # only while at least one surviving project still discloses video.
+        if not any(
+            disclosure.aspect(pid, "video_summary") != _DISCLOSURE_HIDDEN
+            for pid in (
+                project_id_by_path.get(str(ref.get("public_report_path") or ""))
+                for ref in surviving_refs
+            )
+            if pid
+        ):
+            entry["evidence_chips"] = []
+        # Strongest project recomputed over the surviving refs.
+        strongest = min(
+            surviving_refs,
+            key=lambda ref: _STATUS_ORDER.get(str(ref.get("skill_status")), 99),
+            default=None,
+        )
+        entry["strongest_project_title"] = strongest.get("project_title") if strongest else None
+        entry["strongest_project_status"] = strongest.get("skill_status") if strongest else None
+        if strongest is None:
+            entry["strongest_project"] = None
+        else:
+            strongest_link: dict[str, Any] = {
+                "project_title": strongest.get("project_title") or "",
+                "skill_status": strongest.get("skill_status") or "Not assessed",
+                "evidence_sources": list(strongest.get("evidence_sources") or []),
+                "supporting_proof_types": list(strongest.get("supporting_proof_types") or []),
+                "report_is_public": bool(strongest.get("report_is_public")),
+                "public_report_path": strongest.get("public_report_path"),
+            }
+            if strongest.get("website_evidence_summary"):
+                strongest_link["website_evidence_summary"] = strongest["website_evidence_summary"]
+            entry["strongest_project"] = strongest_link
+        disclosed_skill_entries.append(entry)
+
+    top_skills = [_to_public_skill(s) for s in disclosed_skill_entries]
 
     limitations: list[str] = []
     if not featured_summaries:
@@ -2202,7 +2483,15 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         "published_at": passport_row.get("published_at"),
         "generated_at": _now(),
         "verification_note": _VERIFICATION_NOTE,
+        # Monotonic policy version — public caches key off it so a disclosure
+        # change invalidates previously served representations immediately.
+        "disclosure_version": disclosure.disclosure_version,
     }
+
+    # A fully hidden skill's NAME must not survive in free prose (analyzer
+    # summaries, trace text) — structured lists were filtered above.
+    hidden_skill_names.discard("")
+    public = redact_hidden_skill_names(public, hidden_skill_names)
 
     # Recursively redact score-style fragments from every public string field…
     public = _scrub_public_report(public)
@@ -2258,6 +2547,86 @@ def build_public_skill_report(
     overview = report.get("overview") or {}
     if not int(overview.get("proof_count") or 0):
         raise _not_found()
+
+    # ── Granular disclosure (migration 063) ─────────────────────────────────
+    # A hidden skill (or hidden skill group) has no public skill report — the
+    # SAME generic 404 as an unknown skill, so the route cannot be used to
+    # probe hidden skills. Chains from hidden projects / hidden project-skill
+    # claims are dropped, and exact GitHub locators are withheld unless the
+    # owning project's repository + line aspects are both Viewable.
+    disclosure = load_effective_disclosure(db, owner_id, passport_public=True)
+    canonical_name = canonical_skill(str(report.get("skill") or skill))
+    canonical_slug = skill_slug(canonical_name)
+    canonical_category = skill_category(canonical_name)
+    if not disclosure.skill_visible(canonical_category, canonical_slug):
+        raise _not_found()
+
+    def _chain_project_id(chain: dict[str, Any]) -> str:
+        return str(chain.get("project_id") or "")
+
+    disclosed_chains: list[dict[str, Any]] = []
+    for chain in report.get("linked_proof_chains") or []:
+        if not isinstance(chain, dict):
+            continue
+        chain_project_id = _chain_project_id(chain)
+        if chain_project_id:
+            if not disclosure.project_skill_visible(
+                chain_project_id, canonical_category, canonical_slug
+            ):
+                continue
+            hidden_sources = {
+                label
+                for aspect, label in (
+                    ("github_repo", "github"),
+                    ("website_summary", "website"),
+                    ("defense_summary", "defense"),
+                    ("video_summary", "video"),
+                )
+                if disclosure.aspect(chain_project_id, aspect) == _DISCLOSURE_HIDDEN
+            }
+            filtered_chain = dict(chain)
+            filtered_chain["evidence"] = [
+                evidence_item
+                for evidence_item in (chain.get("evidence") or [])
+                if isinstance(evidence_item, dict)
+                and str(evidence_item.get("source_type") or "") not in hidden_sources
+            ]
+            if hidden_sources:
+                filtered_chain["source_types_present"] = [
+                    s
+                    for s in (chain.get("source_types_present") or [])
+                    if str(s) not in hidden_sources
+                ]
+            # Exact code locators require BOTH github aspects Viewable.
+            if disclosure.aspect(chain_project_id, "github_lines") != _DISCLOSURE_VIEWABLE:
+                filtered_chain["evidence"] = [
+                    (
+                        {**evidence_item, "public_url": None, "exact_location": None}
+                        if str(evidence_item.get("source_type") or "") == "github"
+                        else evidence_item
+                    )
+                    for evidence_item in filtered_chain["evidence"]
+                ]
+            if not filtered_chain["evidence"] and chain.get("evidence"):
+                # Every member of this chain is hidden — drop the chain.
+                continue
+            disclosed_chains.append(filtered_chain)
+        else:
+            disclosed_chains.append(chain)
+    report["linked_proof_chains"] = disclosed_chains
+
+    # The per-chain synthesis was generated over the UNFILTERED chains, so a
+    # synthesis claim can restate a hidden project's evidence (title included)
+    # even after its chain was dropped above. Fail-closed: keep only synthesis
+    # entries whose chain survived the disclosure filter.
+    disclosed_chain_ids = {
+        str(chain.get("chain_id") or "") for chain in disclosed_chains
+    }
+    report["llm_synthesis"] = [
+        entry
+        for entry in (report.get("llm_synthesis") or [])
+        if isinstance(entry, dict) and str(entry.get("chain_id") or "") in disclosed_chain_ids
+    ]
 
     try:
         public = public_safe_skill_report(report)

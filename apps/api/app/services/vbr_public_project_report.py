@@ -36,13 +36,22 @@ import re
 import secrets
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import HTTPException, status
 
 from app.api.v1.endpoints.vbr_projects import get_owned_vbr_project_or_404
+from app.services.passport_disclosure import (
+    HIDDEN,
+    SUMMARY,
+    VIEWABLE,
+    VISIBLE,
+    EffectiveDisclosure,
+    load_effective_disclosure,
+)
 from app.services.passport_visibility import owner_passport_is_public
 from app.services.safe_public_url import is_safe_public_url
+from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
 from app.services.vbr_student_report import build_student_vbr_report
 
 logger = logging.getLogger(__name__)
@@ -562,6 +571,65 @@ def _scrub_public_report(value: Any) -> Any:
     return value
 
 
+def _hidden_name_patterns(names: set[str]) -> list[tuple[re.Pattern, re.Pattern, re.Pattern]]:
+    """Compiled redaction patterns for hidden skill display names.
+
+    Three shapes per name so comma-separated lists stay grammatical after the
+    removal: mid-list (", Name"), list-head ("Name, "), and bare ("Name").
+    Word-bounded and case-insensitive — "Markdown Editing" never matches
+    "easy-markdown-editor".
+    """
+    compiled: list[tuple[re.Pattern, re.Pattern, re.Pattern]] = []
+    for name in sorted(names, key=len, reverse=True):
+        cleaned = name.strip()
+        if not cleaned:
+            continue
+        escaped = re.escape(cleaned)
+        compiled.append(
+            (
+                re.compile(rf",\s*{escaped}\b", re.IGNORECASE),
+                re.compile(rf"\b{escaped}\s*,\s*", re.IGNORECASE),
+                re.compile(rf"\b{escaped}\b", re.IGNORECASE),
+            )
+        )
+    return compiled
+
+
+def redact_hidden_skill_names(value: Any, names: set[str]) -> Any:
+    """Recursively remove hidden skill names from every public string field.
+
+    Structured skill lists are already filtered upstream — this pass closes
+    the free-prose channel (analyzer summaries like "Detected skills: A, B, C"
+    and trace text) so a hidden skill's NAME cannot leak through evidence
+    summaries. Keys are never altered.
+    """
+    patterns = _hidden_name_patterns(names)
+    if not patterns:
+        return value
+
+    def _redact_text(text: str) -> str:
+        out = text
+        for mid, head, bare in patterns:
+            out = mid.sub("", out)
+            out = head.sub("", out)
+            out = bare.sub("", out)
+        out = re.sub(r"\s{2,}", " ", out)
+        out = re.sub(r"\s+([.,;:!?])", r"\1", out)
+        out = re.sub(r"\(\s*\)", "", out)
+        return out.strip()
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, str):
+            return _redact_text(node)
+        if isinstance(node, dict):
+            return {key: _walk(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    return _walk(value)
+
+
 # Generic, non-leaking limitation appended when a direct verification link was
 # dropped because its target was not safely public (never reveals the raw URL).
 _OMITTED_LINK_LIMITATION = (
@@ -570,74 +638,271 @@ _OMITTED_LINK_LIMITATION = (
 )
 
 
-def _public_github_proof(github_proof: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(github_proof, dict):
+def _public_github_proof(
+    github_proof: dict[str, Any] | None, state: str = VIEWABLE
+) -> dict[str, Any] | None:
+    """Project the GitHub Proof per the effective disclosure ``state``.
+
+    * ``hidden``   → the section does not exist publicly (None).
+    * ``summary``  → verified summary only: repository identity and link are
+      withheld ("Repository access is not enabled by the candidate").
+    * ``viewable`` → current truth-gated behavior: the link renders only when
+      the repository is actually public AND passes the safe-public-url gate.
+    """
+    if not isinstance(github_proof, dict) or state == HIDDEN:
         return None
     scrubbed = dict(github_proof)
     scrubbed["public_safe_summary"] = _scrub_numeric_scores(github_proof.get("public_safe_summary") or "")
-    # A repo URL is only kept (and only advertised as directly linkable) when it
-    # is a public-safe http(s) target — never echo a private/internal raw URL.
+    if state == SUMMARY:
+        scrubbed["repo_url"] = None
+        scrubbed["repo_owner"] = None
+        scrubbed["repo_name"] = None
+        scrubbed["repo_is_public"] = False
+        scrubbed["disclosure"] = "summary"
+        return scrubbed
+    # A repo URL is only kept (and only advertised as directly linkable) when
+    # the repository is genuinely public AND the URL is a public-safe http(s)
+    # target — a private repo's URL is withheld entirely (fail-closed), and a
+    # private/internal raw URL is never echoed.
     repo_url = github_proof.get("repo_url")
     repo_url_is_safe = is_safe_public_url(repo_url)
-    scrubbed["repo_url"] = repo_url if repo_url_is_safe else None
-    scrubbed["repo_is_public"] = bool(github_proof.get("repo_is_public")) and repo_url_is_safe
+    repo_is_public = bool(github_proof.get("repo_is_public")) and repo_url_is_safe
+    scrubbed["repo_url"] = repo_url if repo_is_public else None
+    scrubbed["repo_is_public"] = repo_is_public
+    scrubbed["disclosure"] = "viewable"
     return scrubbed
 
 
-def _public_website_proofs(proofs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
-    """Project website proofs, blanking any non-public ``target_website``.
+def _public_website_proofs(
+    proofs: list[dict[str, Any]],
+    db: Any,
+    disclosure: EffectiveDisclosure,
+    project_id: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Project website proofs per effective disclosure.
 
     Returns the safe proofs plus a flag indicating whether at least one target
-    URL was omitted, so limitations can honestly reflect the omission. The
-    qualitative evidence (strength, confidence, skills) is always preserved —
-    only the raw direct link is dropped when it is not public-safe.
+    URL was omitted, so limitations can honestly reflect the omission.
+
+    Aspect handling (each independently controllable):
+    * ``website_summary`` hidden → no website proofs at all (handled by the
+      caller; this function is only reached when the summary is visible).
+    * ``website_url`` hidden → the live target link is withheld (silently —
+      a student choice is not an "omitted private link" limitation).
+    * ``website_frames`` viewable → attach access-gated frame view routes for
+      genuinely retained screenshot artifacts.
+    * ``website_video`` viewable → attach the access-gated replay route ONLY
+      when a replay video was actually retained — never a dead link.
+
+    The internal ``website_key`` (proof session id) never rides through
+    unless an access descriptor was explicitly granted (the descriptor route
+    paths necessarily embed it, and the routes re-gate every request).
     """
+    from app.services import proof_artifact_service as artifacts
+
+    url_state = disclosure.aspect(project_id, "website_url")
+    frames_state = disclosure.aspect(project_id, "website_frames")
+    video_state = disclosure.aspect(project_id, "website_video")
+
     safe: list[dict[str, Any]] = []
     omitted = False
     for proof in proofs:
         if not isinstance(proof, dict):
             continue
         row = dict(proof)
+        website_key = str(row.pop("website_key", "") or "")
         target = row.get("target_website") or ""
-        if target and not is_safe_public_url(target):
+        if url_state == HIDDEN:
+            row["target_website"] = ""  # student chose to keep the URL private
+        elif target and not is_safe_public_url(target):
             row["target_website"] = ""  # never echo a raw private/internal URL
             omitted = True
+
+        row["frame_views"] = []
+        row["replay_path"] = None
+        if website_key and frames_state == VIEWABLE:
+            frame_rows = artifacts.list_artifacts_for_proof(
+                db, proof_type="website", proof_id=website_key, artifact_type="website_frame"
+            )
+            row["frame_views"] = [
+                {
+                    "view_path": f"/api/v1/proofs/artifacts/{frame.get('id')}/view",
+                    "mime_type": frame.get("mime_type"),
+                }
+                for frame in frame_rows[:12]
+                if frame.get("id")
+            ]
+        if website_key and video_state == VIEWABLE:
+            replay_rows = artifacts.list_artifacts_for_proof(
+                db,
+                proof_type="website",
+                proof_id=website_key,
+                artifact_type="website_replay_video",
+            )
+            if replay_rows:
+                row["replay_path"] = f"/api/v1/proofs/website/{website_key}/replay"
         safe.append(row)
     return safe, omitted
 
 
-def _public_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Allowlist projection of the report's document summaries.
+def _public_documents(
+    documents: list[dict[str, Any]],
+    disclosure: EffectiveDisclosure,
+    project_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Allowlist projection of the report's documents per effective disclosure.
 
-    The private report's per-document ``original_document`` descriptor (the
-    owner-only opaque artifact id + access-gated view/download routes) never
-    reaches recruiters: the public surface keeps title/type/status plus the safe
-    excerpts and locators already carried by the evidence traces — no raw
-    document, no download action.
+    Returns ``(public_documents, state_by_key)`` where ``state_by_key`` maps
+    each document key to its effective state so the evidence-trace filter and
+    counts stay consistent with the document list.
+
+    * ``hidden``   → the document does not appear at all.
+    * ``summary``  → title/type/status only — the pre-063 behavior. The
+      owner-only ``original_document`` descriptor never reaches recruiters.
+    * ``viewable`` → additionally carries a ``shared_view`` descriptor with the
+      access-gated view route (and the download route ONLY when the separate
+      download grant is on). Honest fallback: a document whose original was
+      never retained degrades to ``summary`` rather than advertising a dead
+      "View" action.
     """
-    return [
-        {
+    public_docs: list[dict[str, Any]] = []
+    state_by_key: dict[str, str] = {}
+    for doc in documents:
+        if not isinstance(doc, dict):
+            continue
+        key = str(doc.get("document_key") or "")
+        state = disclosure.document_state(project_id, key) if key else SUMMARY
+        if key:
+            state_by_key[key] = state
+        if state == HIDDEN:
+            continue
+        row: dict[str, Any] = {
             "title": doc.get("title"),
             "source_type": doc.get("source_type"),
             "status": doc.get("status"),
+            "disclosure": SUMMARY,
+            "shared_view": None,
         }
-        for doc in documents
-        if isinstance(doc, dict)
-    ]
+        if state == VIEWABLE:
+            original = doc.get("original_document") or {}
+            if isinstance(original, dict) and original.get("available") and original.get("open_path"):
+                can_download = disclosure.document_downloadable(project_id, key)
+                row["disclosure"] = VIEWABLE
+                row["shared_view"] = {
+                    "open_path": original.get("open_path"),
+                    "mime_type": original.get("mime_type"),
+                    "page_count": original.get("page_count"),
+                    "can_download": can_download,
+                    "download_path": original.get("download_path") if can_download else None,
+                }
+            else:
+                # Nothing retained to open — honest summary, never a dead link.
+                state_by_key[key] = SUMMARY
+        public_docs.append(row)
+    return public_docs, state_by_key
 
 
-def _public_evidence_traces(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Re-gate each evidence trace's direct link before it reaches recruiters.
+_GITHUB_TRACE_SOURCE_TYPE = "GitHub Proof"
+_WEBSITE_TRACE_SOURCE_TYPE = "Website Proof"
+_DOCUMENT_TRACE_SOURCE_TYPE = "Document Proof"
 
-    The student-report builder already drops non-public links, but the public
-    surface re-verifies every ``public_url`` through the safe-public-url helper
-    (defence in depth) so an unsafe link can never be advertised as openable.
+# Non-error wording for a code reference whose exact-line link the candidate
+# chose not to publish (distinct from the "omitted because private" note).
+_GITHUB_LINES_WITHHELD_NOTE = (
+    "The exact code reference is verified but the candidate has not enabled "
+    "public repository access for it."
+)
+
+
+def _strip_github_code_reference(row: dict[str, Any], *, summary_only: bool) -> None:
+    """Blank the repo/file/line/link fields of one GitHub trace in place."""
+    row["file_path"] = None
+    row["line_start"] = None
+    row["line_end"] = None
+    row["commit_sha"] = None
+    row["public_url"] = None
+    row["public_url_label"] = None
+    row["is_publicly_openable"] = False
+    row["location_detail"] = None
+    row["private_evidence_note"] = _GITHUB_LINES_WITHHELD_NOTE
+    if summary_only:
+        # Summary-only GitHub: the repository identity is withheld too, so a
+        # repo-named trace title must not leak it.
+        row["source_title"] = _GITHUB_TRACE_SOURCE_TYPE
+        row["location_label"] = "verified summary"
+
+
+def _public_evidence_traces(
+    traces: list[dict[str, Any]],
+    *,
+    github_state: str = VIEWABLE,
+    github_lines_state: str = VIEWABLE,
+    website_state: str = VISIBLE,
+    website_url_state: str = VISIBLE,
+    document_state_by_key: dict[str, str] | None = None,
+    defense_state: str = VISIBLE,
+    video_state: str = VISIBLE,
+    visible_skill: Callable[[str], bool] | None = None,
+) -> list[dict[str, Any]]:
+    """Re-gate each evidence trace per the effective disclosure policy.
+
+    Hidden sources drop their traces entirely (no count/badge leak); summary
+    states blank exact locators; the safe-public-url re-check stays as defence
+    in depth so an unsafe link can never be advertised as openable. Trace
+    skill-name lists are filtered so a hidden skill never leaks through a
+    trace label.
     """
+    document_states = document_state_by_key or {}
     safe: list[dict[str, Any]] = []
     for trace in traces:
         if not isinstance(trace, dict):
             continue
         row = dict(trace)
+        source_type = row.get("source_type")
+
+        if source_type == _GITHUB_TRACE_SOURCE_TYPE:
+            if github_state == HIDDEN:
+                continue
+            if github_state == SUMMARY:
+                _strip_github_code_reference(row, summary_only=True)
+            elif github_lines_state != VIEWABLE and (
+                row.get("file_path") or row.get("public_url") or row.get("commit_sha")
+            ):
+                _strip_github_code_reference(row, summary_only=False)
+        elif source_type == _WEBSITE_TRACE_SOURCE_TYPE:
+            if website_state == HIDDEN:
+                continue
+            if website_url_state == HIDDEN:
+                row["public_url"] = None
+                row["public_url_label"] = None
+                row["is_publicly_openable"] = False
+                # The student hid the live URL — it must not leak through the
+                # trace's title or human-readable locator either.
+                title = str(row.get("source_title") or "")
+                if "://" in title or "." in title:
+                    row["source_title"] = _WEBSITE_TRACE_SOURCE_TYPE
+                row["location_detail"] = None
+        elif source_type == _DOCUMENT_TRACE_SOURCE_TYPE:
+            document_key = str(row.get("document_key") or "")
+            if document_key and document_states.get(document_key, SUMMARY) == HIDDEN:
+                continue
+        elif source_type == _DEFENSE_TRACE_SOURCE_TYPE:
+            if defense_state == HIDDEN:
+                continue
+        elif source_type == _VIDEO_TRACE_SOURCE_TYPE:
+            if video_state == HIDDEN:
+                continue
+
+        # A hidden skill must not leak through a trace's skill labels. A trace
+        # whose every named skill is hidden degrades to project-level context.
+        if visible_skill is not None:
+            row["skill_names"] = [
+                name for name in (row.get("skill_names") or []) if visible_skill(str(name))
+            ]
+
+        # The per-document disclosure key is internal — never serialized.
+        row.pop("document_key", None)
+
         if not is_safe_public_url(row.get("public_url")):
             row["public_url"] = None
             row["public_url_label"] = None
@@ -769,6 +1034,35 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         raise _not_found()
 
     owner_id = str(project.get("user_id") or "")
+    project_id = str(project.get("id") or "")
+
+    # ── Granular disclosure (migration 063) ──────────────────────────────────
+    # The canonical resolver decides, per node, what an anonymous recruiter may
+    # see. A hidden project or hidden report 404s exactly like a bad token —
+    # non-disclosure. Aspect states below drive every section, count, link,
+    # and access descriptor in this projection.
+    disclosure = load_effective_disclosure(db, owner_id, passport_public=True)
+    if not disclosure.report_visible(project_id):
+        raise _not_found()
+
+    github_state = disclosure.aspect(project_id, "github_repo")
+    github_lines_state = disclosure.aspect(project_id, "github_lines")
+    website_state = disclosure.aspect(project_id, "website_summary")
+    defense_state = disclosure.aspect(project_id, "defense_summary")
+    defense_transcript_state = disclosure.aspect(project_id, "defense_transcript")
+    defense_video_state = disclosure.aspect(project_id, "defense_video")
+    video_state = disclosure.aspect(project_id, "video_summary")
+
+    def _skill_is_visible(skill_name: str) -> bool:
+        """Effective visibility of one skill claim within THIS project."""
+        name = str(skill_name or "").strip()
+        if not name:
+            return False
+        canonical = canonical_skill(name)
+        return disclosure.project_skill_visible(
+            project_id, skill_category(canonical), skill_slug(canonical)
+        )
+
     report = build_student_vbr_report(db, pipeline_db, project, owner_id)
 
     # Central Public Safety layer. Lazily imported because that module imports this
@@ -790,36 +1084,68 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # the defense evidence traces are stripped of their derived text, whenever the
     # transcript's privacy review is not clean.
     raw_defense_analysis = report.get("project_defense_analysis")
-    defense_analysis = public_safe_defense_analysis(raw_defense_analysis)
     defense_privacy_clean = defense_privacy_is_clean(raw_defense_analysis)
 
-    # Claim-level Defense Answer Evidence rides the same fail-closed gate: the
-    # projection publishes an answer summary only when the session analysis is
-    # explicitly clean AND the object itself is marked shareable; everything
-    # else becomes a fixed withheld card with no answer-derived text and no
-    # internal question_id.
-    defense_answer_evidence = public_safe_defense_answer_evidence(
-        report.get("defense_answer_evidence") or [], raw_defense_analysis
+    if defense_state == HIDDEN:
+        # The student hid Project Defense: no analysis, no cards, no badge.
+        defense_analysis = None
+        defense_answer_evidence: list[dict[str, Any]] = []
+        project_defense_inspection: list[dict[str, Any]] = []
+    else:
+        defense_analysis = public_safe_defense_analysis(raw_defense_analysis)
+
+        # Claim-level Defense Answer Evidence rides the same fail-closed gate: the
+        # projection publishes an answer summary only when the session analysis is
+        # explicitly clean AND the object itself is marked shareable; everything
+        # else becomes a fixed withheld card with no answer-derived text and no
+        # internal question_id.
+        defense_answer_evidence = public_safe_defense_answer_evidence(
+            report.get("defense_answer_evidence") or [], raw_defense_analysis
+        )
+
+        # Project Defense inspection cards ride the SAME fail-closed gate: a card is
+        # published with content only when the session analysis is clean AND the
+        # card is public-safe; otherwise it becomes a fixed withheld placeholder
+        # with no answer text, no clip locator, and no internal ids.
+        project_defense_inspection = public_safe_project_defense_inspection(
+            report.get("project_defense_inspection") or [], raw_defense_analysis
+        )
+
+    # Documents first: their per-key effective states also drive the document
+    # evidence-trace filter below, so list and traces can never disagree.
+    public_documents, document_state_by_key = _public_documents(
+        report.get("documents") or [], disclosure, project_id
     )
 
-    # Project Defense inspection cards ride the SAME fail-closed gate: a card is
-    # published with content only when the session analysis is clean AND the
-    # card is public-safe; otherwise it becomes a fixed withheld placeholder
-    # with no answer text, no clip locator, and no internal ids.
-    project_defense_inspection = public_safe_project_defense_inspection(
-        report.get("project_defense_inspection") or [], raw_defense_analysis
+    evidence_traces = _public_evidence_traces(
+        report.get("evidence_traces") or [],
+        github_state=github_state,
+        github_lines_state=github_lines_state,
+        website_state=website_state,
+        website_url_state=disclosure.aspect(project_id, "website_url"),
+        document_state_by_key=document_state_by_key,
+        defense_state=defense_state,
+        video_state=video_state,
+        visible_skill=_skill_is_visible,
     )
-
-    evidence_traces = _public_evidence_traces(report.get("evidence_traces") or [])
     # Video evidence chips are built from the SAME Project Defense transcript
     # segments, so their ``short_summary`` / ``label`` are transcript-derived. When
     # the transcript is privacy-flagged they must fail closed too: the timestamped
     # chips are omitted entirely (and their "Video Evidence" traces are redacted
-    # alongside the "Project Defense" traces below).
+    # alongside the "Project Defense" traces below). The student's own
+    # ``video_summary`` aspect hides them as a choice, not an error.
     raw_video_chips = report.get("video_evidence_chips") or []
+    if video_state == HIDDEN:
+        raw_video_chips = []
     if not defense_privacy_clean:
         evidence_traces = _redact_unsafe_defense_traces(evidence_traces)
         raw_video_chips = []
+    # A chip labeled with a hidden skill must not leak that skill's name.
+    raw_video_chips = [
+        chip
+        for chip in raw_video_chips
+        if not chip.get("related_skill") or _skill_is_visible(str(chip.get("related_skill")))
+    ]
 
     # ── Direct verification links: public-safe gate (must-fix) ───────────────
     # Only genuinely public http(s) targets may be linked from an anonymous
@@ -828,7 +1154,17 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # the raw URL never reaches the response JSON.
     raw_deployed_url = report.get("deployed_url") or None
     deployed_url = raw_deployed_url if is_safe_public_url(raw_deployed_url) else None
-    website_proofs, website_link_omitted = _public_website_proofs(report.get("website_proofs") or [])
+    if disclosure.aspect(project_id, "website_url") == HIDDEN:
+        # The live-site link is a website aspect the student controls.
+        deployed_url = None
+        raw_deployed_url = None
+    if website_state == HIDDEN:
+        website_proofs: list[dict[str, Any]] = []
+        website_link_omitted = False
+    else:
+        website_proofs, website_link_omitted = _public_website_proofs(
+            report.get("website_proofs") or [], db, disclosure, project_id
+        )
     deployed_link_omitted = bool(raw_deployed_url) and deployed_url is None
 
     limitations = _public_limitations(report.get("limitations") or [])
@@ -840,7 +1176,103 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     # unverified repo (no attached GitHub Proof) must never present that repo
     # name to recruiters as if a repository were available — that is exactly the
     # "report says GitHub but nothing opens" trust failure.
-    github_proof_public = _public_github_proof(report.get("github_proof"))
+    github_proof_public = _public_github_proof(report.get("github_proof"), github_state)
+
+    # Hidden skills never leak through claim lists, matrix rows, or detected-
+    # skill labels — anywhere a skill name would appear.
+    claimed_skills = [s for s in (report.get("claimed_skills") or []) if _skill_is_visible(str(s))]
+    # A hidden proof source must not leak through a skill row's source badges.
+    hidden_source_labels: set[str] = set()
+    if github_state == HIDDEN:
+        hidden_source_labels.add(_GITHUB_TRACE_SOURCE_TYPE)
+    if website_state == HIDDEN:
+        hidden_source_labels.add(_WEBSITE_TRACE_SOURCE_TYPE)
+    if defense_state == HIDDEN:
+        hidden_source_labels.add(_DEFENSE_TRACE_SOURCE_TYPE)
+    if video_state == HIDDEN:
+        hidden_source_labels.add(_VIDEO_TRACE_SOURCE_TYPE)
+    if not public_documents:
+        hidden_source_labels.add(_DOCUMENT_TRACE_SOURCE_TYPE)
+    skill_evidence = [
+        {
+            **row,
+            "supporting_sources": [
+                s
+                for s in (row.get("supporting_sources") or [])
+                if str(s) not in hidden_source_labels
+            ],
+        }
+        for row in (report.get("skill_evidence") or [])
+        if isinstance(row, dict) and _skill_is_visible(str(row.get("skill") or ""))
+    ]
+    if isinstance(github_proof_public, dict):
+        github_proof_public["detected_skills"] = [
+            s for s in (github_proof_public.get("detected_skills") or []) if _skill_is_visible(str(s))
+        ]
+    website_proofs = [
+        {
+            **row,
+            "supported_skills": [
+                s for s in (row.get("supported_skills") or []) if _skill_is_visible(str(s))
+            ],
+        }
+        for row in website_proofs
+    ]
+    if isinstance(defense_analysis, dict):
+        for skills_field in (
+            "skills_mentioned",
+            "skills_explained_well",
+            "skills_missing_from_explanation",
+        ):
+            defense_analysis[skills_field] = [
+                s for s in (defense_analysis.get(skills_field) or []) if _skill_is_visible(str(s))
+            ]
+
+    # Effective-visibility-true evidence package: counts and badges reflect
+    # ONLY what this projection actually renders — hidden data never inflates
+    # a public count.
+    evidence_package = dict(report.get("evidence_package") or {})
+    evidence_package["github_proof_attached"] = github_proof_public is not None
+    evidence_package["documents_count"] = len(public_documents)
+    if website_state == HIDDEN:
+        evidence_package["website_proofs_count"] = 0
+        evidence_package["website_proofs_excluded_count"] = 0
+    if defense_state == HIDDEN:
+        evidence_package["project_defense_completed"] = False
+        evidence_package["video_defense_recorded"] = False
+
+    # ── Defense media access descriptors (explicit grants only) ──────────────
+    # A transcript/recording descriptor is attached ONLY when the student's
+    # custom policy opened that aspect AND a retained artifact actually exists
+    # AND the defense privacy review is clean — never a dead or unsafe link.
+    from app.services import proof_artifact_service as artifacts_service
+
+    defense_transcript_view: dict[str, Any] | None = None
+    defense_video_view: dict[str, Any] | None = None
+    if defense_state != HIDDEN and defense_privacy_clean:
+        if defense_transcript_state == VIEWABLE:
+            transcript_rows = artifacts_service.list_artifacts_for_project(
+                db, project_id=project_id, artifact_type="defense_transcript"
+            )
+            if transcript_rows:
+                defense_transcript_view = {
+                    "view_path": f"/api/v1/proofs/artifacts/{transcript_rows[-1].get('id')}/view",
+                    "mime_type": transcript_rows[-1].get("mime_type"),
+                }
+        if defense_video_state == VIEWABLE:
+            video_rows = artifacts_service.list_artifacts_for_project(
+                db, project_id=project_id, artifact_type="defense_video"
+            ) or artifacts_service.list_artifacts_for_project(
+                db, project_id=project_id, artifact_type="defense_audio"
+            )
+            if video_rows:
+                defense_video_view = {
+                    "view_path": f"/api/v1/proofs/artifacts/{video_rows[-1].get('id')}/view",
+                    "mime_type": video_rows[-1].get("mime_type"),
+                }
+
+    video_chips = _sanitize_video_chips(raw_video_chips)
+    evidence_package["video_evidence_chip_count"] = len(video_chips)
 
     public = {
         "report_title": _REPORT_TITLE,
@@ -848,25 +1280,56 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "candidate_display_name": _lookup_display_name(db, owner_id),
         "project_summary": report.get("project_description") or "",
         "student_role": report.get("student_role") or "",
-        "repo_full_name": report.get("repo_full_name") if github_proof_public else None,
+        "repo_full_name": (
+            report.get("repo_full_name")
+            if github_proof_public and github_state == VIEWABLE
+            else None
+        ),
         "deployed_url": deployed_url,
-        "claimed_skills": list(report.get("claimed_skills") or []),
-        "evidence_package": report.get("evidence_package") or {},
+        "claimed_skills": claimed_skills,
+        "evidence_package": evidence_package,
         "github_proof": github_proof_public,
-        "documents": _public_documents(report.get("documents") or []),
+        "documents": public_documents,
         "website_proofs": website_proofs,
         "project_defense_analysis": defense_analysis,
         "defense_answer_evidence": defense_answer_evidence,
         "project_defense_inspection": project_defense_inspection,
-        "skill_evidence": list(report.get("skill_evidence") or []),
+        "defense_transcript_view": defense_transcript_view,
+        "defense_video_view": defense_video_view,
+        "skill_evidence": skill_evidence,
         "evidence_traces": evidence_traces,
-        "video_evidence_chips": _sanitize_video_chips(raw_video_chips),
+        "video_evidence_chips": video_chips,
         "limitations": limitations,
         "published_at": project.get("public_report_published_at"),
         "generated_at": report.get("generated_at"),
         "public_passport_path": _lookup_public_passport_path(db, owner_id),
         "verification_note": _VERIFICATION_NOTE,
+        # Monotonic policy version — public caches key off it so a disclosure
+        # change invalidates previously served representations immediately.
+        "disclosure_version": disclosure.disclosure_version,
     }
+
+    # A hidden skill's NAME must not leak through free prose either (analyzer
+    # summaries, trace text). Structured lists were filtered above; this pass
+    # closes the free-text channel for every skill hidden in THIS project.
+    hidden_skill_names: set[str] = set()
+    for candidate in report.get("claimed_skills") or []:
+        if candidate and not _skill_is_visible(str(candidate)):
+            hidden_skill_names.add(str(candidate))
+    for row in report.get("skill_evidence") or []:
+        if isinstance(row, dict) and row.get("skill") and not _skill_is_visible(str(row["skill"])):
+            hidden_skill_names.add(str(row["skill"]))
+    raw_github = report.get("github_proof")
+    if isinstance(raw_github, dict):
+        for candidate in raw_github.get("detected_skills") or []:
+            if candidate and not _skill_is_visible(str(candidate)):
+                hidden_skill_names.add(str(candidate))
+    for proof_row in report.get("website_proofs") or []:
+        if isinstance(proof_row, dict):
+            for candidate in proof_row.get("supported_skills") or []:
+                if candidate and not _skill_is_visible(str(candidate)):
+                    hidden_skill_names.add(str(candidate))
+    public = redact_hidden_skill_names(public, hidden_skill_names)
 
     # Recursively scrub score-style fragments from every public string field
     # (must-fix: the scrubber is no longer limited to github_proof). Applied

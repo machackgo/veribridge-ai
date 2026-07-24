@@ -814,6 +814,13 @@ export type VBRReportGitHubProofSummary = {
   public_safe_summary: string
   /** True only when the repo is a known public GitHub repo (safe to link). */
   repo_is_public?: boolean
+  /**
+   * Candidate-chosen disclosure level for the public projection. `"summary"`
+   * means only the verified evidence summary is shared — no repository link or
+   * identity is rendered. Absent/`"viewable"` keeps the three-truth-state
+   * behavior. Owner surfaces never carry it.
+   */
+  disclosure?: string | null
 }
 
 /**
@@ -837,12 +844,45 @@ export type VBRReportDocumentOriginalAccess = {
   note: string | null
 }
 
+/**
+ * Public, disclosure-gated access to a document the CANDIDATE chose to share.
+ * `open_path` / `download_path` are API routes served through the disclosure
+ * gate (the backend re-checks the published disclosure state per request) —
+ * never storage paths or signed URLs.
+ */
+export type PublicDocumentSharedView = {
+  open_path: string
+  mime_type: string | null
+  page_count: number | null
+  can_download: boolean
+  download_path: string | null
+}
+
 export type VBRReportDocumentSummary = {
   title: string
   source_type: string | null
   status: string | null
   /** Owner-only retained-original access (private report only; absent/null on public surfaces). */
   original_document?: VBRReportDocumentOriginalAccess | null
+  /**
+   * Public projection only: the candidate-chosen disclosure level for this
+   * document. `"viewable"` docs carry a `shared_view`; `"summary"` docs render
+   * as a verified summary with no file access. Absent on owner payloads.
+   */
+  disclosure?: "summary" | "viewable"
+  /** Present only when `disclosure === "viewable"` — candidate-shared file access. */
+  shared_view?: PublicDocumentSharedView | null
+}
+
+/**
+ * A disclosure-gated media locator on public surfaces (captured frame,
+ * walkthrough replay, defense transcript/recording). `view_path` is an API
+ * route re-checked against the published disclosure state per request — never
+ * a storage path or signed URL.
+ */
+export type PublicMediaView = {
+  view_path: string
+  mime_type: string | null
 }
 
 export type VBRReportWebsiteProofSummary = {
@@ -850,6 +890,10 @@ export type VBRReportWebsiteProofSummary = {
   evidence_strength: string
   workflow_confidence: string
   supported_skills: string[]
+  /** Public projection only: candidate-shared captured screenshots. */
+  frame_views?: PublicMediaView[]
+  /** Public projection only: candidate-shared walkthrough recording path. */
+  replay_path?: string | null
 }
 
 /**
@@ -2368,6 +2412,16 @@ export type PublicVBRProjectReport = {
 
   limitations: string[]
 
+  /**
+   * Candidate-shared Project Defense media (disclosure-gated). Present only
+   * when the candidate enabled transcript / recording access; the backend
+   * omits them entirely otherwise.
+   */
+  defense_transcript_view?: PublicMediaView | null
+  defense_video_view?: PublicMediaView | null
+  /** Version of the disclosure configuration this projection was built from. */
+  disclosure_version?: number
+
   published_at: string | null
   generated_at: string
   /**
@@ -3175,6 +3229,170 @@ export async function publishWorkPassport(
 export async function unpublishWorkPassport(): Promise<WorkPassportStatus> {
   const res = await fetchAPI("/api/v1/student/vbr/passport/unpublish", { method: "POST" })
   if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to unpublish passport (HTTP ${res.status}).`))
+  return res.json()
+}
+
+// ── Granular passport disclosure (Privacy & Sharing center) ──────────────────
+//
+// The owner's hierarchical control over what each public surface exposes.
+// All state is server-enforced: the frontend renders the server's
+// configured/effective/allowed answers and submits changes — it never computes
+// visibility itself, and public renderers simply render what the backend kept.
+
+export type DisclosureMode = "recruiter_safe" | "custom"
+
+export type DisclosurePreset = "recruiter_safe" | "portfolio_open" | "maximum_privacy"
+
+/** One controllable aspect (github_repo, website_frames, defense_transcript, …) of a project. */
+export type DisclosureAspect = {
+  resource_type: string
+  resource_key: string
+  label: string
+  description: string
+  /** False when the proof source is not attached — rendered dimmed, never controllable. */
+  available: boolean
+  /** The owner's explicit override, or null when inheriting the default. */
+  configured: string | null
+  /** The server-computed effective state after inheritance. */
+  effective: string
+  default: string
+  /** Server-validated states this aspect may be set to — the UI renders exactly these. */
+  allowed: string[]
+}
+
+export type DisclosureVisibilityState = {
+  configured: string | null
+  effective: "visible" | "hidden"
+  allowed: string[]
+}
+
+export type DisclosureDocument = {
+  document_key: string
+  title: string | null
+  source_type: string | null
+  configured: string | null
+  effective: "hidden" | "summary" | "viewable"
+  default: string
+  allowed: string[]
+  /** The separate document_download override (null → inherited). */
+  download_configured: string | null
+  effective_downloadable: boolean
+  has_retained_original: boolean
+}
+
+export type DisclosureProject = {
+  project_id: string
+  title: string
+  public_report_path: string
+  published_at: string | null
+  project: DisclosureVisibilityState
+  report: DisclosureVisibilityState
+  aspects: DisclosureAspect[]
+  documents: DisclosureDocument[]
+  override_count: number
+}
+
+export type DisclosureSkillClaim = {
+  project_id: string
+  project_title: string
+  resource_key: string
+  configured: string | null
+  effective: "visible" | "hidden"
+  allowed: string[]
+}
+
+export type DisclosureSkill = {
+  skill: string
+  skill_slug: string
+  category: string
+  configured: string | null
+  effective: "visible" | "hidden"
+  allowed: string[]
+  effectively_public: boolean
+  project_claims: DisclosureSkillClaim[]
+}
+
+export type DisclosureSkillGroup = {
+  category: string
+  configured: string | null
+  effective: "visible" | "hidden"
+  allowed: string[]
+  skills: DisclosureSkill[]
+}
+
+export type DisclosurePassportState = {
+  is_published: boolean
+  public_slug: string | null
+  public_path: string | null
+  preview_public_path: string | null
+  mode: DisclosureMode
+  disclosure_version: number
+  custom_overrides_active: boolean
+  override_count: number
+}
+
+/**
+ * The full owner disclosure context: passport master state + per-project and
+ * per-skill controls + the effective public exposure summary (counts only).
+ */
+export type DisclosureContext = {
+  passport: DisclosurePassportState
+  projects: DisclosureProject[]
+  skill_groups: DisclosureSkillGroup[]
+  /** Effective public exposure counts (projects_public, documents_viewable, …). */
+  summary: Record<string, number>
+}
+
+/** One override change; `visibility: null` clears the override back to inherited. */
+export type DisclosureOverrideChange = {
+  resource_type: string
+  resource_key: string
+  visibility: string | null
+}
+
+/** Load the owner's full disclosure context. */
+export async function getDisclosureContext(): Promise<DisclosureContext> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/disclosure")
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to load privacy settings (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Switch between recruiter-safe defaults and custom per-item disclosure. */
+export async function setDisclosureMode(mode: DisclosureMode): Promise<DisclosureContext> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/disclosure/mode", {
+    method: "PUT",
+    body: JSON.stringify({ mode }),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to change the disclosure mode (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Apply a batch of per-item overrides in one atomic request. */
+export async function applyDisclosureOverrides(
+  changes: DisclosureOverrideChange[],
+): Promise<DisclosureContext> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/disclosure/overrides", {
+    method: "PUT",
+    body: JSON.stringify({ changes }),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to save your privacy changes (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Apply a named disclosure preset (never an "expose everything" one-click). */
+export async function applyDisclosurePreset(preset: DisclosurePreset): Promise<DisclosureContext> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/disclosure/preset", {
+    method: "POST",
+    body: JSON.stringify({ preset }),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to apply the preset (HTTP ${res.status}).`))
+  return res.json()
+}
+
+/** Clear every override back to the recruiter-safe defaults. */
+export async function resetDisclosure(): Promise<DisclosureContext> {
+  const res = await fetchAPI("/api/v1/student/vbr/passport/disclosure/reset", { method: "POST" })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, `Failed to reset your privacy settings (HTTP ${res.status}).`))
   return res.json()
 }
 
