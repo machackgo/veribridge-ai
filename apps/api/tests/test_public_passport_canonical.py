@@ -262,6 +262,7 @@ def test_public_report_hides_repo_identity_without_github_proof(
         client, "No GitHub Here", "https://github.com/octocat/private-thing"
     )
     token = _publish_project_report(client, project_id).json()["public_token"]
+    _publish(client)  # report links resolve only while the Passport is Public
 
     app.dependency_overrides.pop(get_current_user_id, None)
     res = client.get(f"/api/v1/public/vbr/reports/{token}")
@@ -284,6 +285,7 @@ def test_public_report_keeps_repo_identity_with_github_proof(
         attached_proofs={"github_proof_id": github_proof_id},
     ).json()["project"]["id"]
     token = _publish_project_report(client, project_id).json()["public_token"]
+    _publish(client)  # report links resolve only while the Passport is Public
 
     app.dependency_overrides.pop(get_current_user_id, None)
     res = client.get(f"/api/v1/public/vbr/reports/{token}")

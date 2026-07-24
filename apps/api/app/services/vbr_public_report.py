@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 
+from app.services.passport_visibility import owner_passport_is_public
 from app.services.vbr_report_publish import _contains_unsafe_fields
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,32 @@ def _find_report_by_token(db: Any, public_token: str) -> dict[str, Any] | None:
     result = db.table(_REPORTS_TABLE).select("*").eq("public_token", public_token).limit(1).execute()
     rows = getattr(result, "data", []) or []
     return rows[0] if rows else None
+
+
+def _report_owner_id(db: Any, report: dict[str, Any]) -> str | None:
+    """Owner ``user_id`` via the report's project row; None when unknown."""
+    project_id = report.get("project_id")
+    if not project_id:
+        return None
+    try:
+        if isinstance(db, dict):
+            row = db.setdefault("vbr_projects", {}).get(str(project_id))
+        else:
+            result = (
+                db.table("vbr_projects")
+                .select("user_id")
+                .eq("id", str(project_id))
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception:  # pragma: no cover - fail closed via missing owner
+        return None
+    if not isinstance(row, dict):
+        return None
+    user_id = row.get("user_id")
+    return str(user_id) if user_id else None
 
 
 # ── Response builder ────────────────────────────────────────────────────────
@@ -170,6 +197,12 @@ def get_public_report(db: Any, public_token: str) -> dict[str, Any]:
         raise _not_found()
 
     if report.get("status") != "published" or not report.get("public_token"):
+        raise _not_found()
+
+    # Passport visibility is the master privacy switch: even a published legacy
+    # report goes dark while the owner's Work Passport is Private. Nothing is
+    # deleted, so making the Passport Public restores the link.
+    if not owner_passport_is_public(db, _report_owner_id(db, report)):
         raise _not_found()
 
     body = report.get("body") or {}

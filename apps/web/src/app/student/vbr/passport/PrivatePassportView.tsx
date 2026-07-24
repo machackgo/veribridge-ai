@@ -41,6 +41,7 @@ import {
 } from "../../../../../components/passport/ProofRelationshipGuide"
 import { PassportCard } from "../../../../../components/passport/PassportCard"
 import { PassportBeam } from "../../../../../components/passport/PassportBeam"
+import { PassportVisibilityControl } from "../../../../../components/passport/PassportVisibilityControl"
 import { QrModal } from "../../../../../components/passport/QrModal"
 import {
   buildPrivateCardModel,
@@ -610,10 +611,10 @@ function ProjectCard({
           )}
         </div>
 
-        {/* Public-passport visibility: report publishing and Passport publishing
-            are independent. A published report's public link is always live by
-            direct URL, but it is only featured on the public Passport while the
-            Passport itself is published. The copy must stay correct in both states. */}
+        {/* Passport visibility is the master switch: a published report link
+            only resolves publicly while the Passport itself is Public. The
+            per-project publish selection is preserved across visibility
+            toggles, so the copy must stay truthful in every combination. */}
         <p
           data-testid="report-visibility-note"
           data-visibility={isPublic ? "public" : "private"}
@@ -621,7 +622,9 @@ function ProjectCard({
           style={{ fontSize: 11, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
         >
           {isPublic
-            ? "This report’s public link is live and it is featured whenever your public Passport is published."
+            ? passportPublished
+              ? "This report’s public link is live and it is featured on your public Passport."
+              : "Your Passport is private, so this report link currently shows a private-state page. It goes live again as soon as you make your Passport public — your selection here is preserved."
             : hasEvidence
               ? "This project will not appear on your public Passport until you publish its recruiter-safe report."
               : "This project has no attached proof yet, so there is no report to publish — it will not appear on your public Passport. Attach proof or record a Project Defense first."}
@@ -2321,6 +2324,7 @@ function VerifiedPassportCardPreview({
   passport,
   initialStatus,
   onSelectRoleAreaId,
+  onPublishedChange,
 }: {
   passport: PrivateWorkPassport
   initialStatus: WorkPassportStatus
@@ -2331,10 +2335,13 @@ function VerifiedPassportCardPreview({
    * Docker. The parent also resets the low-level skill filter to "all".
    */
   onSelectRoleAreaId: (roleAreaId: string) => void
+  /**
+   * Notifies the parent of the SERVER-CONFIRMED visibility so page-level copy
+   * (e.g. per-project report notes) stays truthful after a toggle here.
+   */
+  onPublishedChange?: (published: boolean) => void
 }) {
   const [status, setStatus] = useState<WorkPassportStatus>(initialStatus)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [qrOpen, setQrOpen] = useState(false)
   const [beamOpen, setBeamOpen] = useState(false)
@@ -2524,16 +2531,20 @@ function VerifiedPassportCardPreview({
     })
   }
 
-  const runPublish = (action: () => Promise<WorkPassportStatus>) => {
+  // The visibility master switch. Resolves only after the backend confirmed
+  // the change (never optimistic); the PassportVisibilityControl owns the
+  // confirmation dialog, busy state, and error surface around this.
+  const changeVisibility = async (target: "public" | "private") => {
     actedRef.current = true
-    setBusy(true)
-    setError(null)
     setCopied(false)
-    action()
-      .then(setStatus)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Action failed."))
-      .finally(() => setBusy(false))
+    const next = target === "public" ? await publishWorkPassport() : await unpublishWorkPassport()
+    setStatus(next)
   }
+
+  // Keep the parent's page-level copy in sync with the server-confirmed state.
+  useEffect(() => {
+    onPublishedChange?.(Boolean(status.is_published && status.public_slug))
+  }, [status, onPublishedChange])
 
   const copyLink = async () => {
     if (!model.publicPassportUrl) return
@@ -2841,6 +2852,11 @@ function VerifiedPassportCardPreview({
           )}
         </div>
 
+        {/* Passport visibility — the first-class 🔒 Private / 🌍 Public master
+            switch (server-enforced; every change goes through a confirmation
+            dialog). Lives directly above the sharing controls it governs. */}
+        <PassportVisibilityControl isPublished={model.isPublished} changeVisibility={changeVisibility} />
+
         {/* Sharing controls — secondary, compact row directly below the card
             (replaces the old separate "Public Work Passport" block). */}
         <div
@@ -2857,31 +2873,24 @@ function VerifiedPassportCardPreview({
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: TOKEN.ink }}>Sharing controls</span>
-            {model.isPublished ? (
-              <span data-testid="passport-public-badge">
-                <Badge tone="emerald">Public passport live</Badge>
-              </span>
-            ) : (
-              <span data-testid="passport-private-badge">
-                <Badge tone="slate">Private only</Badge>
-              </span>
-            )}
+            <span data-testid="sharing-controls-state" style={{ fontSize: 11.5, fontWeight: 600, color: TOKEN.muted }}>
+              {model.isPublished ? "Sharing is live" : "Sharing paused — Passport is private"}
+            </span>
           </div>
 
-          {error && (
-            <p data-testid="passport-publish-error" style={{ fontSize: 12, color: TOKEN.rose, margin: 0 }}>
-              {error}
-            </p>
-          )}
-
-          {/* Card actions available in any state — save the card as an image, and
-              (once published) share it via the OS share sheet or an optional QR. */}
+          {/* Card actions — the local PNG download always works; link/QR/share
+              actions are real only while the Passport is Public, and are shown
+              disabled with an honest label while Private (never color-only). */}
           <div data-testid="passport-card-actions" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <button
               type="button"
               data-testid="passport-beam-button"
               onClick={() => setBeamOpen(true)}
-              title="Instant in-person sharing — QR code, link, and native share in one panel."
+              title={
+                model.isPublished
+                  ? "Instant in-person sharing — QR code, link, and native share in one panel."
+                  : "Your Passport is private — Beam explains how to make it public."
+              }
               style={{ ...shareBtn, background: TOKEN.indigo, color: "#fff", borderColor: TOKEN.indigo }}
             >
               ⚡ Passport Beam
@@ -2889,13 +2898,36 @@ function VerifiedPassportCardPreview({
             <button type="button" data-testid="download-passport-card-button" onClick={onDownloadCard} style={shareBtn}>
               ⬇ Download Passport Card
             </button>
-            {model.isPublished && model.publicPassportUrl && (
+            {model.isPublished && model.publicPassportUrl ? (
               <>
                 <button type="button" data-testid="share-passport-button" onClick={onSharePassport} style={shareBtn}>
                   Share Passport
                 </button>
                 <button type="button" data-testid="show-qr-button" onClick={() => setQrOpen(true)} style={shareBtn}>
                   Show QR
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  data-testid="share-passport-button"
+                  disabled
+                  aria-disabled="true"
+                  title="Your Passport is private — make it Public to share."
+                  style={{ ...shareBtn, opacity: 0.55, cursor: "not-allowed" }}
+                >
+                  Share Passport (Private)
+                </button>
+                <button
+                  type="button"
+                  data-testid="show-qr-button"
+                  disabled
+                  aria-disabled="true"
+                  title="Your Passport is private — make it Public to enable the QR code."
+                  style={{ ...shareBtn, opacity: 0.55, cursor: "not-allowed" }}
+                >
+                  Show QR (Private)
                 </button>
               </>
             )}
@@ -2952,32 +2984,26 @@ function VerifiedPassportCardPreview({
                     Open Passport Card ↗
                   </a>
                 )}
-                <button
-                  type="button"
-                  data-testid="unpublish-passport-button"
-                  disabled={busy}
-                  onClick={() => runPublish(() => unpublishWorkPassport())}
-                  style={{ ...shareBtn, opacity: busy ? 0.6 : 1 }}
-                >
-                  {busy ? "Working…" : "Unpublish"}
-                </button>
               </div>
             </>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <p data-testid="passport-card-preview-publish-hint" style={{ fontSize: 11.5, color: TOKEN.muted, margin: 0, lineHeight: 1.6 }}>
-                Publish a recruiter-safe public card and shareable link. It links only to reports you have published —
-                never raw evidence, private files, or numeric scores. Unpublish any time.
+              <p data-testid="passport-private-sharing-hint" style={{ fontSize: 11.5, color: TOKEN.muted, margin: 0, lineHeight: 1.6 }}>
+                Your Passport is private. Anyone opening your public link, Beam, or QR code sees a private-state page —
+                no profile, projects, skills, or reports are exposed. Use the Passport visibility control above to make
+                it public again.
               </p>
-              <button
-                type="button"
-                data-testid="publish-passport-button"
-                disabled={busy}
-                onClick={() => runPublish(() => publishWorkPassport())}
-                style={{ ...shareBtn, alignSelf: "flex-start", background: TOKEN.indigo, color: "#fff", borderColor: TOKEN.indigo, opacity: busy ? 0.6 : 1 }}
-              >
-                {busy ? "Publishing…" : "Publish public Passport"}
-              </button>
+              {model.previewPublicUrl && (
+                <a
+                  data-testid="open-private-state-link"
+                  href={model.previewPublicUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ ...shareBtn, alignSelf: "flex-start" }}
+                >
+                  View the private-state page ↗
+                </a>
+              )}
             </div>
           )}
         </div>
@@ -2985,16 +3011,16 @@ function VerifiedPassportCardPreview({
 
       <QrModal value={model.publicPassportUrl} open={qrOpen} onClose={() => setQrOpen(false)} />
       {/* Passport Beam — instant in-person sharing. It only ever receives the
-          already-public Passport URL (null while unpublished → honest
-          publish-first state; never a private route or fabricated link). */}
+          already-public Passport URL (null while Private → honest private-state
+          explanation; never a private route or fabricated link). Publishing is
+          NOT offered inside Beam: every visibility change must go through the
+          PassportVisibilityControl's confirmation dialog. */}
       <PassportBeam
         open={beamOpen}
         onClose={() => setBeamOpen(false)}
         publicUrl={model.isPublished ? model.publicPassportUrl : null}
         candidateName={model.name}
         onDownloadCard={onDownloadCard}
-        onPublish={() => runPublish(() => publishWorkPassport())}
-        publishBusy={busy}
       />
     </Card>
   )
@@ -3009,6 +3035,9 @@ export function PrivatePassportView() {
   // now, kept for standalone selection) and the HIGH-LEVEL role area.
   const [selectedSkillKey, setSelectedSkillKey] = useState<string | null>(null)
   const [selectedRoleAreaId, setSelectedRoleAreaId] = useState<string | null>(null)
+  // Server-confirmed visibility, lifted from the card preview's toggle so
+  // page-level copy (per-project report notes) updates live after a change.
+  const [livePublished, setLivePublished] = useState<boolean | null>(null)
 
   // A Passport Card role chip sets the high-level Role Area filter AND resets the
   // low-level Skill filter to "all underlying skills" — so clicking "Computer
@@ -3050,7 +3079,12 @@ export function PrivatePassportView() {
           credential is the hero of the page (pinned to the very top) and now owns
           the sharing controls too, so there is no second "Public Work Passport" /
           "Verified candidate profile" block competing with it. */}
-      <VerifiedPassportCardPreview passport={passport} initialStatus={status} onSelectRoleAreaId={selectRoleAreaFromCard} />
+      <VerifiedPassportCardPreview
+        passport={passport}
+        initialStatus={status}
+        onSelectRoleAreaId={selectRoleAreaFromCard}
+        onPublishedChange={setLivePublished}
+      />
 
       {/* 1b — Passport Profile prompt: the consented public identity lives at
           /student/vbr/passport/profile. Until the student completes it, the
@@ -3127,7 +3161,7 @@ export function PrivatePassportView() {
       {/* 4 — The main Passport body: Projects ↔ Skills interactive explorer */}
       <PassportGraphExplorer
         passport={passport}
-        passportPublished={Boolean(passport.is_published && passport.public_slug)}
+        passportPublished={livePublished ?? Boolean(passport.is_published && passport.public_slug)}
         selectedSkillKey={selectedSkillKey}
         onSelectSkillKey={setSelectedSkillKey}
         selectedRoleAreaId={selectedRoleAreaId}

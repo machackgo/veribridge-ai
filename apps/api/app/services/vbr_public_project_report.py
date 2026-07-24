@@ -41,6 +41,7 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from app.api.v1.endpoints.vbr_projects import get_owned_vbr_project_or_404
+from app.services.passport_visibility import owner_passport_is_public
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_student_report import build_student_vbr_report
 
@@ -471,6 +472,8 @@ def resolve_published_project_id(db: Any, token: str) -> str | None:
     project = _find_project_by_token(db, token)
     if project is None or not project.get("public_report_token"):
         return None
+    if not owner_passport_is_public(db, project.get("user_id")):
+        return None
     project_id = str(project.get("id") or "")
     return project_id or None
 
@@ -756,6 +759,13 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
 
     project = _find_project_by_token(db, token)
     if project is None or not project.get("public_report_token"):
+        raise _not_found()
+
+    # Passport visibility is the master privacy switch: a published report link
+    # only resolves while the owner's Work Passport is Public. The token itself
+    # is preserved across Private/Public toggles, so flipping back to Public
+    # restores exactly the reports the student had selected.
+    if not owner_passport_is_public(db, project.get("user_id")):
         raise _not_found()
 
     owner_id = str(project.get("user_id") or "")

@@ -344,7 +344,9 @@ describe("PublicReportView", () => {
     render(<PublicReportView token="bad-token" />)
 
     expect(await screen.findByTestId("public-report-not-found")).toBeInTheDocument()
-    expect(screen.getByText(/no longer available/i)).toBeInTheDocument()
+    expect(screen.getByText(/This report is not available/i)).toBeInTheDocument()
+    // The empty state explains the private-Passport master switch without leaking why.
+    expect(screen.getByText(/currently private/i)).toBeInTheDocument()
     expect(screen.queryByTestId("public-report")).not.toBeInTheDocument()
   })
 

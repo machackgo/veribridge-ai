@@ -344,6 +344,7 @@ def _status_response(row: dict[str, Any] | None) -> dict[str, Any]:
         "is_published": is_published,
         "public_slug": slug if is_published else None,
         "public_path": _public_path(slug) if is_published and slug else None,
+        "preview_public_path": _public_path(slug) if slug else None,
         "published_at": row.get("published_at") if row else None,
         "headline": _headline_of(row),
         "summary": _summary_of(row),

@@ -189,7 +189,7 @@ export function PassportBeam({
                 border: `1px solid ${ready ? "#a7f3d0" : "#fde68a"}`,
               }}
             >
-              {ready ? "● Ready to share" : "Publish your Passport first"}
+              {ready ? "● Ready to share" : "🔒 Passport private"}
             </span>
           </div>
           <p data-testid="passport-beam-subtitle" style={{ fontSize: 12.5, color: "#6b7280", margin: 0, lineHeight: 1.55 }}>
@@ -298,11 +298,12 @@ export function PassportBeam({
           >
             <span aria-hidden style={{ fontSize: 26 }}>🔒</span>
             <p style={{ fontSize: 13.5, fontWeight: 600, color: "#0a0e1a", margin: 0 }}>
-              Publish your recruiter-safe Passport to enable sharing.
+              Your Passport is currently private.
             </p>
             <p style={{ fontSize: 12, color: "#6b7280", margin: 0, lineHeight: 1.6, maxWidth: 340 }}>
-              Your Passport is currently private. Publishing creates a recruiter-safe public link and QR code — it
-              links only to reports you have published, never raw evidence. You can unpublish any time.
+              Anyone opening your link or QR code right now sees a private-state page. To enable sharing, set your
+              Passport to Public in the Passport visibility control — it exposes only recruiter-safe published
+              content, never raw evidence, and you can make it private again any time.
             </p>
             {onPublish && (
               <button

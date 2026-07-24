@@ -244,10 +244,14 @@ def test_unpublishing_passport_fails_closed_but_keeps_report_link_and_private_da
 
     # Public passport fails closed.
     assert client.get(f"/api/v1/public/p/{slug}").status_code == 404
-    # The individually-published report link is untouched by design…
-    assert client.get(f"/api/v1/public/vbr/reports/{token}").status_code == 200
-    # …and no private data was deleted: the private passport still has the project.
+    # Passport visibility is the master switch: the report link goes dark too…
+    assert client.get(f"/api/v1/public/vbr/reports/{token}").status_code == 404
+    # …but nothing was deleted: the private passport still has the project and
+    # the report *selection* stays on, so Public restores it as-is.
     private = client.get("/api/v1/student/vbr/passport")
     assert private.status_code == 200
     assert private.json()["project_count"] == 1
     assert private.json()["projects"][0]["report"]["is_public"] is True
+
+    assert client.post("/api/v1/student/vbr/passport/publish", json={}).status_code == 200
+    assert client.get(f"/api/v1/public/vbr/reports/{token}").status_code == 200

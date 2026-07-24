@@ -39,9 +39,39 @@ perform a real call.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from app.core.config import settings
+
+
+def seed_published_passport(store: dict, user_id: str, *, is_published: bool = True) -> dict:
+    """Seed a canonical Work Passport row for ``user_id`` in a dict-mode store.
+
+    Passport visibility (``vbr_work_passports.is_published``) is the master
+    privacy switch for every public surface, so public-read tests need the
+    owner's Passport to be Public unless they are testing the Private state.
+    Returns the row so tests can flip ``is_published`` directly.
+    """
+    table = store.setdefault("vbr_work_passports", {})
+    existing = next((r for r in table.values() if str(r.get("user_id")) == str(user_id)), None)
+    if existing is not None:
+        existing["is_published"] = is_published
+        return existing
+    row = {
+        "id": str(uuid4()),
+        "user_id": str(user_id),
+        "public_slug": f"slug-{uuid4().hex[:8]}",
+        "headline": None,
+        "summary": None,
+        "is_published": is_published,
+        "published_at": "2026-01-01T00:00:00+00:00" if is_published else None,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    table[row["id"]] = row
+    return row
 
 
 @pytest.fixture(autouse=True)

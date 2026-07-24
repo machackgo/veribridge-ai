@@ -2439,6 +2439,12 @@ export type WorkPassportStatus = {
   is_published: boolean
   public_slug: string | null
   public_path: string | null
+  /**
+   * Owner-only: the passport's public path even while Private (null before the
+   * first publish ever mints a slug). Lets the student open and verify the
+   * private-state page their link currently shows.
+   */
+  preview_public_path?: string | null
   published_at: string | null
   headline: string
   summary: string

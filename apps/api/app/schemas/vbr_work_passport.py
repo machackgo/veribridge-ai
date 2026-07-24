@@ -43,6 +43,9 @@ class WorkPassportStatusResponse(BaseModel):
     is_published: bool = False
     public_slug: str | None = None
     public_path: str | None = None
+    # Owner-only: the passport's public path even while Private, so the student
+    # can open/verify the private-state page. Never included in public payloads.
+    preview_public_path: str | None = None
     published_at: str | None = None
     headline: str = ""
     summary: str = ""

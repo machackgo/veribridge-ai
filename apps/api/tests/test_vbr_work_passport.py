@@ -1448,13 +1448,18 @@ def test_unpublishing_passport_404s_public_but_keeps_evidence(client: TestClient
     _unpublish(client)
     assert _get_public(client, slug).status_code == 404
 
-    # The individual VBR report token still resolves (passport unpublish does
-    # not revoke report links), and the project row is intact.
-    assert client.get(f"/api/v1/public/vbr/reports/{report_token}").status_code == 200
+    # Passport visibility is the master privacy switch: while the Passport is
+    # Private the individual report link goes dark too — but its token is
+    # preserved (nothing revoked or deleted) and the project row is intact.
+    assert client.get(f"/api/v1/public/vbr/reports/{report_token}").status_code == 404
     assert project_id in mem_store.get("vbr_projects", {})
+    assert (
+        mem_store["vbr_projects"][project_id]["public_report_token"] == report_token
+    )
 
-    # Re-publishing restores the same slug.
+    # Re-publishing restores the same slug AND the previously selected report.
     assert _publish(client).json()["public_slug"] == slug
+    assert client.get(f"/api/v1/public/vbr/reports/{report_token}").status_code == 200
 
 
 def test_invalid_slug_returns_404(client: TestClient) -> None:

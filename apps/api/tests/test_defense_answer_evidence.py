@@ -51,7 +51,13 @@ from tests.test_vbr_project_defense import (
 
 @pytest.fixture()
 def mem_store() -> dict:
-    return {}
+    store: dict = {}
+    # Public report reads require the owner's Passport to be Public (visibility
+    # master switch); seed that baseline.
+    from tests.conftest import seed_published_passport
+
+    seed_published_passport(store, USER_ID)
+    return store
 
 
 @pytest.fixture()

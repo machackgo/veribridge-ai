@@ -9,6 +9,8 @@ from app.api.deps import get_current_user_id, get_db
 from app.main import app
 from app.services.transcription_service import TranscriptionResult, TranscriptSegment
 
+from tests.conftest import seed_published_passport
+
 USER_ID = "00000000-0000-0000-0000-000000000042"
 
 _SKELETON_SEGMENT_TEXTS = [
@@ -50,7 +52,10 @@ def _fake_run_ffmpeg_frame_extraction(_input_path, _timestamp_s, output_path) ->
 
 @pytest.fixture()
 def mem_store() -> dict:
-    return {}
+    store: dict = {}
+    # Legacy report links also honor the Passport visibility master switch.
+    seed_published_passport(store, USER_ID)
+    return store
 
 
 @pytest.fixture()

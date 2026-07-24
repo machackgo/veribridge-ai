@@ -113,10 +113,10 @@ describe("/b/[code] page", () => {
     vi.stubGlobal("fetch", fetchResponding(404, { detail: { code: "beam_link_inactive" } }))
     await renderPage(CODE)
     expect(screen.getByTestId("beam-link-inactive")).toHaveTextContent(
-      "This Passport link is no longer active",
+      "This Passport is currently private",
     )
     expect(screen.getByTestId("beam-link-notice")).toHaveTextContent(
-      "Ask for an updated link from the holder.",
+      "Ask them for an updated link.",
     )
     expect(screen.getByTestId("beam-link-learn-more")).toHaveTextContent("Learn about VeriBridge")
 

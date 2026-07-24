@@ -94,9 +94,12 @@ function BeamLinkNotice({ unavailable }: { unavailable: boolean }) {
         ) : (
           <>
             <h1 data-testid="beam-link-inactive" style={headlineStyle}>
-              This Passport link is no longer active
+              This Passport is currently private
             </h1>
-            <p style={bodyStyle}>Ask for an updated link from the holder.</p>
+            <p style={bodyStyle}>
+              The holder has not made their Work Passport available for public viewing, or this
+              link is no longer active. Ask them for an updated link.
+            </p>
           </>
         )}
         <a data-testid="beam-link-learn-more" href="/" style={ctaStyle}>

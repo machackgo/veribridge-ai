@@ -34,6 +34,8 @@ from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
 from app.services.vbr_public_project_report import _scrub_public_report
 
+from tests.conftest import seed_published_passport
+
 from tests.test_vbr_project_defense import (
     DEFENSE_TRANSCRIPT,
     OTHER_USER_ID,
@@ -53,7 +55,11 @@ from tests.test_vbr_project_defense import (
 
 @pytest.fixture()
 def mem_store() -> dict:
-    return {}
+    store: dict = {}
+    # Public report links only resolve while the owner's Passport is Public
+    # (visibility master switch); seed that baseline for the public-read tests.
+    seed_published_passport(store, USER_ID)
+    return store
 
 
 @pytest.fixture()
@@ -795,24 +801,19 @@ def test_public_report_returns_no_unsafe_raw_url_anywhere(
 
 
 def test_public_report_links_back_to_published_passport(client: TestClient, mem_store: dict) -> None:
-    """The public report links back to the candidate's Work Passport — but only
-    once that passport is itself published, never to a private passport."""
-    from app.services.vbr_work_passport_service import publish_passport
-
+    """The public report links back to the candidate's Public Work Passport,
+    and goes dark entirely once the Passport is made Private (master switch)."""
     project_id = _create_project_defense(client).json()["project"]["id"]
     token = _publish(client, project_id).json()["public_token"]
     app.dependency_overrides.pop(get_current_user_id, None)
 
-    # No passport published yet → no backlink.
+    passport_row = seed_published_passport(mem_store, USER_ID)
     body = _get_public(client, token).json()
-    assert body["public_passport_path"] is None
+    assert body["public_passport_path"] == f"/p/{passport_row['public_slug']}"
 
-    # Publish the passport, then the report links back to /p/{slug}.
-    status = publish_passport(mem_store, USER_ID)
-    slug = status["public_slug"]
-    assert slug
-    body = _get_public(client, token).json()
-    assert body["public_passport_path"] == f"/p/{slug}"
+    # Private passport → the report link itself stops resolving.
+    passport_row["is_published"] = False
+    assert _get_public(client, token).status_code == 404
 
 
 # ── Evidence traceability (public projection) ────────────────────────────────

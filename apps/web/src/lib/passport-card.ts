@@ -176,6 +176,12 @@ export type PassportCardModel = {
   /** Absolute public Passport Card URL (`{app}/card/{slug}`) when published. */
   cardUrl: string | null
   /**
+   * Owner-only: the passport's public URL regardless of visibility (null until
+   * a slug has ever been minted). While Private it opens the private-state
+   * page, so the owner can verify what their link currently shows.
+   */
+  previewPublicUrl?: string | null
+  /**
    * Default high-level role-area chips shown on the card face (grouped, not raw
    * skills), already capped to {@link MAX_CARD_ROLE_AREAS}. This is what the card
    * shows when the student has not customized their selection, and what the public
@@ -456,6 +462,9 @@ export function buildPrivateCardModel(
     realDisplayName(passport.identity?.display_name) ?? realDisplayName(passport.candidate_display_name)
   const isPublished = Boolean(status.is_published && status.public_slug)
   const slug = status.public_slug
+  // The owner-only preview path is `/p/{slug}` whenever a slug has ever been
+  // minted, independent of visibility — used to verify the private-state page.
+  const previewSlug = status.preview_public_path?.replace(/^\/p\//, "")?.trim() || null
 
   return {
     name,
@@ -469,6 +478,7 @@ export function buildPrivateCardModel(
     slug: slug ?? null,
     publicPassportUrl: isPublished && slug ? publicPassportUrl(slug) : null,
     cardUrl: isPublished && slug ? publicPassportCardUrl(slug) : null,
+    previewPublicUrl: previewSlug ? publicPassportUrl(previewSlug) : null,
     capabilities,
     availableCapabilities,
     proofCoverage,

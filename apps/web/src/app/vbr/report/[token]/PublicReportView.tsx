@@ -263,10 +263,11 @@ export function PublicReportView({ token }: { token: string }) {
   if (notFound) {
     return (
       <div data-testid="public-report-not-found" style={{ maxWidth: 560, margin: "0 auto", padding: "64px 24px", textAlign: "center" }}>
-        <h1 style={{ fontSize: 20, color: TOKEN.ink, marginBottom: 10 }}>This report is no longer available</h1>
+        <span aria-hidden style={{ fontSize: 30, display: "block", marginBottom: 10 }}>🔒</span>
+        <h1 style={{ fontSize: 20, color: TOKEN.ink, marginBottom: 10 }}>This report is not available</h1>
         <p style={{ fontSize: 13, color: TOKEN.muted, lineHeight: 1.6 }}>
-          The link may have been unpublished by the candidate, or it may be incorrect. Ask the candidate for an
-          up-to-date Verified Build Report link.
+          The candidate’s Work Passport is currently private, the report was unpublished, or the link may be
+          incorrect. Ask the candidate for an up-to-date Verified Build Report link.
         </p>
       </div>
     )

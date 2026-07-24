@@ -34,6 +34,7 @@ from app.services.vbr_report_view_service import (
     normalize_view_source,
 )
 
+from tests.conftest import seed_published_passport
 from tests.test_vbr_project_defense import (
     OTHER_USER_ID,
     USER_ID,
@@ -47,7 +48,12 @@ _VIEWS_TABLE = "vbr_project_report_views"
 
 @pytest.fixture()
 def mem_store() -> dict:
-    return {}
+    store: dict = {}
+    # View tracking resolves tokens with the same visibility gate as the
+    # public read: the owner's Passport must be Public.
+    seed_published_passport(store, USER_ID)
+    seed_published_passport(store, OTHER_USER_ID)
+    return store
 
 
 @pytest.fixture()

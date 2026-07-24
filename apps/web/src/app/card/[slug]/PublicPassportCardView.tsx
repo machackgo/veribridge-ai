@@ -104,10 +104,11 @@ export function PublicPassportCardView({ slug }: { slug: string }) {
         data-testid="public-card-not-found"
         style={{ maxWidth: 460, margin: "0 auto", padding: "64px 24px", textAlign: "center" }}
       >
-        <h1 style={{ fontSize: 20, color: TOKEN.ink, marginBottom: 10 }}>This passport card is not available</h1>
+        <span aria-hidden style={{ fontSize: 30, display: "block", marginBottom: 10 }}>🔒</span>
+        <h1 style={{ fontSize: 20, color: TOKEN.ink, marginBottom: 10 }}>This Work Passport is currently private</h1>
         <p style={{ fontSize: 13, color: TOKEN.muted, lineHeight: 1.6 }}>
-          The link may have been unpublished by the candidate, or it may be incorrect. Ask the candidate for an
-          up-to-date Verified Work Passport link.
+          The candidate has not made this Passport available for public viewing, or the link may be incorrect. Ask
+          the candidate for an up-to-date Verified Work Passport link.
         </p>
       </div>
     )

@@ -34,6 +34,7 @@ from app.schemas.recruiter_shortlist import (
 from app.schemas.skill_evidence_timeline import SkillEvidenceTimelineResponse
 from app.schemas.work_passport_status import PublicWorkPassportStatusResponse
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
+from app.services.passport_visibility import owner_passport_blocks_public_access
 from app.services.public_work_passport_service import (
     EvidenceAccessDeniedError,
     EvidenceAccessGrantNotFoundError,
@@ -58,6 +59,43 @@ student_router = APIRouter()
 access_router = APIRouter()
 public_router = APIRouter()
 admin_router = APIRouter()
+
+
+def _enforce_canonical_passport_visibility(db: Any, public_slug: str) -> None:
+    """Black out this legacy surface while the owner's canonical Passport is Private.
+
+    The legacy session passport keeps its own ``is_public`` flag, but the
+    canonical Work Passport visibility (``vbr_work_passports.is_published``)
+    is the master privacy switch: an owner who set their Passport to Private
+    must not remain reachable through legacy slugs. Owners with no canonical
+    Passport row keep the legacy behavior. Fails closed on lookup errors.
+    """
+    try:
+        if isinstance(db, dict):
+            row = next(
+                (
+                    r
+                    for r in db.setdefault("public_work_passports", {}).values()
+                    if r.get("public_slug") == public_slug
+                ),
+                None,
+            )
+        else:
+            result = (
+                db.table("public_work_passports")
+                .select("user_id")
+                .eq("public_slug", public_slug)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+            row = rows[0] if rows else None
+    except Exception as exc:  # pragma: no cover - defensive fail-closed
+        raise _passport_not_found(public_slug) from exc
+    if row is None:
+        return  # unknown slug: the service raises its own not-found
+    if owner_passport_blocks_public_access(db, row.get("user_id")):
+        raise _passport_not_found(public_slug)
 
 
 @student_router.post(
@@ -221,6 +259,7 @@ def get_public_passport(
     request: Request,
     db: Any = Depends(get_db),
 ) -> PublicPassportSafeResponse:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return PublicWorkPassportService(db).get_public_passport(public_slug, _viewer_context(request))
     except PublicWorkPassportNotFoundError as exc:
@@ -244,6 +283,7 @@ def get_recruiter_passport_view(
 
     Privacy: no private media URLs, raw transcripts, access tokens, or debug data.
     """
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return PublicWorkPassportService(db).get_recruiter_passport_view(public_slug)
     except PublicWorkPassportNotFoundError as exc:
@@ -261,6 +301,7 @@ def request_access(
     body: AccessRequestCreate,
     db: Any = Depends(get_db),
 ) -> AccessRequestPublicResponse:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return PublicWorkPassportService(db).create_access_request(public_slug, body)
     except PublicWorkPassportNotFoundError as exc:
@@ -278,6 +319,7 @@ def save_public_passport(
     body: RecruiterSavedPassportCreate,
     db: Any = Depends(get_db),
 ) -> RecruiterSavedPassportResponse:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return RecruiterShortlistService(db).save_passport(public_slug, body)
     except PublicWorkPassportNotFoundError as exc:
@@ -293,6 +335,7 @@ def get_public_passport_status(
     public_slug: str,
     db: Any = Depends(get_db),
 ) -> PublicWorkPassportStatusResponse:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return WorkPassportStatusService(db).get_public_passport_status(public_slug)
     except ExtensionProofSessionNotFoundError as exc:
@@ -308,6 +351,7 @@ def get_public_skill_evidence_timeline(
     public_slug: str,
     db: Any = Depends(get_db),
 ) -> SkillEvidenceTimelineResponse:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return SkillEvidenceTimelineService(db).get_public_skill_evidence_timeline(public_slug)
     except PublicWorkPassportNotFoundError as exc:
@@ -323,6 +367,7 @@ def get_public_passport_export(
     public_slug: str,
     db: Any = Depends(get_db),
 ) -> dict[str, Any]:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return WorkPassportExportService(db).build_public_export_payload(public_slug)
     except PublicWorkPassportNotFoundError as exc:
@@ -338,6 +383,7 @@ def get_public_github_proofs(
     public_slug: str,
     db: Any = Depends(get_db),
 ) -> list[GitHubProofPublicResponse]:
+    _enforce_canonical_passport_visibility(db, public_slug)
     try:
         return GitHubProofService(db).get_public_github_proofs(public_slug)
     except PublicWorkPassportNotFoundError as exc:

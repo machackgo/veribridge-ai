@@ -726,18 +726,26 @@ describe("Verified Passport Card preview (private)", () => {
     expect(screen.getByTestId("passport-role-area-filter")).toHaveValue("")
   })
 
-  it("shows a publish action while private and no public share links yet", async () => {
+  it("shows the Private visibility state with honest, disabled share actions while private", async () => {
     const preview = await renderPrivate({ is_published: false, public_slug: null })
     // Portrait present, no verified badge, no QR.
     expect(within(preview).getByTestId("passport-card-portrait")).toBeInTheDocument()
     expect(within(preview).queryByTestId("passport-card-verified-badge")).not.toBeInTheDocument()
-    expect(within(preview).getByTestId("passport-card-preview-publish-hint")).toBeInTheDocument()
-    expect(within(preview).getByTestId("publish-passport-button")).toBeInTheDocument()
-    // No public copy/open/share links while private.
+    // The first-class visibility control shows the Private state.
+    expect(within(preview).getByTestId("passport-visibility-control")).toBeInTheDocument()
+    expect(within(preview).getByTestId("passport-private-badge")).toHaveTextContent("Private Passport")
+    expect(within(preview).getByTestId("passport-private-sharing-hint")).toHaveTextContent(/private-state page/i)
+    // No public copy/open links while private; share/QR are disabled and honestly labeled.
     expect(within(preview).queryByTestId("copy-passport-link-button")).not.toBeInTheDocument()
     expect(within(preview).queryByTestId("passport-card-open-card")).not.toBeInTheDocument()
-    expect(within(preview).queryByTestId("share-passport-button")).not.toBeInTheDocument()
-    expect(within(preview).queryByTestId("show-qr-button")).not.toBeInTheDocument()
+    const share = within(preview).getByTestId("share-passport-button")
+    expect(share).toBeDisabled()
+    expect(share).toHaveTextContent(/Private/)
+    const qr = within(preview).getByTestId("show-qr-button")
+    expect(qr).toBeDisabled()
+    expect(qr).toHaveTextContent(/Private/)
+    // Never a stale "live" claim while private.
+    expect(within(preview).queryByTestId("passport-public-badge")).not.toBeInTheDocument()
   })
 
   it("exposes the full share controls once published (copy / open / open card / share / QR)", async () => {
@@ -1076,19 +1084,21 @@ describe("Passport Beam (instant share)", () => {
     expect(modal.textContent ?? "").not.toMatch(/Verified[’']s|profile[’']s/i)
   })
 
-  it("shows an honest publish-first state while unpublished (no QR, no fake URL)", async () => {
+  it("shows an honest private state while unpublished (no QR, no fake URL, no in-Beam publish)", async () => {
     const { modal } = await openBeam({ is_published: false, public_slug: null })
-    expect(within(modal).getByTestId("passport-beam-status")).toHaveTextContent(/Publish your Passport first/i)
-    const publishFirst = within(modal).getByTestId("passport-beam-publish-first")
-    expect(publishFirst).toHaveTextContent(/Publish your recruiter-safe Passport to enable sharing/i)
+    expect(within(modal).getByTestId("passport-beam-status")).toHaveTextContent(/Passport private/i)
+    const privateState = within(modal).getByTestId("passport-beam-publish-first")
+    expect(privateState).toHaveTextContent(/Your Passport is currently private/i)
+    // It directs to the visibility control (with its confirmation dialog) —
+    // never a one-click publish from inside Beam.
+    expect(privateState).toHaveTextContent(/Passport visibility control/i)
+    expect(within(modal).queryByTestId("passport-beam-publish")).not.toBeInTheDocument()
     // No QR, no URL box, no share/copy/open actions — nothing fabricated.
     expect(within(modal).queryByTestId("passport-beam-qr")).not.toBeInTheDocument()
     expect(within(modal).queryByTestId("passport-beam-url")).not.toBeInTheDocument()
     expect(within(modal).queryByTestId("passport-beam-copy")).not.toBeInTheDocument()
     expect(within(modal).queryByTestId("passport-beam-open-public")).not.toBeInTheDocument()
     expect(modal.querySelector("[data-qr-value]")).toBeNull()
-    // A real publish action is offered instead.
-    expect(within(modal).getByTestId("passport-beam-publish")).toHaveTextContent(/Publish public Passport/i)
   })
 
   it("never renders fake nearby/proximity/AirDrop/Bluetooth or fake analytics copy", async () => {

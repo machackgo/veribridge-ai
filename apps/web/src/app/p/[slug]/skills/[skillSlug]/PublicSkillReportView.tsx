@@ -263,10 +263,11 @@ export function PublicSkillReportView({ slug, skillSlug }: { slug: string; skill
         data-testid="public-skill-report-not-found"
         style={{ maxWidth: 560, margin: "0 auto", padding: "64px 24px", textAlign: "center" }}
       >
+        <span aria-hidden style={{ fontSize: 30, display: "block", marginBottom: 10 }}>🔒</span>
         <h1 style={{ fontSize: 20, color: TOKEN.ink, marginBottom: 10 }}>This skill report is not available</h1>
         <p style={{ fontSize: 13, color: TOKEN.muted, lineHeight: 1.6 }}>
-          The passport may have been unpublished by the candidate, or the link may be incorrect. Ask the
-          candidate for an up-to-date Verified Work Passport link.
+          The candidate’s Work Passport is currently private, or the link may be incorrect. Ask the candidate for
+          an up-to-date Verified Work Passport link.
         </p>
         <a href={`/p/${encodeURIComponent(slug)}`} style={{ fontSize: 12, color: TOKEN.indigo, textDecoration: "none" }}>
           ← Back to the public Passport

@@ -92,6 +92,16 @@ def create_app() -> FastAPI:
     # Added BEFORE CORSMiddleware so CORS wraps it (last-added is outermost):
     # its safe JSON 500 flows back through CORS and keeps the ACAO header.
     app.add_middleware(SafeInternalErrorMiddleware)
+
+    @app.middleware("http")
+    async def no_store_public_responses(request, call_next):
+        # Public surfaces honor the Passport visibility switch; forbidding
+        # browser/CDN caching keeps Public → Private revocation immediate.
+        response = await call_next(request)
+        if request.url.path.startswith(f"{settings.api_v1_prefix}/public/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
