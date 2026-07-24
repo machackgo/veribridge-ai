@@ -334,9 +334,15 @@ def test_report_includes_github_document_website_summaries(client: TestClient, m
             "evidence_strength": "Evidence observed",
             "workflow_confidence": "high",
             "supported_skills": ["Machine Learning", "React"],
+            # Disclosure-gated public access descriptors — always empty on the
+            # owner preview (they are only populated by the public projection
+            # when the student's custom policy opens the aspect).
+            "frame_views": [],
+            "replay_path": None,
         }
     ]
     assert "proof_session_id" not in website_proofs[0]
+    assert "website_key" not in website_proofs[0]
     assert "evidence_strength_score" not in website_proofs[0]
 
     # Website proof attached now, but not video/analysis yet.

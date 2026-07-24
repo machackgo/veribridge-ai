@@ -33,6 +33,7 @@ from app.api.deps import (
 )
 from app.core.config import settings
 from app.services import video_proof_service as videos
+from app.services.passport_disclosure import video_proof_public_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -120,12 +121,19 @@ def _timestamp_label(seconds: float | None) -> str | None:
 
 
 def _get_gated_proof(db: Any, proof_id: str, caller_user_id: str | None) -> dict[str, Any]:
-    """Owner sees their proof; others only when the owner shared it."""
+    """Owner sees their proof; others only per the canonical disclosure gate.
+
+    Non-owner access requires a PUBLIC passport, then: custom disclosure
+    mode requires the project's ``video_full`` aspect to be Viewable, while
+    recruiter-safe mode keeps the legacy ``public_safe`` sharing flag
+    (``passport_disclosure.video_proof_public_access``). Denial is the same
+    indistinct 404 as an unknown id.
+    """
     proof = videos.get_video_proof(db, proof_id)
     if proof is None:
         raise _NOT_FOUND
     is_owner = caller_user_id is not None and caller_user_id == proof.get("user_id")
-    if not is_owner and not proof.get("public_safe", False):
+    if not is_owner and not video_proof_public_access(db, proof):
         raise _NOT_FOUND
     return proof
 

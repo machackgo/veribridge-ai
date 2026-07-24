@@ -32,6 +32,8 @@ from app.services.transcription_service import (
 )
 from app.services.video_keyframe_extractor_service import VideoKeyframeResult
 
+from tests.conftest import seed_published_passport
+
 OWNER = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
@@ -224,7 +226,10 @@ def test_transcript_and_frames_are_persisted_and_safe(client, mem_store, transcr
 
 # ── Access gating ─────────────────────────────────────────────────────────────
 
-def test_video_proof_is_owner_only_until_shared(client, transcription_ok, frames_ok):
+def test_video_proof_is_owner_only_until_shared(client, transcription_ok, frames_ok, mem_store):
+    # Non-owner access additionally requires the owner's Passport to be Public
+    # (the migration-063 master-switch extension to media routes).
+    seed_published_passport(mem_store, OWNER)
     proof = _upload(client).json()
     proof_id, artifact_id = proof["id"], proof["original_artifact_id"]
 

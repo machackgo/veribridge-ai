@@ -24,6 +24,8 @@ from app.api.deps import get_current_user_id, get_db, get_optional_user_id, get_
 from app.main import app
 from app.services import proof_artifact_service as artifacts
 
+from tests.conftest import seed_published_passport
+
 OWNER = "11111111-1111-1111-1111-111111111111"
 OTHER = "22222222-2222-2222-2222-222222222222"
 
@@ -188,8 +190,22 @@ def test_recruiter_safe_access_unit_policy():
 
 
 def test_public_safe_admits_anonymous(client, mem_store):
+    # Anonymous access additionally requires the owner's Passport to be Public
+    # (the migration-063 master-switch extension to media routes).
+    seed_published_passport(mem_store, OWNER)
     row = _register(mem_store, policy="public_safe")
     _as(client, None)
+    assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 200
+
+
+def test_public_safe_denied_anonymous_while_passport_private(client, mem_store):
+    """A Private Passport blacks out even ``public_safe`` artifacts publicly."""
+    seed_published_passport(mem_store, OWNER, is_published=False)
+    row = _register(mem_store, policy="public_safe")
+    _as(client, None)
+    assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 404
+    # The owner keeps full access regardless of the public switch.
+    _as(client, OWNER)
     assert client.get(f"/api/v1/proofs/artifacts/{row['id']}/view").status_code == 200
 
 
@@ -303,6 +319,7 @@ def test_document_upload_retains_original_privately_by_default(client, mem_store
 
 
 def test_document_share_consent_opens_gated_access(client, mem_store):
+    seed_published_passport(mem_store, OWNER)
     response = _upload_document(client, share=True)
     artifact_id = response.json()["original_artifact_id"]
     _as(client, None)  # anonymous recruiter surface

@@ -87,6 +87,7 @@ describe("StudentShell chrome", () => {
       "Project Defense",
       "Skills & Gaps",
       "Work Passport",
+      "Privacy & Sharing",
       "Proof Vault",
     ]) {
       expect(sidebar).toHaveTextContent(label)
@@ -100,6 +101,7 @@ describe("StudentShell chrome", () => {
     expect(dashboard).toHaveAttribute("aria-current", "page")
 
     expect(activeNavHref("/student/vbr/passport/vault")).toBe("/student/vbr/passport/vault")
+    expect(activeNavHref("/student/vbr/passport/privacy")).toBe("/student/vbr/passport/privacy")
     expect(activeNavHref("/student/vbr/passport")).toBe("/student/vbr/passport")
     expect(activeNavHref("/student/vbr/passport/skills/react")).toBe("/student/vbr/passport")
     expect(activeNavHref("/student/proofs/github")).toBe("/student/proofs/github")
@@ -131,6 +133,14 @@ describe("StudentShell chrome", () => {
     expect(studentBreadcrumbs("/student/settings")).toEqual([
       { label: "Dashboard", href: "/student" },
       { label: "Settings" },
+    ])
+  })
+
+  it("labels the Privacy & Sharing breadcrumb under Work Passport", () => {
+    expect(studentBreadcrumbs("/student/vbr/passport/privacy")).toEqual([
+      { label: "Dashboard", href: "/student" },
+      { label: "Work Passport", href: "/student/vbr/passport" },
+      { label: "Privacy & Sharing" },
     ])
   })
 

@@ -428,12 +428,15 @@ export function DirectLinksBody({
  * deployed URL + website proof targets, deduped, safe-only.
  */
 export function safeDirectLinks(report: {
-  github_proof?: { repo_is_public?: boolean; repo_url?: string | null } | null
+  github_proof?: { repo_is_public?: boolean; repo_url?: string | null; disclosure?: string | null } | null
   deployed_url?: string | null
   website_proofs: { target_website: string }[]
 }): { repoUrl: string | null; liveLinks: string[] } {
+  // Candidate disclosure gate: a summary-only GitHub disclosure never links
+  // the repository, even if a URL somehow arrives in the payload.
+  const repoAccessShared = report.github_proof?.disclosure !== "summary"
   const repoUrl =
-    report.github_proof?.repo_is_public && isSafePublicUrl(report.github_proof.repo_url ?? null)
+    repoAccessShared && report.github_proof?.repo_is_public && isSafePublicUrl(report.github_proof.repo_url ?? null)
       ? (report.github_proof.repo_url as string)
       : null
   const websiteTargets = report.website_proofs.map((w) => w.target_website).filter(isSafePublicUrl)
@@ -465,6 +468,7 @@ export function GithubProofBlock({
         public_safe_summary?: string | null
         detected_skills?: string[]
         status?: string | null
+        disclosure?: string | null
       }
     | null
     | undefined
@@ -476,6 +480,30 @@ export function GithubProofBlock({
       <p data-testid="github-proof-not-attached" style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>
         {notAttachedNote}
       </p>
+    )
+  }
+  // Candidate disclosure: summary-only GitHub evidence renders the verified
+  // summary with NO repository identity or link — an intentional sharing
+  // choice, never an error state.
+  if (githubProof.disclosure === "summary") {
+    return (
+      <div data-testid="github-proof-summary-disclosure" style={{ marginTop: 4, minWidth: 0 }}>
+        <p style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: "0 0 4px", lineHeight: 1.5 }}>
+          Verified GitHub evidence summary — repository access is not enabled by the candidate.
+        </p>
+        {githubProof.public_safe_summary && (
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 6px" }}>{githubProof.public_safe_summary}</p>
+        )}
+        {(githubProof.detected_skills?.length ?? 0) > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {githubProof.detected_skills!.map((skill) => (
+              <Badge key={skill} tone="slate">
+                {skill}
+              </Badge>
+            ))}
+          </div>
+        )}
+      </div>
     )
   }
   const identity =

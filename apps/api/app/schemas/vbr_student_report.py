@@ -37,6 +37,31 @@ class VBRReportGitHubProofSummary(BaseModel):
     # Only true when the repo is a public GitHub repo, so the UI may surface a
     # direct "View repository" link. Private repos are never linked.
     repo_is_public: bool = False
+    # Effective disclosure of this proof on the public surface: "summary"
+    # (verified summary, repository access not enabled by the candidate) or
+    # "viewable" (repository link may render). None on the owner preview.
+    disclosure: str | None = None
+
+
+class PublicArtifactViewRef(BaseModel):
+    """Access-gated view route for one artifact the candidate chose to share.
+
+    Never a storage path or signed URL — the route re-checks the disclosure
+    policy on every request, so revoking the setting revokes the link.
+    """
+
+    view_path: str
+    mime_type: str | None = None
+
+
+class PublicDocumentSharedView(BaseModel):
+    """Candidate-shared browser access to one document (view ≠ download)."""
+
+    open_path: str
+    mime_type: str | None = None
+    page_count: int | None = None
+    can_download: bool = False
+    download_path: str | None = None
 
 
 class VBRReportDocumentOriginalAccess(BaseModel):
@@ -73,6 +98,14 @@ class VBRReportDocumentSummary(BaseModel):
     # Owner-only retained-original access (private report only; the public
     # projection strips it).
     original_document: VBRReportDocumentOriginalAccess | None = None
+    # Effective public disclosure of this document ("summary" | "viewable").
+    # The public projection sets it; the owner preview leaves the default.
+    disclosure: str = "summary"
+    # Candidate-shared browser access (public projection only, and only when
+    # the document's disclosure is "viewable"). View and download are separate
+    # grants — ``shared_view.can_download`` is False unless downloads were
+    # explicitly enabled for this document.
+    shared_view: PublicDocumentSharedView | None = None
 
 
 class VBRReportWebsiteProofSummary(BaseModel):
@@ -80,6 +113,12 @@ class VBRReportWebsiteProofSummary(BaseModel):
     evidence_strength: str = "Not assessed"
     workflow_confidence: str = "insufficient"
     supported_skills: list[str] = Field(default_factory=list)
+    # Candidate-shared screenshot/frame access (public projection only; empty
+    # unless the website frames aspect is Viewable and frames were retained).
+    frame_views: list[PublicArtifactViewRef] = Field(default_factory=list)
+    # Candidate-shared walkthrough replay route (public projection only; None
+    # unless the website video aspect is Viewable and a replay was retained).
+    replay_path: str | None = None
 
 
 class WebsiteProofSkillRelevance(BaseModel):
@@ -320,6 +359,9 @@ class VBREvidenceTrace(BaseModel):
     # Document Proof owner-only retained-original access descriptor (private
     # report only — the public trace projection blanks it).
     document_original: VBRReportDocumentOriginalAccess | None = None
+    # Stable per-document disclosure key (owner surfaces only — every public
+    # trace projection pops it before serialization).
+    document_key: str | None = None
     limitation: str = ""
     is_publicly_openable: bool = False
     # Generic note shown when the source is not publicly openable.

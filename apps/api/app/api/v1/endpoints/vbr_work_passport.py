@@ -34,6 +34,12 @@ from app.schemas.canonical_evidence import (
     ProjectRelationshipConfirmRequest,
     ProjectRelationshipDescriptor,
 )
+from app.schemas.passport_disclosure import (
+    DisclosureContextResponse,
+    DisclosureModeRequest,
+    DisclosureOverridesRequest,
+    DisclosurePresetRequest,
+)
 from app.schemas.passport_profile import (
     PassportProfileResponse,
     PassportProfileUpsert,
@@ -72,6 +78,19 @@ from app.services.canonical_evidence_service import (
     CanonicalEvidencePreconditionError,
     confirm_project_relationship,
     finalize_proof_evidence,
+)
+from app.services.passport_disclosure import (
+    MODE_CUSTOM,
+    MODE_RECRUITER_SAFE,
+    DisclosureValidationError,
+    apply_disclosure_overrides,
+    clear_disclosure_overrides,
+    set_disclosure_mode,
+)
+from app.services.passport_disclosure_editor import (
+    PRESETS,
+    build_disclosure_context,
+    preset_changes,
 )
 from app.services.vbr_work_passport_service import (
     build_private_passport,
@@ -278,6 +297,128 @@ def unpublish_passport_route(
     db: Any = Depends(get_db),
 ) -> WorkPassportStatusResponse:
     return WorkPassportStatusResponse(**unpublish_passport(db, user_id))
+
+
+# ── Granular disclosure (Privacy & Sharing center) ───────────────────────────
+
+
+def _disclosure_validation_http_error(exc: DisclosureValidationError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "code": "disclosure_invalid",
+            "field": exc.field,
+            "message": exc.message,
+        },
+    )
+
+
+@student_router.get(
+    "/passport/disclosure",
+    response_model=DisclosureContextResponse,
+    summary="Get the current user's full Privacy & Sharing editor context",
+)
+def get_disclosure_context_route(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> DisclosureContextResponse:
+    """Owner view of the hierarchical disclosure policy: per-project proof
+    aspects, per-document view/download states, the skills tree, and the
+    effective public-access summary — configured AND effective at every node."""
+    return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
+
+
+@student_router.put(
+    "/passport/disclosure/mode",
+    response_model=DisclosureContextResponse,
+    summary="Switch the disclosure mode (recruiter_safe | custom)",
+)
+def set_disclosure_mode_route(
+    body: DisclosureModeRequest,
+    # First write for a brand-new account: the policy row FKs public.users(id).
+    user_id: str = Depends(get_provisioned_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> DisclosureContextResponse:
+    try:
+        set_disclosure_mode(db, str(user_id), body.mode)
+    except DisclosureValidationError as exc:
+        raise _disclosure_validation_http_error(exc) from exc
+    return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
+
+
+@student_router.put(
+    "/passport/disclosure/overrides",
+    response_model=DisclosureContextResponse,
+    summary="Apply a batch of per-resource disclosure overrides",
+)
+def apply_disclosure_overrides_route(
+    body: DisclosureOverridesRequest,
+    user_id: str = Depends(get_provisioned_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> DisclosureContextResponse:
+    """Batch upsert/clear (``visibility: null`` clears). Every change is
+    validated against the closed vocabulary before any write; the whole batch
+    shares one ``disclosure_version`` bump, and each change is audited."""
+    try:
+        apply_disclosure_overrides(
+            db, str(user_id), [change.model_dump() for change in body.changes]
+        )
+    except DisclosureValidationError as exc:
+        raise _disclosure_validation_http_error(exc) from exc
+    return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
+
+
+@student_router.post(
+    "/passport/disclosure/preset",
+    response_model=DisclosureContextResponse,
+    summary="Apply a safe disclosure preset",
+)
+def apply_disclosure_preset_route(
+    body: DisclosurePresetRequest,
+    user_id: str = Depends(get_provisioned_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> DisclosureContextResponse:
+    """``recruiter_safe`` switches the mode back to the recommended defaults
+    (stored overrides are kept but inactive). ``portfolio_open`` and
+    ``maximum_privacy`` switch to custom mode and write the preset's override
+    set over the CURRENT published projects."""
+    preset = body.preset
+    if preset not in PRESETS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "disclosure_invalid",
+                "field": "preset",
+                "message": f"Unknown preset: {preset!r}",
+            },
+        )
+    if preset == "recruiter_safe":
+        set_disclosure_mode(db, str(user_id), MODE_RECRUITER_SAFE)
+    else:
+        set_disclosure_mode(db, str(user_id), MODE_CUSTOM)
+        context = build_disclosure_context(db, pipeline_db, user_id)
+        changes = preset_changes(context, preset)
+        if changes:
+            apply_disclosure_overrides(db, str(user_id), changes)
+    return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
+
+
+@student_router.post(
+    "/passport/disclosure/reset",
+    response_model=DisclosureContextResponse,
+    summary="Clear every disclosure override (reset to recommended defaults)",
+)
+def reset_disclosure_route(
+    user_id: str = Depends(get_provisioned_user_id),
+    db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
+) -> DisclosureContextResponse:
+    clear_disclosure_overrides(db, str(user_id))
+    return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
 
 
 @student_router.get(

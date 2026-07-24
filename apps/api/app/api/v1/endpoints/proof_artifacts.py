@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_db, get_optional_user_id
 from app.services import proof_artifact_service as artifacts
+from app.services.passport_disclosure import artifact_action_allowed
 from app.services.permission_service import PermissionService
 
 logger = logging.getLogger(__name__)
@@ -67,12 +68,28 @@ def _caller_is_privileged(db: Any, caller_user_id: str | None) -> bool:
 
 
 def _get_gated_artifact(
-    db: Any, artifact_id: str, caller_user_id: str | None, *, caller_is_privileged: bool = False
+    db: Any,
+    artifact_id: str,
+    caller_user_id: str | None,
+    *,
+    caller_is_privileged: bool = False,
+    action: str = "view",
 ) -> dict[str, Any]:
-    artifact = artifacts.get_accessible_artifact(
-        db, artifact_id, caller_user_id, caller_is_privileged=caller_is_privileged
-    )
-    if artifact is None:
+    """Fetch + gate through the canonical disclosure-aware access decision.
+
+    ``artifact_action_allowed`` composes the migration-056 retention policy
+    with the migration-063 granular disclosure policy (owner always allowed;
+    custom-mode disclosure authoritative for anonymous callers; download a
+    separate grant from view). Denials stay the same indistinct 404.
+    """
+    artifact = artifacts.get_artifact(db, artifact_id)
+    if artifact is None or not artifact_action_allowed(
+        db,
+        artifact,
+        caller_user_id,
+        caller_is_privileged=caller_is_privileged,
+        action=action,
+    ):
         raise _NOT_FOUND
     return artifact
 
@@ -131,7 +148,11 @@ def download_artifact(
     db: Any = Depends(get_db),
 ) -> Response:
     artifact = _get_gated_artifact(
-        db, artifact_id, user_id, caller_is_privileged=_caller_is_privileged(db, user_id)
+        db,
+        artifact_id,
+        user_id,
+        caller_is_privileged=_caller_is_privileged(db, user_id),
+        action="download",
     )
     return _stream(db, artifact, as_attachment=True)
 
@@ -200,7 +221,9 @@ def website_replay(
     accessible = [
         r
         for r in rows
-        if artifacts.can_access_artifact(r, user_id, caller_is_privileged=privileged)
+        if artifact_action_allowed(
+            db, r, user_id, caller_is_privileged=privileged, action="view"
+        )
     ]
     if not accessible:
         raise _NOT_FOUND

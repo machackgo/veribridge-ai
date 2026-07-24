@@ -149,9 +149,21 @@ describe("PublicSkillReportView", () => {
       "href",
       "https://github.com/octocat/Hello-World/blob/main/api.py#L10-L42",
     )
-    // The defense evidence has no public artifact — honest label, no link.
-    expect(screen.getByTestId("public-skill-evidence-private")).toHaveTextContent(
-      "verified summary only",
+    // The defense evidence has no public artifact — a compact chip (the full
+    // sentence lives in the tooltip), and NO public_url link leaks for it.
+    const privateChips = screen.getAllByTestId("public-skill-evidence-private")
+    expect(privateChips).toHaveLength(1)
+    expect(privateChips[0]).toHaveTextContent("Original kept private")
+    expect(privateChips[0]).toHaveAttribute(
+      "title",
+      expect.stringContaining("kept private"),
+    )
+    expect(privateChips[0].querySelector("a")).toBeNull()
+    // The explanation renders ONCE per chain — not repeated on every item.
+    expect(screen.getAllByTestId("public-skill-private-note")).toHaveLength(1)
+    // The old per-item warning sentence is gone from the visible page text.
+    expect(document.body.textContent).not.toContain(
+      "Original artifact is not public — verified summary only.",
     )
   })
 

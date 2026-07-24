@@ -202,7 +202,17 @@ def get_public_report(db: Any, public_token: str) -> dict[str, Any]:
     # Passport visibility is the master privacy switch: even a published legacy
     # report goes dark while the owner's Work Passport is Private. Nothing is
     # deleted, so making the Passport Public restores the link.
-    if not owner_passport_is_public(db, _report_owner_id(db, report)):
+    owner_id = _report_owner_id(db, report)
+    if not owner_passport_is_public(db, owner_id):
+        raise _not_found()
+
+    # Granular disclosure (migration 063): a legacy token honors the SAME
+    # per-project policy as the canonical report — a hidden project or hidden
+    # report is the same generic 404.
+    from app.services.passport_disclosure import load_effective_disclosure
+
+    disclosure = load_effective_disclosure(db, owner_id, passport_public=True)
+    if not disclosure.report_visible(str(report.get("project_id") or "")):
         raise _not_found()
 
     body = report.get("body") or {}

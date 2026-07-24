@@ -1439,6 +1439,7 @@ def collect_document_proof_traces(attach: _AttachFn, *, documents: list[dict[str
                     "private_evidence_note": _PRIVATE_DOC_NOTE,
                     # Owner-only retained-original access (public builder blanks it).
                     "document_original": doc.get("original_document"),
+                    "document_key": doc.get("document_key"),
                 }
             )
             continue
@@ -1525,6 +1526,7 @@ def collect_document_proof_traces(attach: _AttachFn, *, documents: list[dict[str
                     "private_evidence_note": _PRIVATE_DOC_NOTE,
                     # Owner-only retained-original access (public builder blanks it).
                     "document_original": doc.get("original_document"),
+                    "document_key": doc.get("document_key"),
                 }
             )
 
@@ -2632,6 +2634,11 @@ def build_student_vbr_report(
                 "title": str(doc.get("title") or "Document"),
                 "source_type": doc.get("source_type"),
                 "status": doc.get("status"),
+                # Stable per-document disclosure key (the evidence submission
+                # id) — drives the granular Privacy Center controls and the
+                # public builder's per-document visibility filter. Stripped
+                # from the public projection.
+                "document_key": str(doc.get("document_evidence_id") or ""),
                 # Owner-only retained-original access (opaque artifact id +
                 # access-gated routes; honest available=False when the file was
                 # never retained). Stripped by the public report builder.
@@ -2657,6 +2664,7 @@ def build_student_vbr_report(
             "title": e["title"],
             "source_type": e["source_type"],
             "status": e["status"],
+            "document_key": e["document_key"],
             "original_document": e["original_document"],
         }
         for e in document_entries
@@ -2687,6 +2695,11 @@ def build_student_vbr_report(
             "evidence_strength": e["evidence_strength"],
             "workflow_confidence": e["workflow_confidence"],
             "supported_skills": e["supported_skills"],
+            # Stable per-proof disclosure key (the proof session id) — used by
+            # the public builder to attach replay/frame access ONLY when the
+            # student's disclosure policy allows it. Stripped from the public
+            # projection unless an access descriptor is explicitly granted.
+            "website_key": e["proof_session_id"],
         }
         for e in website_entries
     ]

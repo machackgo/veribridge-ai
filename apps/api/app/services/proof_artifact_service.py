@@ -187,6 +187,43 @@ def list_artifacts_for_proof(
     return rows
 
 
+def list_artifacts_for_project(
+    db: Any,
+    *,
+    project_id: str,
+    artifact_type: str | None = None,
+    retained_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Retained artifacts registered against one project (any proof type).
+
+    Used by the public report builder to attach access descriptors for
+    aspects (defense video/transcript, website frames) the owner's
+    disclosure policy explicitly opened. Read-only; callers still gate
+    every actual byte access through the canonical access decision.
+    """
+    if not project_id:
+        return []
+    if isinstance(db, dict):
+        rows = [
+            r
+            for r in db.get(_TABLE, {}).values()
+            if str(r.get("project_id") or "") == str(project_id)
+        ]
+    else:
+        try:
+            resp = db.table(_TABLE).select("*").eq("project_id", str(project_id)).execute()
+            rows = list(getattr(resp, "data", None) or [])
+        except Exception as exc:
+            logger.warning("[ProofArtifact] Project artifact listing failed: %s", exc)
+            return []
+    if artifact_type is not None:
+        rows = [r for r in rows if r.get("artifact_type") == artifact_type]
+    if retained_only:
+        rows = [r for r in rows if r.get("retained", False)]
+    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+    return rows
+
+
 def _insert_row(db: Any, row: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(db, dict):
         db.setdefault(_TABLE, {})[row["id"]] = row
