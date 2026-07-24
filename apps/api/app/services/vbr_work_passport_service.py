@@ -73,6 +73,7 @@ from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
     _lookup_display_name,
     _scrub_public_report,
+    redact_hidden_skill_names,
 )
 from app.services.student_proof_vault_service import (
     collect_skill_report,
@@ -2303,10 +2304,20 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     # (sources, traces, strongest project) from ONLY the surviving refs so a
     # hidden claim can never leak through an aggregate.
     disclosed_skill_entries: list[dict[str, Any]] = []
+    # Display names (canonical + raw aliases) of skills that end up fully
+    # hidden — redacted from free prose at the end so a hidden skill's NAME
+    # cannot leak through analyzer summaries or trace text.
+    hidden_skill_names: set[str] = set()
+
+    def _collect_hidden_names(entry: dict[str, Any]) -> None:
+        hidden_skill_names.add(str(entry.get("skill") or ""))
+        hidden_skill_names.update(str(alias) for alias in entry.get("aliases") or [])
+
     for entry in _aggregate_skills_with_detail(featured_card_pairs, public=True):
         entry_category = str(entry.get("category") or "")
         entry_slug = str(entry.get("skill_slug") or "")
         if not disclosure.skill_visible(entry_category, entry_slug):
+            _collect_hidden_names(entry)
             continue
         surviving_refs: list[dict[str, Any]] = []
         for ref in entry.get("projects") or []:
@@ -2342,7 +2353,9 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
             surviving_refs.append(filtered_ref)
         if not surviving_refs:
             # The skill's every claim lives in hidden projects/claims — the
-            # skill itself must not appear (not in lists, not in counts).
+            # skill itself must not appear (not in lists, not in counts, not
+            # in prose).
+            _collect_hidden_names(entry)
             continue
         entry = dict(entry)
         entry["projects"] = surviving_refs
@@ -2474,6 +2487,11 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
         # change invalidates previously served representations immediately.
         "disclosure_version": disclosure.disclosure_version,
     }
+
+    # A fully hidden skill's NAME must not survive in free prose (analyzer
+    # summaries, trace text) — structured lists were filtered above.
+    hidden_skill_names.discard("")
+    public = redact_hidden_skill_names(public, hidden_skill_names)
 
     # Recursively redact score-style fragments from every public string field…
     public = _scrub_public_report(public)

@@ -571,6 +571,65 @@ def _scrub_public_report(value: Any) -> Any:
     return value
 
 
+def _hidden_name_patterns(names: set[str]) -> list[tuple[re.Pattern, re.Pattern, re.Pattern]]:
+    """Compiled redaction patterns for hidden skill display names.
+
+    Three shapes per name so comma-separated lists stay grammatical after the
+    removal: mid-list (", Name"), list-head ("Name, "), and bare ("Name").
+    Word-bounded and case-insensitive — "Markdown Editing" never matches
+    "easy-markdown-editor".
+    """
+    compiled: list[tuple[re.Pattern, re.Pattern, re.Pattern]] = []
+    for name in sorted(names, key=len, reverse=True):
+        cleaned = name.strip()
+        if not cleaned:
+            continue
+        escaped = re.escape(cleaned)
+        compiled.append(
+            (
+                re.compile(rf",\s*{escaped}\b", re.IGNORECASE),
+                re.compile(rf"\b{escaped}\s*,\s*", re.IGNORECASE),
+                re.compile(rf"\b{escaped}\b", re.IGNORECASE),
+            )
+        )
+    return compiled
+
+
+def redact_hidden_skill_names(value: Any, names: set[str]) -> Any:
+    """Recursively remove hidden skill names from every public string field.
+
+    Structured skill lists are already filtered upstream — this pass closes
+    the free-prose channel (analyzer summaries like "Detected skills: A, B, C"
+    and trace text) so a hidden skill's NAME cannot leak through evidence
+    summaries. Keys are never altered.
+    """
+    patterns = _hidden_name_patterns(names)
+    if not patterns:
+        return value
+
+    def _redact_text(text: str) -> str:
+        out = text
+        for mid, head, bare in patterns:
+            out = mid.sub("", out)
+            out = head.sub("", out)
+            out = bare.sub("", out)
+        out = re.sub(r"\s{2,}", " ", out)
+        out = re.sub(r"\s+([.,;:!?])", r"\1", out)
+        out = re.sub(r"\(\s*\)", "", out)
+        return out.strip()
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, str):
+            return _redact_text(node)
+        if isinstance(node, dict):
+            return {key: _walk(item) for key, item in node.items()}
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    return _walk(value)
+
+
 # Generic, non-leaking limitation appended when a direct verification link was
 # dropped because its target was not safely public (never reveals the raw URL).
 _OMITTED_LINK_LIMITATION = (
@@ -1249,6 +1308,28 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         # change invalidates previously served representations immediately.
         "disclosure_version": disclosure.disclosure_version,
     }
+
+    # A hidden skill's NAME must not leak through free prose either (analyzer
+    # summaries, trace text). Structured lists were filtered above; this pass
+    # closes the free-text channel for every skill hidden in THIS project.
+    hidden_skill_names: set[str] = set()
+    for candidate in report.get("claimed_skills") or []:
+        if candidate and not _skill_is_visible(str(candidate)):
+            hidden_skill_names.add(str(candidate))
+    for row in report.get("skill_evidence") or []:
+        if isinstance(row, dict) and row.get("skill") and not _skill_is_visible(str(row["skill"])):
+            hidden_skill_names.add(str(row["skill"]))
+    raw_github = report.get("github_proof")
+    if isinstance(raw_github, dict):
+        for candidate in raw_github.get("detected_skills") or []:
+            if candidate and not _skill_is_visible(str(candidate)):
+                hidden_skill_names.add(str(candidate))
+    for proof_row in report.get("website_proofs") or []:
+        if isinstance(proof_row, dict):
+            for candidate in proof_row.get("supported_skills") or []:
+                if candidate and not _skill_is_visible(str(candidate)):
+                    hidden_skill_names.add(str(candidate))
+    public = redact_hidden_skill_names(public, hidden_skill_names)
 
     # Recursively scrub score-style fragments from every public string field
     # (must-fix: the scrubber is no longer limited to github_proof). Applied
