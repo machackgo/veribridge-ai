@@ -2974,6 +2974,12 @@ export type PublicPassportStrongestProject = {
 export type PublicPassportSkill = {
   skill: string
   status: string
+  /** Stable slug derived from the canonical skill name. */
+  skill_slug?: string | null
+  /** Backend high-level taxonomy category (e.g. "AI / Machine Learning"). */
+  category?: string | null
+  /** Raw alias labels this canonical skill collapsed (labels only). */
+  aliases?: string[]
   evidence_sources: string[]
   projects: PublicPassportSkillProjectRef[]
   evidence_chips: PassportSkillEvidenceChip[]
@@ -3014,6 +3020,15 @@ export type PublicPassportProject = {
   project_defense_inspection?: ProjectDefenseInspectionCard[]
   public_report_path: string
   published_at: string | null
+  /**
+   * Truth-gated recruiter-openable links. `github_repo_url` is present ONLY
+   * when a GitHub Proof is attached to the linked report AND the repository is
+   * recorded public AND the URL passed the safe-public-url gate — so a GitHub
+   * link here can never contradict the report. Absent/null when uncertain.
+   */
+  github_repo_url?: string | null
+  github_repo_label?: string | null
+  live_url?: string | null
 }
 
 /**

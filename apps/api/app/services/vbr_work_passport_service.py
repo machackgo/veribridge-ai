@@ -61,7 +61,7 @@ from app.services.public_report_safety_service import (
     public_safe_skill_report,
     scrub_public_text,
 )
-from app.services.skill_normalization import skill_slug
+from app.services.skill_normalization import canonical_skill, skill_category, skill_slug
 from app.services.safe_public_url import is_safe_public_url
 from app.services.vbr_public_project_report import (
     _lookup_display_name,
@@ -116,7 +116,6 @@ _REPORT_PATH_PREFIX = "/vbr/report/"
 # through ``/vbr/report/{token}`` paths.
 _PRIVATE_PROJECT_REPORT_PREFIX = "/student/vbr/projects/"
 _PRIVATE_SKILL_REPORT_PREFIX = "/student/vbr/passport/skills/"
-_MAX_TOP_SKILLS = 16
 
 # Evidence source badge labels (the canonical, recruiter-facing set).
 _SRC_GITHUB = "GitHub Proof"
@@ -552,9 +551,12 @@ def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
     proof_types_by_skill: dict[str, set[str]] = {}
     for report in reports:
         for row in report.get("skill_evidence") or []:
-            skill = str(row.get("skill") or "").strip()
-            if not skill:
+            raw_skill = str(row.get("skill") or "").strip()
+            if not raw_skill:
                 continue
+            # Alias-collapse to the canonical display name so the same real
+            # skill ("APIs" / "API Development") is one chip, not duplicates.
+            skill = canonical_skill(raw_skill)
             key = skill.lower()
             status_label = str(row.get("status") or "Not assessed")
             entry = best.get(key)
@@ -582,13 +584,17 @@ def _project_top_skills(reports: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _sanitize_skill_chips(report: dict[str, Any], skill: str) -> list[dict[str, Any]]:
-    """Sanitized video-evidence snippets tied to a skill (no raw media URLs)."""
-    skill_l = skill.strip().lower()
+    """Sanitized video-evidence snippets tied to a skill (no raw media URLs).
+
+    Chips are matched on the CANONICAL skill name so a chip recorded under an
+    alias ("APIs") still attaches to the canonical entry ("API Development").
+    """
+    skill_l = canonical_skill(skill.strip()).lower()
     chips: list[dict[str, Any]] = []
     for chip in report.get("video_evidence_chips") or []:
         if not isinstance(chip, dict):
             continue
-        related = str(chip.get("related_skill") or "").strip().lower()
+        related = canonical_skill(str(chip.get("related_skill") or "").strip()).lower()
         if related and related == skill_l:
             chips.append(
                 {
@@ -680,7 +686,7 @@ def _aggregate_skills_with_detail(
             if not wentry.get("skill_mapping_available"):
                 continue  # project-level only — surfaced elsewhere, never as a row note
             for srow in wentry.get("skills") or []:
-                sk = str(srow.get("skill_name") or "").strip().lower()
+                sk = canonical_skill(str(srow.get("skill_name") or "").strip()).lower()
                 if not sk:
                     continue
                 note = str(srow.get("relevance_summary") or "").strip()
@@ -695,9 +701,15 @@ def _aggregate_skills_with_detail(
                         website_note_direct.add(sk)
 
         for row in report.get("skill_evidence") or []:
-            skill = str(row.get("skill") or "").strip()
-            if not skill:
+            raw_skill = str(row.get("skill") or "").strip()
+            if not raw_skill:
                 continue
+            # Alias-collapse to the canonical display name (``APIs`` /
+            # ``API Development`` / ``api`` → one skill). Evidence from every
+            # alias is UNIONED into the one canonical entry — aliases merge,
+            # they never drop evidence. The raw label is kept in ``aliases``
+            # for traceability when it differs from the canonical name.
+            skill = canonical_skill(raw_skill)
             key = skill.lower()
             status_label = str(row.get("status") or "Not assessed")
             chip_count = int(row.get("evidence_chip_count") or 0)
@@ -713,6 +725,9 @@ def _aggregate_skills_with_detail(
                 entry = {
                     "skill": skill,
                     "status": status_label,
+                    "skill_slug": skill_slug(skill),
+                    "category": skill_category(skill),
+                    "aliases": [],
                     "evidence_chip_count": chip_count,
                     "project_count": 0,
                     "evidence_sources": [],
@@ -730,6 +745,8 @@ def _aggregate_skills_with_detail(
                     entry["status"] = status_label
                 if not entry["notes"] and notes:
                     entry["notes"] = notes
+            if raw_skill.lower() != key and raw_skill not in entry["aliases"]:
+                entry["aliases"].append(raw_skill)
 
             # The concrete traces THIS project contributes for THIS skill — used
             # both for the flat aggregate and for the per-project drilldown group.
@@ -943,6 +960,11 @@ def _to_public_skill(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "skill": entry["skill"],
         "status": entry["status"],
+        # Stable slug + high-level category for the public taxonomy grouping,
+        # plus the raw alias labels this canonical skill collapsed (labels only).
+        "skill_slug": entry.get("skill_slug") or skill_slug(entry["skill"]),
+        "category": entry.get("category") or skill_category(entry["skill"]),
+        "aliases": list(entry.get("aliases") or []),
         "strongest_project": public_strongest,
         "evidence_sources": list(entry.get("evidence_sources") or []),
         "projects": [
@@ -1761,10 +1783,14 @@ def build_private_passport(db: Any, pipeline_db: Any, user_id: str) -> dict[str,
         proof_type = str(item.get("proof_type") or "").strip()
         if not skill_name or proof_type not in _KNOWN_SKILL_PROOF_TYPES:
             continue
-        vault_only_by_skill.setdefault(skill_name.lower(), set()).add(proof_type)
+        # Canonical key so a vault item stored under an alias still matches the
+        # alias-collapsed skill entry.
+        vault_only_by_skill.setdefault(canonical_skill(skill_name).lower(), set()).add(proof_type)
     for skill in skills:
         skill["vault_only_sources"] = _order_skill_proof_types(
-            vault_only_by_skill.get(str(skill.get("skill") or "").strip().lower(), set())
+            vault_only_by_skill.get(
+                canonical_skill(str(skill.get("skill") or "").strip()).lower(), set()
+            )
         )
 
     # ── Proof Attachment Intelligence (owner-only, deterministic) ────────────
@@ -1935,6 +1961,82 @@ def _not_found() -> HTTPException:
     )
 
 
+def _public_project_links(report: dict[str, Any]) -> dict[str, Any]:
+    """Recruiter-openable links for a featured project card — truth-gated.
+
+    ``github_repo_url`` is present ONLY when a GitHub Proof is actually attached
+    to the linked report AND the scanner recorded the repository as public AND
+    the URL passes the safe-public-url gate — so a GitHub link on the passport
+    can never contradict the report or point at a private/unreachable repo.
+    ``live_url`` is the safe deployed URL, else the first safe Website Proof
+    target. Anything uncertain is omitted, never guessed.
+    """
+    github_repo_url: str | None = None
+    github_repo_label: str | None = None
+    gh = report.get("github_proof")
+    if isinstance(gh, dict):
+        repo_url = gh.get("repo_url")
+        if gh.get("repo_is_public") and is_safe_public_url(repo_url):
+            github_repo_url = str(repo_url)
+            owner = str(gh.get("repo_owner") or "").strip()
+            name = str(gh.get("repo_name") or "").strip()
+            github_repo_label = f"{owner}/{name}" if owner and name else None
+
+    live_url: str | None = None
+    deployed = report.get("deployed_url")
+    if is_safe_public_url(deployed):
+        live_url = str(deployed)
+    else:
+        for proof in report.get("website_proofs") or []:
+            if not isinstance(proof, dict):
+                continue
+            target = proof.get("target_website")
+            if is_safe_public_url(target):
+                live_url = str(target)
+                break
+
+    return {
+        "github_repo_url": github_repo_url,
+        "github_repo_label": github_repo_label,
+        "live_url": live_url,
+    }
+
+
+# Qualitative weight of a project card's top-skill statuses for ranking only —
+# never surfaced as a number. Stronger demonstrated evidence ranks earlier.
+_RANK_STATUS_WEIGHT = {
+    "Demonstrated": 3,
+    "Partially demonstrated": 2,
+    "Evidence observed": 1,
+    "Supporting evidence": 1,
+}
+
+
+def _rank_public_projects(summaries: list[dict[str, Any]]) -> None:
+    """Deterministically order featured projects, strongest evidence first.
+
+    Rank inputs (in priority order): proof-chain coverage (how many of the five
+    attachable sources are attached), aggregate qualitative skill strength,
+    report publish recency, then title as a stable tiebreak. Sorted in place
+    with stable passes so equal projects keep a deterministic order. Purely
+    data-derived — never random, never a surfaced score.
+    """
+    # Stable multi-pass sort: apply tiebreakers first, primary key last.
+    summaries.sort(key=lambda s: str(s.get("project_title") or "").lower())
+    summaries.sort(key=lambda s: str(s.get("published_at") or ""), reverse=True)
+    summaries.sort(
+        key=lambda s: sum(
+            _RANK_STATUS_WEIGHT.get(str(t.get("status") or ""), 0)
+            for t in (s.get("top_skills") or [])
+        ),
+        reverse=True,
+    )
+    summaries.sort(
+        key=lambda s: int((s.get("proof_chain") or {}).get("attached_count") or 0),
+        reverse=True,
+    )
+
+
 def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any]:
     """Resolve a published passport by ``slug`` and return its public projection.
 
@@ -1964,6 +2066,10 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
     )
 
     featured_summaries: list[dict[str, Any]] = []
+    # (summary, representative_report) pairs — kept alongside the summaries so
+    # skill aggregation stays correctly paired even after ranking reorders the
+    # featured list.
+    featured_card_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     featured_groups = _group_project_pairs(published_pairs)
     for group in featured_groups:
         representative_project, representative_report = group[0]
@@ -2011,19 +2117,21 @@ def build_public_passport(db: Any, pipeline_db: Any, slug: str) -> dict[str, Any
             "public_report_path": f"{_REPORT_PATH_PREFIX}{token}",
             "published_at": representative_project.get("public_report_published_at"),
         }
+        summary.update(_public_project_links(representative_report))
         featured_summaries.append(summary)
+        featured_card_pairs.append((summary, representative_report))
+    _rank_public_projects(featured_summaries)
 
     # Top skills are aggregated from each featured group's REPRESENTATIVE report —
     # the published report the featured card links to — so a public skill row never
     # advertises a proof attached only to a different collapsed attempt. Qualitative
     # only, with a safe drilldown sourced exclusively from that published report.
-    skill_cards = [
-        (featured_summaries[i], featured_groups[i][0][1])
-        for i in range(len(featured_groups))
-    ]
+    # EVERY evidence-backed skill is returned (aliases already collapsed) — the
+    # public passport must never silently drop legitimate skills; progressive
+    # disclosure is the frontend's job.
     top_skills = [
         _to_public_skill(s)
-        for s in _aggregate_skills_with_detail(skill_cards, public=True)[:_MAX_TOP_SKILLS]
+        for s in _aggregate_skills_with_detail(featured_card_pairs, public=True)
     ]
 
     limitations: list[str] = []

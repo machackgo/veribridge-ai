@@ -210,7 +210,8 @@ describe("PublicPassportView", () => {
       "public-skill-expand-toggle",
       "public-project-detail-toggle",
       "public-passport-methodology-toggle",
-      "public-skills-show-all",
+      "public-projects-show-all",
+      "public-projects-show-less",
     ])
     for (const btn of screen.queryAllByRole("button")) {
       expect(readOnlyToggles.has(btn.getAttribute("data-testid") ?? "")).toBe(true)
@@ -223,8 +224,8 @@ describe("PublicPassportView", () => {
     render(<PublicPassportView slug="slug123" />)
     await screen.findByTestId("public-passport")
 
-    const projectsHeading = screen.getByRole("heading", { name: "Featured projects" })
-    const skillsSection = screen.getByRole("heading", { name: "Top evidence-backed skills" })
+    const projectsHeading = screen.getByRole("heading", { name: /Verified projects/ })
+    const skillsSection = screen.getByRole("heading", { name: /Evidence-backed skills/ })
     expect(
       projectsHeading.compareDocumentPosition(skillsSection) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
@@ -386,9 +387,119 @@ describe("PublicPassportView", () => {
     expect(screen.getAllByText("Demonstrated").length).toBeGreaterThan(0)
     expect(screen.getAllByText("Supported").length).toBeGreaterThan(0)
     // The exact backend label stays available inside the expanded detail —
-    // the tier is presentation grouping, never an upgrade.
-    fireEvent.click(screen.getAllByTestId("public-skill-expand-toggle")[1])
+    // the tier is presentation grouping, never an upgrade. Skills are grouped
+    // by taxonomy, so expand every row rather than assuming a flat order.
+    for (const toggle of screen.getAllByTestId("public-skill-expand-toggle")) {
+      fireEvent.click(toggle)
+    }
     expect(screen.getByText("Partially demonstrated")).toBeInTheDocument()
+  })
+})
+
+// ── Canonical-data production correction: projects/skills completeness ───────
+
+describe("PublicPassportView — canonical completeness", () => {
+  function makeProject(i: number, extra: Partial<PublicWorkPassport["featured_projects"][number]> = {}) {
+    return {
+      project_title: `Project ${i}`,
+      project_summary: `Summary ${i}`,
+      claimed_skills: [],
+      evidence_sources: ["Document Proof", "VBR Report"],
+      public_report_path: `/vbr/report/tok-${i}`,
+      published_at: "2026-01-02T00:00:00Z",
+      ...extra,
+    }
+  }
+
+  it("shows the top 3 projects first, then reveals every published project", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        featured_projects: [1, 2, 3, 4, 5].map((i) => makeProject(i)),
+        featured_project_count: 5,
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // Collapsed: exactly the strongest 3 (backend ranking order preserved).
+    expect(screen.getAllByTestId("public-passport-project")).toHaveLength(3)
+    const toggle = screen.getByTestId("public-projects-show-all")
+    expect(toggle.textContent).toContain("2 more")
+
+    fireEvent.click(toggle)
+    // Expanded: EVERY published project is rendered.
+    expect(screen.getAllByTestId("public-passport-project")).toHaveLength(5)
+    const links = screen
+      .getAllByTestId("public-passport-report-link")
+      .map((a) => a.getAttribute("href"))
+    expect(links).toEqual([1, 2, 3, 4, 5].map((i) => `/vbr/report/tok-${i}`))
+  })
+
+  it("renders every skill grouped by the backend taxonomy category — no cap", async () => {
+    const skills = Array.from({ length: 22 }, (_, i) => ({
+      skill: `Skill ${i}`,
+      status: "Supporting evidence",
+      category: i % 2 === 0 ? "Backend / APIs" : "AI / Machine Learning",
+      skill_slug: `skill-${i}`,
+      aliases: [],
+      evidence_sources: [],
+      projects: [],
+      evidence_chips: [],
+      limitations: [],
+    }))
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({ top_skills: skills }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    // ALL 22 skills render immediately — nothing hidden behind a cap.
+    expect(screen.getAllByTestId("public-passport-skill")).toHaveLength(22)
+    const groups = screen.getAllByTestId("public-skill-group")
+    expect(groups).toHaveLength(2)
+    expect(groups[0].textContent).toContain("AI / Machine Learning")
+    expect(groups[1].textContent).toContain("Backend / APIs")
+  })
+
+  it("shows a truth-gated GitHub link on a project card only when supplied", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(
+      makePublicPassport({
+        featured_projects: [
+          makeProject(1, {
+            github_repo_url: "https://github.com/octocat/Hello-World",
+            github_repo_label: "octocat/Hello-World",
+            live_url: "https://app.example.com",
+          }),
+          makeProject(2),
+        ],
+        featured_project_count: 2,
+      }),
+    )
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const githubLinks = screen.getAllByTestId("public-project-github-link")
+    expect(githubLinks).toHaveLength(1)
+    expect(githubLinks[0]).toHaveAttribute("href", "https://github.com/octocat/Hello-World")
+    const liveLinks = screen.getAllByTestId("public-project-live-link")
+    expect(liveLinks).toHaveLength(1)
+    expect(liveLinks[0]).toHaveAttribute("href", "https://app.example.com")
+  })
+
+  it("renders the recruiter snapshot from canonical counts", async () => {
+    vi.mocked(getPublicWorkPassportBySlug).mockResolvedValue(makePublicPassport())
+
+    render(<PublicPassportView slug="slug123" />)
+    await screen.findByTestId("public-passport")
+
+    const snapshot = screen.getByTestId("public-passport-snapshot")
+    expect(snapshot.textContent).toContain("Verified project")
+    expect(snapshot.textContent).toContain("Evidence-backed skills")
+    const stats = screen.getAllByTestId("public-snapshot-stat")
+    expect(stats).toHaveLength(4)
   })
 })
 

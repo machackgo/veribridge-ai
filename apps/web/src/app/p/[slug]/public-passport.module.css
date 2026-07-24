@@ -121,6 +121,49 @@
   }
 }
 
+/* ── Recruiter snapshot ── */
+
+.snapshotRow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.snapshotStat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 10px 6px;
+  border: 1px solid #e6e8ef;
+  border-radius: 10px;
+  background: #fff;
+  text-align: center;
+  min-width: 0;
+}
+
+.snapshotValue {
+  font-size: clamp(17px, 4.5vw, 22px);
+  font-weight: 750;
+  color: #0a0e1a;
+  line-height: 1.1;
+}
+
+.snapshotLabel {
+  font-size: clamp(10.5px, 2.8vw, 12px);
+  color: #6b7280;
+  line-height: 1.3;
+  overflow-wrap: break-word;
+}
+
+@media (max-width: 480px) {
+  .snapshotRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ── Sections ── */
 
 .sectionTitle {

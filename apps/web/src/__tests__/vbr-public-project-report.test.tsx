@@ -136,7 +136,9 @@ describe("PublicReportView", () => {
     expect(screen.getByRole("heading", { name: "Verified Build Report" })).toBeInTheDocument()
     expect(screen.getByText("Skill Evidence Tracker")).toBeInTheDocument()
     expect(screen.getByText("Jordan Rivera")).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "Evidence-backed skills" })).toBeInTheDocument()
+    // The public report renders the same canonical section title the student
+    // report uses — one report design, not a separate public product.
+    expect(screen.getByText("Skills Demonstrated in This Project")).toBeInTheDocument()
     expect(screen.getAllByTestId("public-skill-row")).toHaveLength(2)
     // Timestamped video chips live in the collapsed deep-evidence section.
     fireEvent.click(screen.getByTestId("public-report-deep-evidence-toggle"))
@@ -171,7 +173,7 @@ describe("PublicReportView", () => {
 
     // Traceability is progressive disclosure: opened explicitly.
     fireEvent.click(screen.getByTestId("public-report-deep-evidence-toggle"))
-    expect(screen.getByText("Evidence traceability")).toBeInTheDocument()
+    expect(screen.getByText("Evidence Traceability")).toBeInTheDocument()
     expect(screen.getAllByTestId("evidence-trace").length).toBe(2)
     // Public source links directly; private source shows a generic note (no raw file).
     expect(screen.getByTestId("evidence-trace-link")).toHaveAttribute(

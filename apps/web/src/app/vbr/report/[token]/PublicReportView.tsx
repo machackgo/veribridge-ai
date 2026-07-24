@@ -1,41 +1,57 @@
 "use client"
 
 /**
- * Public Verified Build Report — the canonical recruiter-facing report.
+ * Public Verified Build Report — the recruiter-facing rendering of the ONE
+ * canonical report.
  *
- * Information architecture (narrative first, audit second):
- *   1. Project overview — what was built, the candidate's role
- *   2. Strongest evidence-backed skills — stacked cards (no matrix table)
- *   3. Evidence coverage — one compact chip row
- *   4. Public sources — links the recruiter can open directly
- *   5. Candidate explanation — Project Defense summary
- *   6. Limitations — honest gaps
- *   7. Full evidence detail — traceability + per-source audit, collapsed
+ * This view renders the SAME canonical sections, in the same order and design
+ * language, as the student report at /student/vbr/projects/[id]/report (via the
+ * shared `CanonicalReportSections` module):
  *
- * Mobile-first: primary content never scrolls sideways; skill evidence renders
- * as stacked cards; deep traceability lives behind an explicit expand.
+ *   1. Project overview (title, role, evidence summary grid)
+ *   2. Jump navigation
+ *   3. Direct links (truth-gated public repo + live site)
+ *   4. Skills Demonstrated in This Project — skill-first evidence cards
+ *   5. Candidate explanation (Project Defense narrative)
+ *   6. Limitations
+ *   7. Evidence by source + traceability (collapsed — progressive disclosure)
+ *
+ * The only differences from the student view are authentication-safe public
+ * ones: no publish controls, no owner-only original-file access or replay, and
+ * the deep audit detail is collapsed by default for recruiters. GitHub truth:
+ * a repository is linked only when a GitHub Proof is attached AND the repo is
+ * public; a private-but-scanned repo is labelled honestly; no GitHub Proof
+ * means no repository identity is implied anywhere.
  */
 
 import { useEffect, useState } from "react"
 import {
   getPublicVBRProjectReport,
   isSafePublicUrl,
-  matrixTraceLabel,
   type EvidenceTrace,
   type PublicVBRProjectReport,
   type PublicVideoEvidenceChip,
-  type VBRReportSkillEvidenceRow,
 } from "@/lib/vbr-api"
 import { recordPublicReportView } from "@/lib/report-view-beacon"
 import {
   Badge,
   Card,
+  CardHeader,
   ErrorState,
   LoadingState,
   Mono,
   TOKEN,
-  type BadgeTone,
 } from "../../../../../components/passport/shared"
+import {
+  CanonicalSkillEvidenceCard,
+  DirectLinksBody,
+  EvidenceSummaryGrid,
+  GithubProofBlock,
+  PUBLIC_SKILL_CARD_TEST_IDS,
+  QUALITATIVE_LABEL_TONE,
+  ReportJumpNav,
+  safeDirectLinks,
+} from "../../../../../components/passport/CanonicalReportSections"
 import { EvidenceTraceList } from "../../../../../components/passport/EvidenceTrace"
 import { ProjectDefenseInspectionSection } from "../../../../../components/passport/ProjectDefenseInspectionCard"
 import styles from "./public-report.module.css"
@@ -43,29 +59,6 @@ import styles from "./public-report.module.css"
 // Keeps an in-page anchor target clear of the sticky top chrome when a
 // trace link scrolls to it.
 const ANCHOR_OFFSET = { scrollMarginTop: 96 }
-
-const QUALITATIVE_LABEL_TONE: Record<string, BadgeTone> = {
-  Demonstrated: "emerald",
-  "Partially demonstrated": "amber",
-  "Supporting evidence": "sky",
-  "Evidence observed": "emerald",
-  "Needs review": "rose",
-  "Not assessed": "slate",
-}
-
-/** Compact display label for an evidence source. */
-const SOURCE_SHORT: Record<string, string> = {
-  "GitHub Proof": "GitHub",
-  "Document Proof": "Documents",
-  "Website Proof": "Website",
-  "Project Defense": "Project Defense",
-  "Video Evidence": "Video",
-  "VBR Report": "Verified Build Report",
-}
-
-function shortSource(label: string): string {
-  return SOURCE_SHORT[label] ?? label
-}
 
 function PublicVideoChip({ chip }: { chip: PublicVideoEvidenceChip }) {
   return (
@@ -81,158 +74,23 @@ function PublicVideoChip({ chip }: { chip: PublicVideoEvidenceChip }) {
   )
 }
 
-/**
- * One skill's evidence as a stacked card — replaces the old desktop matrix
- * table row so the report reads cleanly on any viewport.
- */
-function SkillEvidenceCard({
-  row,
-  tracesById,
-}: {
-  row: VBRReportSkillEvidenceRow
-  tracesById: Map<string, EvidenceTrace>
-}) {
-  const sources = row.supporting_sources ?? []
-  const limitations = row.limitations ?? []
-  const traceRefs = (row.evidence_traces ?? [])
-    .map((id) => tracesById.get(id))
-    .filter((t): t is EvidenceTrace => Boolean(t))
-  return (
-    <div data-testid="public-skill-row" className={styles.skillCard}>
-      <div className={styles.skillCardHeader}>
-        <span className={styles.skillName}>{row.skill}</span>
-        <Badge tone={QUALITATIVE_LABEL_TONE[row.status] ?? "slate"}>{row.status}</Badge>
-      </div>
-      {sources.length > 0 && (
-        <div data-testid="public-skill-supporting-sources" className={styles.chipRow}>
-          {sources.map((src) => (
-            <Badge key={src} tone="slate">
-              {shortSource(src)}
-            </Badge>
-          ))}
-        </div>
-      )}
-      {(row.why_this_status || row.notes) && (
-        <p className={styles.mutedText}>
-          {row.why_this_status ? (
-            <span data-testid="public-skill-why">{row.why_this_status}</span>
-          ) : (
-            row.notes
-          )}
-        </p>
-      )}
-      {row.recruiter_can_verify && (
-        <p data-testid="public-skill-verify" className={styles.mutedText} style={{ fontStyle: "italic" }}>
-          {row.recruiter_can_verify}
-        </p>
-      )}
-      {limitations.length > 0 && (
-        <ul data-testid="public-skill-limitations" style={{ margin: 0, paddingLeft: 16 }}>
-          {limitations.map((line, i) => (
-            <li key={i} className={styles.mutedText}>
-              {line}
-            </li>
-          ))}
-        </ul>
-      )}
-      {traceRefs.length > 0 && (
-        <div data-testid="public-skill-trace-links" className={styles.chipRow}>
-          {traceRefs.map((t) => (
-            <a
-              key={t.trace_id}
-              href={`#${t.evidence_anchor}`}
-              style={{ fontSize: 12, color: TOKEN.indigo, textDecoration: "none" }}
-            >
-              {matrixTraceLabel(t)} →
-            </a>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function Assessment({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-      <span className={styles.mutedText} style={{ minWidth: 0 }}>
-        {label}
-      </span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <Mono style={{ fontSize: 11, color: TOKEN.muted }}>{label}</Mono>
       <Badge tone={QUALITATIVE_LABEL_TONE[value] ?? "slate"}>{value}</Badge>
     </div>
   )
 }
 
-/**
- * Public sources the recruiter can open directly: a public GitHub repo and
- * live website targets. Never links private evidence.
- */
-function PublicSourcesCard({ report }: { report: PublicVBRProjectReport }) {
-  const repoUrl =
-    report.github_proof?.repo_is_public && isSafePublicUrl(report.github_proof.repo_url)
-      ? report.github_proof.repo_url
-      : null
-  const websiteTargets = report.website_proofs.map((w) => w.target_website).filter(isSafePublicUrl)
-  const liveLinks = Array.from(
-    new Set([report.deployed_url, ...websiteTargets].filter(isSafePublicUrl) as string[]),
-  )
-
-  if (!repoUrl && liveLinks.length === 0) return null
-
-  return (
-    <Card>
-      <h2 className={styles.sectionTitle} style={{ marginBottom: 8 }}>
-        Public sources
-      </h2>
-      <p className={styles.mutedText} style={{ marginBottom: 10 }}>
-        Open these directly to verify. Private evidence (raw documents, transcripts, recordings) is
-        never linked.
-      </p>
-      <div className={styles.chipRow} style={{ gap: 8 }}>
-        {repoUrl && (
-          <a data-testid="public-safe-repo-link" href={repoUrl} target="_blank" rel="noreferrer" className={styles.safeLink}>
-            View public repository ↗
-          </a>
-        )}
-        {liveLinks.map((url) => (
-          <a key={url} data-testid="public-safe-live-link" href={url} target="_blank" rel="noreferrer" className={styles.safeLink}>
-            Open live site ↗
-          </a>
-        ))}
-      </div>
-    </Card>
-  )
-}
-
-/** Compact evidence-coverage chips (replaces the old six-tile grid). */
-function EvidenceCoverage({ report }: { report: PublicVBRProjectReport }) {
-  const pkg = report.evidence_package
-  const items: { label: string; present: boolean; detail?: string }[] = [
-    { label: "GitHub", present: pkg.github_proof_attached },
-    {
-      label: "Documents",
-      present: pkg.documents_count > 0,
-      detail: pkg.documents_count > 0 ? `${pkg.documents_count}` : undefined,
-    },
-    {
-      label: "Website",
-      present: pkg.website_proofs_count > 0,
-      detail: pkg.website_proofs_count > 0 ? `${pkg.website_proofs_count}` : undefined,
-    },
-    { label: "Project Defense", present: pkg.project_defense_completed },
-    { label: "Video", present: pkg.video_defense_recorded },
-  ]
-  return (
-    <div data-testid="public-report-evidence-coverage" className={styles.chipRow}>
-      {items.map((item) => (
-        <Badge key={item.label} tone={item.present ? "emerald" : "slate"}>
-          {item.present ? "✓ " : "– "}
-          {item.label}
-          {item.detail ? ` · ${item.detail}` : ""}
-        </Badge>
-      ))}
-    </div>
-  )
+/** Public skill-report href behind a skill card, when the passport is published. */
+function publicSkillHref(passportPath: string | null | undefined, skill: string): string | null {
+  if (!passportPath || !/^\/p\/[A-Za-z0-9_-]+$/.test(passportPath)) return null
+  const slug = skill
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug ? `${passportPath}/skills/${slug}` : null
 }
 
 /** Deep, audit-level evidence — collapsed by default (progressive disclosure). */
@@ -264,9 +122,7 @@ function DeepEvidenceSection({
           {/* Claim → evidence → source audit trail */}
           {evidenceTraces.length > 0 && (
             <Card id="evidence-traceability" style={ANCHOR_OFFSET}>
-              <h2 className={styles.sectionTitle} style={{ marginBottom: 8 }}>
-                Evidence traceability
-              </h2>
+              <CardHeader title="Evidence Traceability" eyebrow="Claim → evidence → source" icon="🔍" />
               <p className={styles.mutedText} style={{ marginBottom: 10 }}>
                 Each item is a concrete evidence source behind the skills above. Public sources link
                 directly; private evidence is summarized, never exposed.
@@ -275,35 +131,13 @@ function DeepEvidenceSection({
             </Card>
           )}
 
-          {/* Per-source audit detail */}
+          {/* Per-source audit detail — canonical section order. */}
           <Card id="evidence-by-source" style={ANCHOR_OFFSET}>
-            <h2 className={styles.sectionTitle} style={{ marginBottom: 10 }}>
-              Evidence by source
-            </h2>
+            <CardHeader title="Evidence by Source" eyebrow="Supporting detail" icon="📎" />
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div id="github-proof" style={ANCHOR_OFFSET}>
                 <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>GitHub Proof</Mono>
-                {report.github_proof ? (
-                  <div style={{ marginTop: 4 }}>
-                    <p className={styles.bodyText} style={{ marginBottom: 4 }}>
-                      {report.github_proof.repo_owner && report.github_proof.repo_name
-                        ? `${report.github_proof.repo_owner}/${report.github_proof.repo_name}`
-                        : report.github_proof.repo_url}
-                    </p>
-                    {report.github_proof.public_safe_summary && (
-                      <p className={styles.mutedText} style={{ marginBottom: 6 }}>{report.github_proof.public_safe_summary}</p>
-                    )}
-                    <div className={styles.chipRow}>
-                      {report.github_proof.detected_skills.map((skill) => (
-                        <Badge key={skill} tone="slate">
-                          {skill}
-                        </Badge>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <p className={styles.mutedText} style={{ marginTop: 4 }}>GitHub proof not attached.</p>
-                )}
+                <GithubProofBlock githubProof={report.github_proof} linkTestId="public-github-proof-repo-link" />
               </div>
 
               <div id="documents" style={ANCHOR_OFFSET}>
@@ -343,6 +177,23 @@ function DeepEvidenceSection({
                 )}
               </div>
 
+              <div id="project-defense" style={ANCHOR_OFFSET}>
+                <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Manual / Video Project Defense</Mono>
+                {analysis ? (
+                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
+                      <Assessment label="Overall" value={analysis.overall_assessment} />
+                      <Assessment label="Clarity" value={analysis.explanation_clarity} />
+                      <Assessment label="Ownership signal" value={analysis.ownership_signal} />
+                      <Assessment label="Technical depth" value={analysis.technical_depth} />
+                      <Assessment label="Consistency with evidence" value={analysis.consistency_with_evidence} />
+                    </div>
+                  </div>
+                ) : (
+                  <p className={styles.mutedText} style={{ marginTop: 4 }}>Project Defense has not been analyzed.</p>
+                )}
+              </div>
+
               <div>
                 <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Timestamped Video Evidence</Mono>
                 {report.video_evidence_chips.length > 0 ? (
@@ -366,19 +217,6 @@ function DeepEvidenceSection({
                       cards={report.project_defense_inspection}
                       testId="public-project-defense-inspection"
                     />
-                  </div>
-                </div>
-              )}
-
-              {analysis && (
-                <div>
-                  <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>Defense Assessment Detail</Mono>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
-                    <Assessment label="Overall" value={analysis.overall_assessment} />
-                    <Assessment label="Clarity" value={analysis.explanation_clarity} />
-                    <Assessment label="Ownership signal" value={analysis.ownership_signal} />
-                    <Assessment label="Technical depth" value={analysis.technical_depth} />
-                    <Assessment label="Consistency with evidence" value={analysis.consistency_with_evidence} />
                   </div>
                 </div>
               )}
@@ -439,6 +277,7 @@ export function PublicReportView({ token }: { token: string }) {
   const analysis = report.project_defense_analysis
   const evidenceTraces = report.evidence_traces ?? []
   const tracesById = new Map(evidenceTraces.map((t) => [t.trace_id, t]))
+  const { repoUrl, liveLinks } = safeDirectLinks(report)
 
   return (
     <div data-testid="public-report" className={styles.page}>
@@ -472,9 +311,7 @@ export function PublicReportView({ token }: { token: string }) {
 
       {/* 1 — Project overview: what was built + the candidate's role */}
       <Card>
-        <h2 className={styles.sectionTitle} style={{ marginBottom: 8 }}>
-          {report.project_title}
-        </h2>
+        <CardHeader title={report.project_title} eyebrow="Project summary" icon="📁" />
         {report.project_summary && (
           <p className={styles.bodyText} style={{ marginBottom: 10 }}>
             {report.project_summary}
@@ -486,41 +323,95 @@ export function PublicReportView({ token }: { token: string }) {
             {report.student_role}
           </p>
         )}
-        {report.repo_full_name && (
-          <Mono style={{ fontSize: 11, color: TOKEN.muted, display: "block", marginBottom: 10, overflowWrap: "anywhere" }}>
-            {report.repo_full_name}
-          </Mono>
+        {/* Repository identity appears ONLY when a GitHub Proof backs it — a
+            public repo renders as a link; a scanned private repo is labelled;
+            no proof → no implied repository (the GitHub truth model). */}
+        {report.github_proof && report.repo_full_name && (
+          <div style={{ marginBottom: 10 }}>
+            {repoUrl ? (
+              <a
+                data-testid="public-report-repo-identity"
+                href={repoUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ fontFamily: '"JetBrains Mono", monospace', fontSize: 11, color: TOKEN.indigo, textDecoration: "none", overflowWrap: "anywhere" }}
+              >
+                {report.repo_full_name} ↗
+              </a>
+            ) : (
+              <Mono style={{ fontSize: 11, color: TOKEN.muted, display: "block", overflowWrap: "anywhere" }}>
+                {report.repo_full_name} · private repository (scanner-verified, not publicly openable)
+              </Mono>
+            )}
+          </div>
         )}
-        {/* Compact evidence coverage inside the overview so the recruiter sees
-            what backs this report immediately — without a stats wall. */}
-        <EvidenceCoverage report={report} />
+        {/* The canonical Project Evidence Summary grid. */}
+        <EvidenceSummaryGrid pkg={report.evidence_package} testId="public-report-evidence-coverage" />
       </Card>
 
-      {/* 2 — Strongest evidence-backed skills (stacked cards, no table) */}
-      <section id="skill-evidence" style={{ ...ANCHOR_OFFSET, display: "flex", flexDirection: "column", gap: 10 }}>
-        <h2 className={styles.sectionTitle}>Evidence-backed skills</h2>
+      {/* 2 — In-page navigation (canonical jump nav) */}
+      <ReportJumpNav
+        testId="public-report-jump-nav"
+        items={[
+          { href: "#skill-evidence", label: "Skills Demonstrated" },
+          { href: "#github-proof", label: "GitHub Proof" },
+          { href: "#documents", label: "Documents" },
+          { href: "#website-proof", label: "Website Proof" },
+          { href: "#project-defense", label: "Project Defense" },
+          { href: "#limitations", label: "Limitations" },
+        ]}
+      />
+
+      {/* 3 — Direct safe links the recruiter can verify directly */}
+      {(repoUrl || liveLinks.length > 0) && (
+        <Card>
+          <CardHeader title="Direct Links" eyebrow="Verify it yourself" icon="🔗" />
+          <p className={styles.mutedText} style={{ marginBottom: 10 }}>
+            Public sources you can open directly. Private evidence (raw documents, transcripts, and
+            recordings) is never linked.
+          </p>
+          <DirectLinksBody
+            repoUrl={repoUrl}
+            liveLinks={liveLinks}
+            repoTestId="public-safe-repo-link"
+            liveTestId="public-safe-live-link"
+          />
+        </Card>
+      )}
+
+      {/* 4 — Skills Demonstrated in This Project (canonical skill-first cards) */}
+      <Card id="skill-evidence" style={ANCHOR_OFFSET}>
+        <CardHeader
+          title="Skills Demonstrated in This Project"
+          eyebrow="Skill → proof types → evidence"
+          icon="🧩"
+        />
+        <p className={styles.mutedText} style={{ marginBottom: 12 }}>
+          Each card shows one skill, the proof sources that support it in this project, the evidence
+          grouped by source, and what that evidence does not prove.
+        </p>
         {report.skill_evidence.length === 0 ? (
-          <Card>
-            <p className={styles.mutedText}>No claimed skills recorded for this project.</p>
-          </Card>
+          <p className={styles.mutedText}>No claimed skills recorded for this project.</p>
         ) : (
-          <div data-testid="public-skill-cards" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div data-testid="public-skill-cards" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {report.skill_evidence.map((row) => (
-              <SkillEvidenceCard key={row.skill} row={row} tracesById={tracesById} />
+              <CanonicalSkillEvidenceCard
+                key={row.skill}
+                row={row}
+                tracesById={tracesById}
+                testIds={PUBLIC_SKILL_CARD_TEST_IDS}
+                skillHref={publicSkillHref(report.public_passport_path, row.skill)}
+                skillCtaLabel="Open the full public skill report →"
+              />
             ))}
           </div>
         )}
-      </section>
+      </Card>
 
-      {/* 3 — Public sources the recruiter can verify directly */}
-      <PublicSourcesCard report={report} />
-
-      {/* 4 — Candidate explanation (Project Defense narrative) */}
+      {/* 5 — Candidate explanation (Project Defense narrative) */}
       {analysis && (
-        <Card id="project-defense" style={ANCHOR_OFFSET}>
-          <h2 className={styles.sectionTitle} style={{ marginBottom: 8 }}>
-            Candidate explanation
-          </h2>
+        <Card>
+          <CardHeader title="Candidate Explanation" eyebrow="Project Defense narrative" icon="🗣️" />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <p className={styles.bodyText}>{analysis.transcript_summary}</p>
             <p className={styles.mutedText} style={{ fontStyle: "italic" }}>
@@ -538,11 +429,9 @@ export function PublicReportView({ token }: { token: string }) {
         </Card>
       )}
 
-      {/* 5 — Limitations / not assessed */}
+      {/* 6 — Limitations / not assessed */}
       <Card id="limitations" style={ANCHOR_OFFSET}>
-        <h2 className={styles.sectionTitle} style={{ marginBottom: 8 }}>
-          Limitations & not assessed
-        </h2>
+        <CardHeader title="Limitations / Not Assessed" eyebrow="Honest gaps" icon="⚠️" />
         <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
           {report.limitations.map((line, i) => (
             <li key={i} className={styles.mutedText}>
@@ -552,7 +441,7 @@ export function PublicReportView({ token }: { token: string }) {
         </ul>
       </Card>
 
-      {/* 6 — Deep evidence & traceability (collapsed by default) */}
+      {/* 7 — Deep evidence & traceability (collapsed by default) */}
       <DeepEvidenceSection report={report} evidenceTraces={evidenceTraces} />
 
       {/* Back to the candidate's public Work Passport (only when published) */}

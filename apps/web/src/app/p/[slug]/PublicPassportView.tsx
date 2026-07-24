@@ -93,42 +93,93 @@ function shortSource(label: string): string {
   return SOURCE_SHORT[label] ?? label
 }
 
-/** Deterministic keyword grouping for the curated Top Skills section. */
-const SKILL_GROUPS: { title: string; pattern: RegExp }[] = [
+/**
+ * Recruiter-facing display order for the backend's canonical skill taxonomy
+ * (mirrors `skill_normalization.CATEGORY_ORDER`). Categories not listed here
+ * (or absent on older payloads) fall through to the keyword fallback below.
+ */
+const CATEGORY_DISPLAY_ORDER = [
+  "AI / Machine Learning",
+  "GenAI / LLM",
+  "MLOps / Deployment",
+  "Backend / APIs",
+  "Frontend",
+  "Data / Analytics",
+  "Database",
+  "Cloud / DevOps",
+  "Programming Language",
+  "Security / Privacy",
+  "Testing / Quality",
+  "Documentation / Communication",
+  "Product / System Design",
+]
+
+/** Keyword fallback for payloads without a backend `category`. */
+const SKILL_GROUP_FALLBACK: { title: string; pattern: RegExp }[] = [
   {
-    title: "AI & Machine Learning",
+    title: "AI / Machine Learning",
     pattern:
-      /\b(ai|ml|machine.?learning|deep.?learning|neural|nlp|llm|vision|model|pytorch|tensorflow|scikit|data.?science)\b/i,
+      /\b(ai|ml|machine.?learning|deep.?learning|neural|nlp|llm|vision|ocr|model|pytorch|tensorflow|scikit|data.?science)\b/i,
   },
   {
-    title: "Backend & APIs",
+    title: "Backend / APIs",
     pattern:
-      /\b(api|backend|server|fastapi|flask|django|express|node(\.js)?|rest|graphql|database|sql|postgres|auth|python|java|go)\b/i,
+      /\b(api|backend|server|fastapi|flask|django|express|node(\.js)?|rest|graphql|database|sql|postgres|supabase|auth)\b/i,
   },
   {
-    title: "Frontend & Product",
+    title: "Frontend",
     pattern:
-      /\b(frontend|react|next(\.js)?|ui|ux|css|html|javascript|typescript|design|product)\b/i,
+      /\b(frontend|react|next(\.js)?|ui|ux|css|html|design|product)\b/i,
   },
   {
-    title: "Data & Cloud",
+    title: "Programming Language",
+    pattern: /\b(python|javascript|typescript|java|golang|rust|c\+\+)\b/i,
+  },
+  {
+    title: "Data / Analytics",
     pattern:
       /\b(data|cloud|aws|gcp|azure|docker|kubernetes|deploy|pipeline|etl|analytics|geospatial|infra)\b/i,
   },
 ]
 
+function fallbackCategory(skillName: string): string {
+  const match = SKILL_GROUP_FALLBACK.find((g) => g.pattern.test(skillName))
+  return match ? match.title : "More skills"
+}
+
+/**
+ * Group every skill by the backend's canonical taxonomy category (fallback:
+ * deterministic keyword buckets). ALL skills are always grouped — grouping
+ * never drops a skill; unknown categories collect under "More skills" last.
+ */
 export function groupSkills(
   skills: PublicPassportSkill[],
 ): { title: string; skills: PublicPassportSkill[] }[] {
-  const groups = SKILL_GROUPS.map((g) => ({ title: g.title, skills: [] as PublicPassportSkill[] }))
-  const other: PublicPassportSkill[] = []
+  const byTitle = new Map<string, PublicPassportSkill[]>()
   for (const skill of skills) {
-    const match = SKILL_GROUPS.findIndex((g) => g.pattern.test(skill.skill))
-    if (match >= 0) groups[match].skills.push(skill)
-    else other.push(skill)
+    const raw = skill.category?.trim() || fallbackCategory(skill.skill)
+    const title = raw === "Other" ? "More skills" : raw
+    const bucket = byTitle.get(title)
+    if (bucket) bucket.push(skill)
+    else byTitle.set(title, [skill])
   }
-  const result = groups.filter((g) => g.skills.length > 0)
-  if (other.length > 0) result.push({ title: "More skills", skills: other })
+  const result: { title: string; skills: PublicPassportSkill[] }[] = []
+  for (const title of CATEGORY_DISPLAY_ORDER) {
+    const bucket = byTitle.get(title)
+    if (bucket?.length) {
+      result.push({ title, skills: bucket })
+      byTitle.delete(title)
+    }
+  }
+  // Any remaining category (backend "Other", fallback "More skills", or a new
+  // backend category this client does not know yet) renders after the known
+  // ones, in first-seen order — never dropped.
+  const moreSkills = byTitle.get("More skills")
+  byTitle.delete("More skills")
+  for (const [title, bucket] of byTitle) {
+    if (bucket.length) result.push({ title, skills: bucket })
+  }
+  if (moreSkills?.length) result.push({ title: "More skills", skills: moreSkills })
   return result
 }
 
@@ -332,6 +383,33 @@ function FeaturedProject({
           >
             View Verified Build Report →
           </a>
+          {/* Truth-gated outbound links: the backend only supplies these when a
+              real, publicly-openable target exists — never a guess. */}
+          {project.github_repo_url && (
+            <a
+              data-testid="public-project-github-link"
+              href={project.github_repo_url}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              className={styles.disclosureButton}
+              style={{ textDecoration: "none" }}
+              title={project.github_repo_label ?? "Open the public repository"}
+            >
+              GitHub ↗
+            </a>
+          )}
+          {project.live_url && (
+            <a
+              data-testid="public-project-live-link"
+              href={project.live_url}
+              target="_blank"
+              rel="noopener noreferrer nofollow"
+              className={styles.disclosureButton}
+              style={{ textDecoration: "none" }}
+            >
+              Live site ↗
+            </a>
+          )}
           <button
             type="button"
             className={styles.disclosureButton}
@@ -516,9 +594,15 @@ function SkillRow({ skill, passportSlug }: { skill: PublicPassportSkill; passpor
             </ul>
           )}
 
+          {(skill.aliases?.length ?? 0) > 0 && (
+            <p data-testid="public-skill-aliases" className={styles.footNote} style={{ margin: 0 }}>
+              Also recorded in evidence as: {skill.aliases?.join(", ")}
+            </p>
+          )}
+
           <a
             data-testid="public-skill-report-link"
-            href={publicSkillReportPath(passportSlug, fallbackSkillSlug(skill.skill))}
+            href={publicSkillReportPath(passportSlug, skill.skill_slug || fallbackSkillSlug(skill.skill))}
             style={{ fontSize: 12.5, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
           >
             Open the full public skill report →
@@ -529,8 +613,6 @@ function SkillRow({ skill, passportSlug }: { skill: PublicPassportSkill; passpor
   )
 }
 
-const TOP_SKILLS_COLLAPSED = 10
-
 function SkillsSection({
   skills,
   passportSlug,
@@ -538,10 +620,11 @@ function SkillsSection({
   skills: PublicPassportSkill[]
   passportSlug: string
 }) {
-  const [showAll, setShowAll] = useState(false)
-  const visible = showAll ? skills : skills.slice(0, TOP_SKILLS_COLLAPSED)
-  const groups = useMemo(() => groupSkills(visible), [visible])
-  const hiddenCount = skills.length - visible.length
+  // EVERY evidence-backed skill is always rendered, grouped by the canonical
+  // recruiter taxonomy — completeness is non-negotiable. The rows themselves
+  // are compact (name + tier) and each expands to its evidence detail, so the
+  // page stays scannable without hiding legitimate skills.
+  const groups = useMemo(() => groupSkills(skills), [skills])
 
   if (skills.length === 0) {
     return (
@@ -560,31 +643,32 @@ function SkillsSection({
           <div key={group.title} data-testid="public-skill-group">
             <div
               style={{
-                fontSize: 12,
-                fontWeight: 700,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: TOKEN.muted,
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
                 margin: "2px 0 4px",
               }}
             >
-              {group.title}
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  letterSpacing: "0.06em",
+                  textTransform: "uppercase",
+                  color: TOKEN.muted,
+                }}
+              >
+                {group.title}
+              </span>
+              <span style={{ fontSize: 11, color: TOKEN.muted }}>
+                {group.skills.length}
+              </span>
             </div>
             {group.skills.map((skill) => (
               <SkillRow key={skill.skill} skill={skill} passportSlug={passportSlug} />
             ))}
           </div>
         ))}
-        {hiddenCount > 0 && (
-          <button
-            type="button"
-            className={styles.disclosureButton}
-            data-testid="public-skills-show-all"
-            onClick={() => setShowAll(true)}
-          >
-            View all evidence-backed skills ({skills.length}) ▾
-          </button>
-        )}
       </div>
     </Card>
   )
@@ -640,11 +724,24 @@ function TransparencySection({ passport }: { passport: PublicWorkPassport }) {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+/** Projects shown before "View X more projects" (recruiter scan-first IA). */
+const PROJECTS_COLLAPSED = 3
+
+function SnapshotStat({ value, label }: { value: number; label: string }) {
+  return (
+    <div className={styles.snapshotStat} data-testid="public-snapshot-stat">
+      <span className={styles.snapshotValue}>{value}</span>
+      <span className={styles.snapshotLabel}>{label}</span>
+    </div>
+  )
+}
+
 export function PublicPassportView({ slug }: { slug: string }) {
   const [passport, setPassport] = useState<PublicWorkPassport | null>(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showAllProjects, setShowAllProjects] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -691,6 +788,11 @@ export function PublicPassportView({ slug }: { slug: string }) {
   // Section 2 candidate summary: the student's own bio wins; the generic
   // passport summary is the fallback so older passports keep a description.
   const summaryText = passport.identity?.bio?.trim() || passport.summary
+  const projects = passport.featured_projects
+  const visibleProjects = showAllProjects ? projects : projects.slice(0, PROJECTS_COLLAPSED)
+  const hiddenProjectCount = projects.length - visibleProjects.length
+  const proofSourceCount = sourceCounts.filter(([label]) => label !== "VBR Report").length
+  const vbrCount = passport.evidence_source_counts["VBR Report"] ?? 0
 
   return (
     <div data-testid="public-passport" className={styles.page}>
@@ -713,29 +815,63 @@ export function PublicPassportView({ slug }: { slug: string }) {
         </p>
       )}
 
-      {/* 3 — Featured projects: the primary recruiter content */}
+      {/* 2b — Recruiter snapshot: counts from canonical public records only. */}
+      <div className={styles.snapshotRow} data-testid="public-passport-snapshot">
+        <SnapshotStat value={projects.length} label={projects.length === 1 ? "Verified project" : "Verified projects"} />
+        <SnapshotStat value={passport.top_skills.length} label="Evidence-backed skills" />
+        <SnapshotStat value={proofSourceCount} label={proofSourceCount === 1 ? "Proof source" : "Proof sources"} />
+        <SnapshotStat value={vbrCount} label={vbrCount === 1 ? "Verified Build Report" : "Verified Build Reports"} />
+      </div>
+
+      {/* 3 — Projects: strongest three first, every published project on demand */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <h2 className={styles.sectionTitle}>Featured projects</h2>
-        {passport.featured_projects.length === 0 ? (
+        <h2 className={styles.sectionTitle}>
+          Verified projects{projects.length > 0 ? ` (${projects.length})` : ""}
+        </h2>
+        {projects.length === 0 ? (
           <Card>
             <p data-testid="public-passport-no-projects" className={styles.footNote}>
               No published project reports yet.
             </p>
           </Card>
         ) : (
-          passport.featured_projects.map((project, i) => (
-            <FeaturedProject
-              key={`${project.public_report_path}-${i}`}
-              project={project}
-              availableSkillAnchors={availableSkillAnchors}
-            />
-          ))
+          <>
+            {visibleProjects.map((project, i) => (
+              <FeaturedProject
+                key={`${project.public_report_path}-${i}`}
+                project={project}
+                availableSkillAnchors={availableSkillAnchors}
+              />
+            ))}
+            {hiddenProjectCount > 0 && (
+              <button
+                type="button"
+                className={styles.disclosureButton}
+                data-testid="public-projects-show-all"
+                onClick={() => setShowAllProjects(true)}
+              >
+                View {hiddenProjectCount} more {hiddenProjectCount === 1 ? "project" : "projects"} ▾
+              </button>
+            )}
+            {showAllProjects && projects.length > PROJECTS_COLLAPSED && (
+              <button
+                type="button"
+                className={styles.disclosureButton}
+                data-testid="public-projects-show-less"
+                onClick={() => setShowAllProjects(false)}
+              >
+                Show fewer projects ▴
+              </button>
+            )}
+          </>
         )}
       </section>
 
-      {/* 4 — Curated top skills */}
+      {/* 4 — Every evidence-backed skill, grouped by the canonical taxonomy */}
       <section style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <h2 className={styles.sectionTitle}>Top evidence-backed skills</h2>
+        <h2 className={styles.sectionTitle}>
+          Evidence-backed skills{passport.top_skills.length > 0 ? ` (${passport.top_skills.length})` : ""}
+        </h2>
         <SkillsSection skills={passport.top_skills} passportSlug={slug} />
       </section>
 

@@ -128,6 +128,11 @@ class PassportSkillSummary(BaseModel):
 
     skill: str
     status: str
+    # Stable slug + high-level category derived from the canonical skill name,
+    # plus the raw alias labels this canonical skill collapsed (labels only).
+    skill_slug: str | None = None
+    category: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     evidence_chip_count: int = 0
     project_count: int = 1
     # Skill drilldown detail (safe, qualitative-only).
@@ -192,6 +197,11 @@ class PublicPassportSkill(BaseModel):
 
     skill: str
     status: str
+    # Stable slug + high-level category for the recruiter taxonomy grouping,
+    # plus the raw alias labels this canonical skill collapsed (labels only).
+    skill_slug: str | None = None
+    category: str | None = None
+    aliases: list[str] = Field(default_factory=list)
     evidence_sources: list[str] = Field(default_factory=list)
     projects: list[PublicPassportSkillProjectRef] = Field(default_factory=list)
     evidence_chips: list[PassportSkillEvidenceChip] = Field(default_factory=list)
@@ -449,6 +459,14 @@ class PublicPassportProject(BaseModel):
     evidence_relationship_note: str | None = None
     public_report_path: str
     published_at: str | None = None
+    # Truth-gated recruiter-openable links: ``github_repo_url`` is present ONLY
+    # when a GitHub Proof is attached to the linked report AND the repository is
+    # recorded public AND the URL passes the safe-public-url gate — a passport
+    # GitHub link can never contradict the report. ``live_url`` is the safe
+    # deployed/website target. Omitted (None) when uncertain, never guessed.
+    github_repo_url: str | None = None
+    github_repo_label: str | None = None
+    live_url: str | None = None
 
     model_config = {"extra": "forbid"}
 

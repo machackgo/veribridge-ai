@@ -29,6 +29,8 @@ CAT_DATABASE = "Database"
 CAT_CLOUD = "Cloud / DevOps"
 CAT_LANGUAGE = "Programming Language"
 CAT_SECURITY = "Security / Privacy"
+CAT_TESTING = "Testing / Quality"
+CAT_DOCS = "Documentation / Communication"
 CAT_PRODUCT = "Product / System Design"
 CAT_OTHER = "Other"
 
@@ -43,14 +45,20 @@ CATEGORY_ORDER = [
     CAT_CLOUD,
     CAT_LANGUAGE,
     CAT_SECURITY,
+    CAT_TESTING,
+    CAT_DOCS,
     CAT_PRODUCT,
     CAT_OTHER,
 ]
 
 
 def _norm(value: str) -> str:
-    """Lower-case, collapse separators — the alias-table lookup key."""
-    return re.sub(r"[\s_\-/]+", " ", str(value or "").strip().lower())
+    """Lower-case, collapse separators — the alias-table lookup key.
+
+    ``.`` counts as a separator so display names like "Next.js" / "Node.js"
+    hit their "next js" / "node js" alias + category entries.
+    """
+    return re.sub(r"[\s_\-/.]+", " ", str(value or "").strip().lower())
 
 
 # ── Alias table: normalized raw label → canonical display name ────────────────
@@ -183,12 +191,45 @@ _ALIASES: dict[str, str] = {
     "auth": "Authentication",
     "privacy": "Privacy",
     "encryption": "Encryption",
+    # Testing / Quality
+    "testing": "Testing",
+    "unit testing": "Testing",
+    "integration testing": "Testing",
+    "test automation": "Test Automation",
+    "qa": "Testing",
+    "quality assurance": "Testing",
+    "pytest": "pytest",
+    "jest": "Jest",
+    "playwright": "Playwright",
+    # Documentation / Communication
+    "documentation": "Technical Documentation",
+    "technical documentation": "Technical Documentation",
+    "technical writing": "Technical Documentation",
+    # Data / Analytics extras
+    "data visualization": "Data Visualization",
+    "data viz": "Data Visualization",
+    "geospatial": "Geospatial Analysis",
+    "geospatial analysis": "Geospatial Analysis",
+    # AI extras
+    "ocr": "OCR",
+    "optical character recognition": "OCR",
+    "model evaluation": "Model Evaluation",
+    "feature engineering": "Feature Engineering",
+    # Frontend extras
+    "responsive ui": "Responsive UI",
+    "responsive design": "Responsive UI",
+    "web ui development": "Frontend Development",
+    "web development": "Frontend Development",
     # Product / System Design
     "system design": "System Design",
     "product": "Product Design",
     "product design": "Product Design",
+    "product engineering": "Product Engineering",
     "architecture": "Software Architecture",
     "software architecture": "Software Architecture",
+    "full stack": "Full-Stack Engineering",
+    "fullstack": "Full-Stack Engineering",
+    "full stack development": "Full-Stack Engineering",
 }
 
 # Canonical name (normalized) → category.
@@ -273,10 +314,29 @@ _CANONICAL_CATEGORY: dict[str, str] = {
     "authentication": CAT_SECURITY,
     "privacy": CAT_SECURITY,
     "encryption": CAT_SECURITY,
+    # Testing / Quality
+    "testing": CAT_TESTING,
+    "test automation": CAT_TESTING,
+    "pytest": CAT_TESTING,
+    "jest": CAT_TESTING,
+    "playwright": CAT_TESTING,
+    # Documentation / Communication
+    "technical documentation": CAT_DOCS,
+    # Data / Analytics extras
+    "data visualization": CAT_DATA,
+    "geospatial analysis": CAT_DATA,
+    # AI extras
+    "ocr": CAT_AI_ML,
+    "model evaluation": CAT_AI_ML,
+    "feature engineering": CAT_AI_ML,
+    # Frontend extras
+    "responsive ui": CAT_FRONTEND,
     # Product / System Design
     "system design": CAT_PRODUCT,
     "product design": CAT_PRODUCT,
+    "product engineering": CAT_PRODUCT,
     "software architecture": CAT_PRODUCT,
+    "full stack engineering": CAT_PRODUCT,
 }
 
 # Keyword fallbacks for unknown skills (substring on the normalized label).
@@ -377,6 +437,8 @@ __all__ = [
     "CAT_CLOUD",
     "CAT_LANGUAGE",
     "CAT_SECURITY",
+    "CAT_TESTING",
+    "CAT_DOCS",
     "CAT_PRODUCT",
     "CAT_OTHER",
 ]

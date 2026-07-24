@@ -6,30 +6,16 @@ import {
   fallbackSkillSlug,
   getVBRProjectReport,
   getVBRProjectReportPublishStatus,
-  isSafePublicUrl,
-  matrixTraceLabel,
   publishVBRProjectReport,
   skillReportPath,
   unpublishVBRProjectReport,
-  type EvidenceTrace,
   type ProjectReportPublishStatus,
   type RealUnmappedProofContext,
-  type VBRReportSkillEvidenceRow,
   type VBRStudentProjectReportResponse,
   type VideoEvidenceChip,
 } from "@/lib/vbr-api"
 import { buildPublicAppUrl } from "@/lib/api"
 
-// Canonical proof-source render order. Used both for the per-skill supporting
-// chips and to group a skill's evidence rows by proof source, so a Project
-// Report always reads GitHub → Document → Website → Project Defense → Video.
-const PROOF_SOURCE_ORDER = [
-  "GitHub Proof",
-  "Document Proof",
-  "Website Proof",
-  "Project Defense",
-  "Video Evidence",
-] as const
 import {
   Badge,
   Card,
@@ -40,6 +26,15 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../../../../components/passport/shared"
+import {
+  CanonicalSkillEvidenceCard,
+  DirectLinksBody,
+  EvidenceSummaryGrid,
+  GithubProofBlock,
+  OWNER_SKILL_CARD_TEST_IDS,
+  ReportJumpNav,
+  safeDirectLinks,
+} from "../../../../../../../components/passport/CanonicalReportSections"
 import { useAuthorizedMediaUrl } from "../../../../../../../components/passport/AuthorizedReplayVideo"
 import { ClaimEvidenceMapSection } from "../../../../../../../components/passport/ClaimEvidenceMapSection"
 import { DocumentOriginalAccessActions } from "../../../../../../../components/passport/OriginalProofAccess"
@@ -102,8 +97,6 @@ function WebsiteReplayBlock({ replayPath, analysisPath }: { replayPath?: string 
   )
 }
 
-const SKILL_STATUS_TONE = QUALITATIVE_LABEL_TONE
-
 const SOURCE_TONE: Record<string, BadgeTone> = {
   "GitHub Proof": "indigo",
   "Document Proof": "sky",
@@ -133,164 +126,9 @@ function VideoChip({ chip }: { chip: VideoEvidenceChip }) {
   )
 }
 
-/**
- * One skill-first evidence card for the "Skills Demonstrated in This Project"
- * section — the report's main body. It answers, for ONE skill in THIS project:
- * what status the skill has, which proof sources support it *here* (skill- and
- * project-specific chips, never the whole project's source union), a short
- * plain-language explanation, the evidence summaries grouped by proof source,
- * what the evidence does NOT prove, and a link into the full Skill Report.
- *
- * Every field it renders is an already-safe summary/label from the backend
- * (``supporting_sources`` / ``evidence_traces`` / ``limitations`` /
- * ``why_this_status``) — never raw evidence, storage paths, ids, or scores.
- */
-function SkillEvidenceCard({
-  row,
-  tracesById,
-}: {
-  row: VBRReportSkillEvidenceRow
-  tracesById: Map<string, EvidenceTrace>
-}) {
-  const sources = row.supporting_sources ?? []
-  const limitations = row.limitations ?? []
-  const traceRefs = (row.evidence_traces ?? [])
-    .map((id) => tracesById.get(id))
-    .filter((t): t is EvidenceTrace => Boolean(t))
-
-  // Group this skill's evidence rows by proof source (canonical order). Each
-  // group only appears when the backend actually attached a trace of that
-  // source to THIS skill — so e.g. a Website Proof group renders only when
-  // website behaviour was recorded as supporting this exact skill.
-  const groups = PROOF_SOURCE_ORDER.map((source) => ({
-    source,
-    traces: traceRefs.filter((t) => t.source_type === source),
-  })).filter((g) => g.traces.length > 0)
-
-  // "Not assessed" is any skill the backend could not tie to a single attached
-  // proof source in this project. We state what is missing rather than implying
-  // silent support.
-  const notAssessed = sources.length === 0 && groups.length === 0
-
-  return (
-    <div
-      data-testid="skill-evidence-card"
-      data-skill={row.skill}
-      data-status={row.status}
-      style={{
-        border: `1px solid ${TOKEN.line}`,
-        borderRadius: 10,
-        padding: 14,
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        background: notAssessed ? TOKEN.bg : "#fff",
-      }}
-    >
-      {/* Skill name + status */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <h4 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: TOKEN.ink }}>{row.skill}</h4>
-        <Badge tone={SKILL_STATUS_TONE[row.status] ?? "slate"}>{row.status}</Badge>
-      </div>
-
-      {/* Proof source chips supporting this skill IN THIS PROJECT */}
-      {sources.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-            Supported in this project by
-          </Mono>
-          <div data-testid="skill-supporting-sources" style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-            {sources.map((src) => (
-              <Badge key={src} tone={SOURCE_TONE[src] ?? "slate"}>
-                {src}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Short plain-language explanation */}
-      {(row.why_this_status || row.notes) && (
-        <p data-testid="skill-why" style={{ fontSize: 12, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
-          {row.why_this_status || row.notes}
-        </p>
-      )}
-
-      {/* Evidence rows grouped by proof source */}
-      {groups.length > 0 && (
-        <div data-testid="skill-evidence-groups" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {groups.map((group) => (
-            <div
-              key={group.source}
-              data-testid="skill-evidence-group"
-              data-source-type={group.source}
-              style={{ display: "flex", flexDirection: "column", gap: 4 }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <Badge tone={SOURCE_TONE[group.source] ?? "slate"}>{group.source}</Badge>
-              </div>
-              <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
-                {group.traces.map((t) => (
-                  <li key={t.trace_id} style={{ fontSize: 12, color: TOKEN.inkSoft, lineHeight: 1.45 }}>
-                    {t.safe_summary}{" "}
-                    <a
-                      href={`#${t.evidence_anchor}`}
-                      data-testid="skill-evidence-jump"
-                      style={{ fontSize: 11, color: TOKEN.indigo, textDecoration: "none", whiteSpace: "nowrap" }}
-                    >
-                      {matrixTraceLabel(t)} →
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Not assessed: state what is missing rather than implying silent support */}
-      {notAssessed && (
-        <p data-testid="skill-not-assessed" style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
-          No proof source in this project has been attached to this skill yet — it is a claim pending more evidence.
-          Attach GitHub, Document, Website, or Project Defense proof for this skill to strengthen it.
-        </p>
-      )}
-
-      {/* Limitations — what this evidence does NOT prove */}
-      {limitations.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-            Limitations
-          </Mono>
-          <ul data-testid="skill-limitations" style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 2 }}>
-            {limitations.map((line, i) => (
-              <li key={i} style={{ fontSize: 11, color: TOKEN.muted }}>
-                {line}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {row.recruiter_can_verify && (
-        <p data-testid="skill-verify" style={{ fontSize: 11, color: TOKEN.muted, margin: 0, fontStyle: "italic" }}>
-          {row.recruiter_can_verify}
-        </p>
-      )}
-
-      {/* CTA into the full Skill Report (owner-only route; always safe). */}
-      <div>
-        <Link
-          href={skillReportPath(fallbackSkillSlug(row.skill))}
-          data-testid="skill-report-cta"
-          style={{ fontSize: 12, fontWeight: 600, color: TOKEN.indigo, textDecoration: "none" }}
-        >
-          View full skill evidence →
-        </Link>
-      </div>
-    </div>
-  )
-}
+// The skill-first evidence card now comes from the shared canonical report
+// module (`CanonicalSkillEvidenceCard`) so the student preview and the public
+// recruiter report render the identical card design.
 
 /**
  * "Attached proof not yet skill-mapped" strip — REAL analyzed proof attached to
@@ -609,34 +447,17 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         <Badge tone="slate">Project status: {report.project_status.replace(/_/g, " ")}</Badge>
       </Card>
 
-      {/* In-page navigation to evidence sections */}
-      <nav data-testid="report-jump-nav" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {[
+      {/* In-page navigation to evidence sections (canonical jump nav) */}
+      <ReportJumpNav
+        items={[
           { href: "#skills-demonstrated", label: "Skills Demonstrated" },
           { href: "#github-proof", label: "GitHub Proof" },
           { href: "#documents", label: "Documents" },
           { href: "#website-proof", label: "Website Proof" },
           { href: "#project-defense", label: "Project Defense" },
           { href: "#limitations", label: "Limitations" },
-        ].map((item) => (
-          <a
-            key={item.href}
-            href={item.href}
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              color: TOKEN.indigo,
-              textDecoration: "none",
-              padding: "4px 10px",
-              borderRadius: 999,
-              border: `1px solid ${TOKEN.line}`,
-              background: "#fff",
-            }}
-          >
-            {item.label}
-          </a>
-        ))}
-      </nav>
+        ]}
+      />
 
       {/* Direct safe links */}
       <SafeLinksCard report={report} />
@@ -645,20 +466,7 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
           deliberately secondary: the skill-first cards below are the main body. */}
       <Card>
         <CardHeader title="Project Evidence Summary" eyebrow="Proof sources attached" icon="🗂️" />
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-            gap: 10,
-          }}
-        >
-          <EvidencePackageStat label="GitHub Proof" value={pkg.github_proof_attached ? "Attached" : "Not attached"} tone={pkg.github_proof_attached ? "emerald" : "slate"} />
-          <EvidencePackageStat label="Documents" value={pkg.documents_count > 0 ? `${pkg.documents_count} attached` : "None"} tone={pkg.documents_count > 0 ? "emerald" : "slate"} />
-          <EvidencePackageStat label="Website Proof" value={pkg.website_proofs_count > 0 ? `${pkg.website_proofs_count} attached` : "Not attached"} tone={pkg.website_proofs_count > 0 ? "emerald" : "slate"} />
-          <EvidencePackageStat label="Project Defense" value={pkg.project_defense_completed ? "Completed" : "Not completed"} tone={pkg.project_defense_completed ? "emerald" : "slate"} />
-          <EvidencePackageStat label="Video Defense" value={pkg.video_defense_recorded ? "Recorded" : "Not recorded"} tone={pkg.video_defense_recorded ? "emerald" : "slate"} />
-          <EvidencePackageStat label="Video Evidence Chips" value={`${pkg.video_evidence_chip_count}`} tone={pkg.video_evidence_chip_count > 0 ? "emerald" : "slate"} />
-        </div>
+        <EvidenceSummaryGrid pkg={pkg} />
       </Card>
 
       {/* ── MAIN BODY: Skills Demonstrated in This Project ─────────────────────
@@ -682,7 +490,13 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
         ) : (
           <div data-testid="skill-evidence-cards" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {report.skill_evidence.map((row) => (
-              <SkillEvidenceCard key={row.skill} row={row} tracesById={tracesById} />
+              <CanonicalSkillEvidenceCard
+                key={row.skill}
+                row={row}
+                tracesById={tracesById}
+                testIds={OWNER_SKILL_CARD_TEST_IDS}
+                skillHref={skillReportPath(fallbackSkillSlug(row.skill))}
+              />
             ))}
           </div>
         )}
@@ -711,32 +525,13 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.12em" }}>
               GitHub Proof
             </Mono>
-            {report.github_proof ? (
-              <div style={{ marginTop: 4 }}>
-                <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: "0 0 4px" }}>
-                  {report.github_proof.repo_owner && report.github_proof.repo_name
-                    ? `${report.github_proof.repo_owner}/${report.github_proof.repo_name}`
-                    : report.github_proof.repo_url}
-                  {report.github_proof.status ? ` — ${report.github_proof.status}` : ""}
-                </p>
-                {report.github_proof.public_safe_summary && (
-                  <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 6px" }}>
-                    {report.github_proof.public_safe_summary}
-                  </p>
-                )}
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                  {report.github_proof.detected_skills.map((skill) => (
-                    <Badge key={skill} tone="slate">
-                      {skill}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <p style={{ fontSize: 12, color: TOKEN.muted, margin: "4px 0 0" }}>
-                GitHub Proof not attached — repository reference only ({report.repo_full_name || report.repo_url}).
-              </p>
-            )}
+            {/* Canonical GitHub truth block. Owner-only nuance: the private
+                preview may still show the raw repository reference in the
+                not-attached note (the student registered it themselves). */}
+            <GithubProofBlock
+              githubProof={report.github_proof}
+              notAttachedNote={`GitHub Proof not attached — repository reference only (${report.repo_full_name || report.repo_url}).`}
+            />
           </div>
 
           <div id="documents" style={ANCHOR_OFFSET}>
@@ -1048,33 +843,14 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
   )
 }
 
-const safeLinkStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  padding: "8px 12px",
-  borderRadius: 8,
-  border: `1px solid ${TOKEN.line}`,
-  background: "#fff",
-  color: TOKEN.indigo,
-  fontSize: 13,
-  fontWeight: 600,
-  textDecoration: "none",
-}
-
 /**
  * Direct, recruiter-safe outbound links: a public GitHub repo (only when known
  * public), a public deployed app URL, and live website-proof targets. Never
- * links raw private docs, transcripts, signed URLs, or storage paths.
+ * links raw private docs, transcripts, signed URLs, or storage paths. Uses the
+ * shared canonical truth gate + body so student and public reports agree.
  */
 function SafeLinksCard({ report }: { report: VBRStudentProjectReportResponse }) {
-  // Defence in depth: only ever render links whose target is public-safe.
-  const repoUrl =
-    report.github_proof?.repo_is_public && isSafePublicUrl(report.github_proof.repo_url)
-      ? report.github_proof.repo_url
-      : null
-  const websiteTargets = report.website_proofs.map((w) => w.target_website).filter(isSafePublicUrl)
-  const liveLinks = Array.from(new Set([report.deployed_url, ...websiteTargets].filter(isSafePublicUrl) as string[]))
+  const { repoUrl, liveLinks } = safeDirectLinks(report)
 
   if (!repoUrl && liveLinks.length === 0) return null
 
@@ -1084,39 +860,7 @@ function SafeLinksCard({ report }: { report: VBRStudentProjectReportResponse }) 
       <p style={{ fontSize: 12, color: TOKEN.muted, margin: "0 0 10px", lineHeight: 1.5 }}>
         Public sources you can open directly. Private evidence (raw documents, transcripts, and recordings) is never linked.
       </p>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-        {repoUrl && (
-          <a data-testid="safe-repo-link" href={repoUrl} target="_blank" rel="noreferrer" style={safeLinkStyle}>
-            🐙 View public repository
-          </a>
-        )}
-        {liveLinks.map((url) => (
-          <a key={url} data-testid="safe-live-link" href={url} target="_blank" rel="noreferrer" style={safeLinkStyle}>
-            🌐 Open live site
-          </a>
-        ))}
-      </div>
+      <DirectLinksBody repoUrl={repoUrl} liveLinks={liveLinks} repoTestId="safe-repo-link" liveTestId="safe-live-link" />
     </Card>
-  )
-}
-
-function EvidencePackageStat({ label, value, tone }: { label: string; value: string; tone: BadgeTone }) {
-  return (
-    <div
-      style={{
-        padding: "10px 12px",
-        border: `1px solid ${TOKEN.line}`,
-        borderRadius: 8,
-        background: TOKEN.bg,
-        display: "flex",
-        flexDirection: "column",
-        gap: 6,
-      }}
-    >
-      <Mono style={{ fontSize: 10, color: TOKEN.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-        {label}
-      </Mono>
-      <Badge tone={tone}>{value}</Badge>
-    </div>
   )
 }

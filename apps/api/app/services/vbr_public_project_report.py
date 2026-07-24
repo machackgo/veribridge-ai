@@ -825,17 +825,24 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     if (deployed_link_omitted or website_link_omitted) and _OMITTED_LINK_LIMITATION not in limitations:
         limitations.append(_OMITTED_LINK_LIMITATION)
 
+    # GitHub truth model: the repository identity is only surfaced publicly when
+    # an actual GitHub Proof backs it. A project registered against a private /
+    # unverified repo (no attached GitHub Proof) must never present that repo
+    # name to recruiters as if a repository were available — that is exactly the
+    # "report says GitHub but nothing opens" trust failure.
+    github_proof_public = _public_github_proof(report.get("github_proof"))
+
     public = {
         "report_title": _REPORT_TITLE,
         "project_title": report.get("project_title") or "",
         "candidate_display_name": _lookup_display_name(db, owner_id),
         "project_summary": report.get("project_description") or "",
         "student_role": report.get("student_role") or "",
-        "repo_full_name": report.get("repo_full_name"),
+        "repo_full_name": report.get("repo_full_name") if github_proof_public else None,
         "deployed_url": deployed_url,
         "claimed_skills": list(report.get("claimed_skills") or []),
         "evidence_package": report.get("evidence_package") or {},
-        "github_proof": _public_github_proof(report.get("github_proof")),
+        "github_proof": github_proof_public,
         "documents": _public_documents(report.get("documents") or []),
         "website_proofs": website_proofs,
         "project_defense_analysis": defense_analysis,
