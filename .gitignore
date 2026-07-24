@@ -65,3 +65,5 @@ temp/
 # Playwright test artifacts
 apps/web/playwright-report/
 apps/web/test-results/
+.vercel/
+.env.local
