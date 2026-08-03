@@ -3239,7 +3239,13 @@ export async function unpublishWorkPassport(): Promise<WorkPassportStatus> {
 // configured/effective/allowed answers and submits changes — it never computes
 // visibility itself, and public renderers simply render what the backend kept.
 
-export type DisclosureMode = "recruiter_safe" | "custom"
+/**
+ * Server disclosure modes (migration 063 + 064). ``full_access`` is the
+ * deliberate "everything supported is public" mode — the server resolves every
+ * node to its maximum and stored overrides stay dormant, so switching back to
+ * ``custom`` restores the student's granular policy verbatim.
+ */
+export type DisclosureMode = "recruiter_safe" | "full_access" | "custom"
 
 export type DisclosurePreset = "recruiter_safe" | "portfolio_open" | "maximum_privacy"
 

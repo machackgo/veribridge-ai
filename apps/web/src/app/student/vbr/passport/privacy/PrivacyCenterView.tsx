@@ -5,7 +5,9 @@
  * public Work Passport.
  *
  * Layering (never a wall of checkboxes):
- *   1. Passport access — 🔒 Private / 🌍 Recruiter-safe / ⚙️ Custom mode cards.
+ *   1. Passport access — 🔒 Private / 🌍 Recruiter-safe / 📂 Full access /
+ *      ⚙️ Custom mode cards. Full access is the one expanding transition that
+ *      always passes through a consequence-explicit danger confirmation.
  *   2. Effective public access summary — honest counts, zeros included.
  *   3. Presets (custom mode) — safe named bundles, never "expose everything".
  *   4. Per-project disclosure accordions (report / aspects / documents).
@@ -241,6 +243,7 @@ function ModeCard({
   icon,
   title,
   tag,
+  tagTone = "emerald",
   desc,
   active,
   disabled,
@@ -250,6 +253,8 @@ function ModeCard({
   icon: string
   title: string
   tag?: string
+  /** Tone of the corner tag — amber marks an expanding, consequential mode. */
+  tagTone?: "emerald" | "amber"
   desc: string
   active: boolean
   disabled: boolean
@@ -272,7 +277,7 @@ function ModeCard({
       <span style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span aria-hidden style={{ fontSize: 16 }}>{icon}</span>
         <span style={{ fontSize: 13, fontWeight: 700, color: active ? TOKEN.indigo : TOKEN.ink }}>{title}</span>
-        {tag && <Badge tone="emerald">{tag}</Badge>}
+        {tag && <Badge tone={tagTone}>{tag}</Badge>}
         {active && <Badge tone="indigo">Current</Badge>}
       </span>
       <span style={{ fontSize: 11.5, color: TOKEN.muted, lineHeight: 1.5 }}>{desc}</span>
@@ -407,7 +412,7 @@ export function PrivacyCenterView() {
   if (loadError || !ctx) return <ErrorState message={loadError ?? "Privacy settings unavailable."} onRetry={load} />
 
   const passport = ctx.passport
-  const currentMode: "private" | "recruiter_safe" | "custom" = !passport.is_published
+  const currentMode: "private" | "recruiter_safe" | "full_access" | "custom" = !passport.is_published
     ? "private"
     : passport.mode
   const editable = passport.is_published && passport.mode === "custom" && !busy
@@ -416,9 +421,11 @@ export function PrivacyCenterView() {
 
   const disabledNote = !passport.is_published
     ? "Your Passport is Private — settings are kept but nothing is public."
-    : passport.mode !== "custom"
-      ? "Switch to Custom disclosure to change individual items."
-      : null
+    : currentMode === "full_access"
+      ? "Full access is on — every supported item is public. Switch to Custom disclosure to control items individually."
+      : passport.mode !== "custom"
+        ? "Switch to Custom disclosure to change individual items."
+        : null
 
   const afterServerChange = (next: DisclosureContext, message: string): string => {
     setCtx(next)
@@ -428,7 +435,7 @@ export function PrivacyCenterView() {
 
   // ── mode actions ───────────────────────────────────────────────────────────
 
-  const chooseMode = (target: "private" | "recruiter_safe" | "custom") => {
+  const chooseMode = (target: "private" | "recruiter_safe" | "full_access" | "custom") => {
     if (busy || target === currentMode) return
     setStatusNote(null)
     setActionError(null)
@@ -456,6 +463,26 @@ export function PrivacyCenterView() {
           next,
           "Your Passport is public with recruiter-safe defaults. Verified summaries are shown; originals stay private.",
         )
+      })
+      return
+    }
+    if (target === "full_access") {
+      // The single most expanding transition in the product — the confirmation
+      // states the consequence in concrete nouns, never "share more".
+      setConfirm({
+        title: "Turn on Full access?",
+        body:
+          "Anyone with your public Passport link — no sign-in needed — will be able to open every supported piece of evidence on it: your code evidence and exact file/line references, Website Proof details and screenshots, workflow and defense recordings, videos, transcripts, frames, and documents. Retained original documents will also be downloadable. Verified-private material is still withheld: private repositories, non-public URLs, and anything you never published stay hidden. Your per-item settings are saved and come back if you switch to Custom disclosure later.",
+        confirmLabel: "Turn on Full access",
+        danger: true,
+        action: async () => {
+          if (!passport.is_published) await publishWorkPassport()
+          const next = await setDisclosureMode("full_access")
+          return afterServerChange(
+            next,
+            "Full access is on. Every supported item on your public Passport is now open to visitors.",
+          )
+        },
       })
       return
     }
@@ -870,7 +897,10 @@ export function PrivacyCenterView() {
         <div
           role="group"
           aria-label="Passport access mode"
-          style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 10 }}
+          // 290px floor keeps the FOUR modes on an even 2×2 (or 1-up on mobile)
+          // — a 200px floor fits three across on desktop and strands the fourth
+          // card alone on a half-height row.
+          style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 290px), 1fr))", gap: 10 }}
         >
           <ModeCard
             testId="privacy-mode-private"
@@ -890,6 +920,20 @@ export function PrivacyCenterView() {
             active={currentMode === "recruiter_safe"}
             disabled={busy}
             onSelect={() => chooseMode("recruiter_safe")}
+          />
+          <ModeCard
+            testId="privacy-mode-full_access"
+            // NOT a 🔓 open-padlock: at card size it is visually indistinguishable
+            // from Private's 🔒, which would make the most permissive mode look
+            // like the most restrictive one.
+            icon="📂"
+            title="Public — Full access"
+            tag="Everything public"
+            tagTone="amber"
+            desc="Visitors can open every supported item: code evidence, Website Proof, recordings, videos, transcripts, frames, and documents. Documents are downloadable."
+            active={currentMode === "full_access"}
+            disabled={busy}
+            onSelect={() => chooseMode("full_access")}
           />
           <ModeCard
             testId="privacy-mode-custom"
@@ -918,6 +962,27 @@ export function PrivacyCenterView() {
           >
             🔒 Your Passport is Private. Your granular disclosure settings below are kept exactly as they are, but
             nothing is publicly visible until you switch back to Public.
+          </p>
+        )}
+
+        {currentMode === "full_access" && (
+          <p
+            data-testid="privacy-full-access-banner"
+            style={{
+              margin: "12px 0 0",
+              fontSize: 12,
+              lineHeight: 1.6,
+              color: TOKEN.inkSoft,
+              background: TOKEN.amberSoft,
+              border: `1px solid ${TOKEN.amber}`,
+              borderRadius: 10,
+              padding: "10px 12px",
+            }}
+          >
+            📂 Full access is on. Anyone with your Passport link can open every supported item below — code evidence,
+            Website Proof, recordings, videos, transcripts, frames, and documents — and can download retained original
+            documents. Your saved per-item settings are untouched and apply again the moment you switch to Custom
+            disclosure.
           </p>
         )}
 
@@ -1027,6 +1092,36 @@ export function PrivacyCenterView() {
             ))}
           </div>
         </Card>
+      )}
+
+      {/* Full access: controls shown but locked — everything below is public. */}
+      {currentMode === "full_access" && (
+        <p
+          data-testid="privacy-locked-note-full-access"
+          style={{
+            margin: 0,
+            fontSize: 12,
+            color: TOKEN.inkSoft,
+            lineHeight: 1.6,
+            background: TOKEN.amberSoft,
+            border: `1px solid ${TOKEN.line}`,
+            borderRadius: 10,
+            padding: "10px 12px",
+          }}
+        >
+          Full access overrides every individual control below — each item shows the state visitors actually get. Your
+          saved choices are kept;{" "}
+          <button
+            type="button"
+            data-testid="privacy-full-access-switch-to-custom"
+            disabled={busy}
+            onClick={() => chooseMode("custom")}
+            style={{ fontSize: 12, fontWeight: 700, color: TOKEN.indigo, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            switch to Custom disclosure
+          </button>{" "}
+          to control items again.
+        </p>
       )}
 
       {/* Recruiter-safe: controls shown but locked, with an inline mode-switch CTA */}

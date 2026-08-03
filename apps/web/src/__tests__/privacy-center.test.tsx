@@ -2,12 +2,13 @@
  * Privacy & Sharing center (`/student/vbr/passport/privacy`) — rendering and
  * interaction tests against a mocked DisclosureContext.
  *
- * Covers: the three access-mode cards, the honest effective-exposure summary
+ * Covers: the four access-mode cards, the honest effective-exposure summary
  * (zeros render as "0"), per-project aspect controls staging into the
  * unsaved-changes bar and publishing as ONE batch PUT, "Use default"
  * (visibility null), the document view/download split, skill/claim hierarchy
- * microcopy, the recruiter-safe locked state, and the Private-mode banner via
- * the confirmation dialog.
+ * microcopy, the recruiter-safe locked state, the Private-mode banner via
+ * the confirmation dialog, and the Full-access mode end to end (consequence
+ * copy, cancel-is-a-no-op, save, reload persistence, narrowing back).
  */
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
@@ -201,11 +202,12 @@ beforeEach(() => {
 })
 
 describe("PrivacyCenterView — modes and summary", () => {
-  it("renders the three access modes with the current one selected", async () => {
+  it("renders the four access modes with the current one selected", async () => {
     await renderCenter()
 
     expect(screen.getByTestId("privacy-mode-private")).toHaveAttribute("aria-pressed", "false")
     expect(screen.getByTestId("privacy-mode-recruiter_safe")).toHaveAttribute("aria-pressed", "false")
+    expect(screen.getByTestId("privacy-mode-full_access")).toHaveAttribute("aria-pressed", "false")
     expect(screen.getByTestId("privacy-mode-custom")).toHaveAttribute("aria-pressed", "true")
     expect(screen.getByText("Recommended")).toBeInTheDocument()
     // Preview opens the public path in a new tab.
@@ -455,5 +457,107 @@ describe("PrivacyCenterView — recruiter-safe and private modes", () => {
     fireEvent.click(screen.getByTestId("privacy-confirm-submit"))
     await waitFor(() => expect(applyDisclosurePreset).toHaveBeenCalledWith("maximum_privacy"))
     expect(await screen.findByTestId("privacy-status")).toHaveTextContent("Maximum privacy")
+  })
+})
+
+describe("PrivacyCenterView — Full access mode", () => {
+  function fullAccessContext(): DisclosureContext {
+    const ctx = makeContext()
+    ctx.passport = {
+      ...ctx.passport,
+      mode: "full_access",
+      custom_overrides_active: false,
+      disclosure_version: 4,
+    }
+    return ctx
+  }
+
+  it("offers Full access as a distinct, consequence-labelled card", async () => {
+    await renderCenter()
+
+    const card = screen.getByTestId("privacy-mode-full_access")
+    expect(card).toHaveTextContent("Full access")
+    expect(card).toHaveTextContent("Everything public")
+    // The description names the actual evidence, never a vague "share more".
+    expect(card).toHaveTextContent(/code evidence/i)
+    expect(card).toHaveTextContent(/transcripts/i)
+    expect(card).toHaveTextContent(/downloadable/i)
+    expect(card.textContent ?? "").not.toMatch(/share more/i)
+  })
+
+  it("requires explicit confirmation and cancelling changes nothing", async () => {
+    await renderCenter()
+
+    fireEvent.click(screen.getByTestId("privacy-mode-full_access"))
+    expect(setDisclosureMode).not.toHaveBeenCalled()
+
+    const dialog = screen.getByTestId("privacy-confirm-dialog")
+    expect(dialog).toHaveTextContent("Turn on Full access?")
+    // The consequence is spelled out in concrete nouns.
+    expect(dialog).toHaveTextContent(/no sign-in needed/i)
+    expect(dialog).toHaveTextContent(/code evidence/i)
+    expect(dialog).toHaveTextContent(/transcripts/i)
+    expect(dialog).toHaveTextContent(/downloadable/i)
+
+    fireEvent.click(screen.getByTestId("privacy-confirm-cancel"))
+    expect(screen.queryByTestId("privacy-confirm-dialog")).not.toBeInTheDocument()
+    expect(setDisclosureMode).not.toHaveBeenCalled()
+    // Still on the previous mode — no optimistic state change.
+    expect(screen.getByTestId("privacy-mode-custom")).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByTestId("privacy-mode-full_access")).toHaveAttribute("aria-pressed", "false")
+    expect(screen.queryByTestId("privacy-full-access-banner")).not.toBeInTheDocument()
+  })
+
+  it("confirming saves through the disclosure API and renders the server's full-access state", async () => {
+    await renderCenter()
+    vi.mocked(setDisclosureMode).mockResolvedValue(fullAccessContext())
+
+    fireEvent.click(screen.getByTestId("privacy-mode-full_access"))
+    fireEvent.click(screen.getByTestId("privacy-confirm-submit"))
+
+    await waitFor(() => expect(setDisclosureMode).toHaveBeenCalledWith("full_access"))
+    expect(await screen.findByTestId("privacy-full-access-banner")).toHaveTextContent(
+      /download retained original documents/i,
+    )
+    expect(screen.getByTestId("privacy-mode-full_access")).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByTestId("privacy-status")).toHaveTextContent(/Full access is on/i)
+  })
+
+  it("persists across a reload: a stored full_access context renders as selected and locked", async () => {
+    // Simulates the refresh path — the mode comes back from the server, not
+    // from any client-side memory of the click.
+    await renderCenter(fullAccessContext())
+
+    expect(screen.getByTestId("privacy-mode-full_access")).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByTestId("privacy-full-access-banner")).toBeInTheDocument()
+    expect(screen.getByTestId("privacy-locked-note-full-access")).toHaveTextContent(
+      /overrides every individual control/i,
+    )
+    // Granular controls are read-only, and the recruiter-safe note is absent.
+    expect(screen.queryByTestId("privacy-locked-note")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("privacy-preset-portfolio_open")).not.toBeInTheDocument()
+
+    expandFirstProject()
+    for (const btn of Array.from(
+      screen.getByTestId("privacy-aspect-github_repo").querySelectorAll("button"),
+    )) {
+      expect(btn).toBeDisabled()
+    }
+  })
+
+  it("narrowing back to custom disclosure goes through its own confirmation", async () => {
+    await renderCenter(fullAccessContext())
+    vi.mocked(setDisclosureMode).mockResolvedValue(makeContext())
+
+    fireEvent.click(screen.getByTestId("privacy-full-access-switch-to-custom"))
+    expect(setDisclosureMode).not.toHaveBeenCalled()
+    expect(screen.getByTestId("privacy-confirm-dialog")).toHaveTextContent("custom disclosure")
+
+    fireEvent.click(screen.getByTestId("privacy-confirm-submit"))
+    await waitFor(() => expect(setDisclosureMode).toHaveBeenCalledWith("custom"))
+    // Server state wins: the full-access banner is gone after the switch.
+    await waitFor(() =>
+      expect(screen.queryByTestId("privacy-full-access-banner")).not.toBeInTheDocument(),
+    )
   })
 })
