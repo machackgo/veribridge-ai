@@ -65,6 +65,23 @@ const ANCHOR_OFFSET = { scrollMarginTop: 96 }
 /** Absolute API URL for a disclosure-gated media/document view path. */
 const apiViewUrl = (path: string) => `${PUBLIC_API_BASE}${path}`
 
+/**
+ * Whether the candidate's disclosure settings actually shared any ORIGINAL
+ * artifact on this report (a viewable document, a captured frame, or a
+ * recorded walkthrough). Drives the honesty copy: the page must not promise
+ * that "private evidence is never linked" while Full access (or a custom
+ * grant) is openly linking exactly those originals below.
+ */
+function sharesOriginalEvidence(report: PublicVBRProjectReport): boolean {
+  const documentShared = report.documents.some(
+    (doc) => doc.disclosure === "viewable" && Boolean(doc.shared_view),
+  )
+  const websiteShared = report.website_proofs.some(
+    (wp) => (wp.frame_views?.length ?? 0) > 0 || Boolean(wp.replay_path),
+  )
+  return documentShared || websiteShared
+}
+
 /** Candidate-shared captured screenshots — a small lazy horizontal strip. */
 function WebsiteFrameStrip({ frames }: { frames: PublicMediaView[] }) {
   if (frames.length === 0) return null
@@ -151,9 +168,10 @@ function DeepEvidenceSection({
           {evidenceTraces.length > 0 && (
             <Card id="evidence-traceability" style={ANCHOR_OFFSET}>
               <CardHeader title="Evidence Traceability" eyebrow="Claim → evidence → source" icon="🔍" />
-              <p className={styles.mutedText} style={{ marginBottom: 10 }}>
-                Each item is a concrete evidence source behind the skills above. Public sources link
-                directly; private evidence is summarized, never exposed.
+              <p className={styles.mutedText} style={{ marginBottom: 10 }} data-testid="public-traceability-note">
+                {sharesOriginalEvidence(report)
+                  ? "Each item is a concrete evidence source behind the skills above. Public sources link directly, and the candidate has shared some original evidence below."
+                  : "Each item is a concrete evidence source behind the skills above. Public sources link directly; private evidence is summarized, never exposed."}
               </p>
               <EvidenceTraceList traces={evidenceTraces} />
             </Card>
@@ -439,9 +457,10 @@ export function PublicReportView({ token }: { token: string }) {
       {(repoUrl || liveLinks.length > 0) && (
         <Card>
           <CardHeader title="Direct Links" eyebrow="Verify it yourself" icon="🔗" />
-          <p className={styles.mutedText} style={{ marginBottom: 10 }}>
-            Public sources you can open directly. Private evidence (raw documents, transcripts, and
-            recordings) is never linked.
+          <p className={styles.mutedText} style={{ marginBottom: 10 }} data-testid="public-direct-links-note">
+            {sharesOriginalEvidence(report)
+              ? "Public sources you can open directly. The candidate has also chosen to share original evidence — documents, screenshots, and recordings — under Evidence by Source below."
+              : "Public sources you can open directly. Private evidence (raw documents, transcripts, and recordings) is never linked."}
           </p>
           <DirectLinksBody
             repoUrl={repoUrl}

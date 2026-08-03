@@ -252,3 +252,41 @@ describe("PublicReportView — summary-only GitHub disclosure", () => {
     )
   })
 })
+
+// The Evidence Traceability note uses the same `sharesOriginalEvidence` helper
+// as the Direct Links note, but its card only renders when the report carries
+// evidence traces (this fixture has none), so the assertions below target the
+// always-present Direct Links note.
+describe("PublicReportView — honesty copy tracks what is actually shared", () => {
+  it('drops the "never linked" promise once the candidate shares originals', async () => {
+    // The default fixture shares a viewable document, screenshots and a replay
+    // — exactly what Full access produces. Promising recruiters that private
+    // evidence "is never linked" while linking it would be a false statement.
+    await renderReport(makePublicReport())
+
+    const note = screen.getByTestId("public-direct-links-note")
+    expect(note).not.toHaveTextContent(/never linked/i)
+    expect(note).toHaveTextContent(/chosen to share original evidence/i)
+  })
+
+  it("keeps the original promise for a report that shares no originals", async () => {
+    // Recruiter-safe / restrictive-custom behavior must be untouched.
+    const report = makePublicReport()
+    report.documents = report.documents.map((doc) => ({
+      ...doc,
+      disclosure: "summary",
+      shared_view: null,
+    }))
+    report.website_proofs = report.website_proofs.map((wp) => ({
+      ...wp,
+      frame_views: [],
+      replay_path: null,
+    }))
+    await renderReport(report)
+
+    expect(screen.getByTestId("public-direct-links-note")).toHaveTextContent(/never linked/i)
+    openDeepEvidence()
+    expect(screen.queryByTestId("public-doc-view-link")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("public-website-replay")).not.toBeInTheDocument()
+  })
+})

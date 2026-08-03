@@ -42,11 +42,17 @@ from app.main import app
 from app.services import proof_artifact_service as artifacts
 from app.services import passport_disclosure as disclosure_service
 from app.services.passport_disclosure import (
+    FULL_ACCESS_DEFAULTS,
     HIDDEN,
     MODE_CUSTOM,
+    MODE_FULL_ACCESS,
     MODE_RECRUITER_SAFE,
+    PROJECT_ASPECTS,
     RECRUITER_SAFE_DEFAULTS,
     RESOURCE_TYPES,
+    SUMMARY,
+    VIEWABLE,
+    VISIBLE,
     EffectiveDisclosure,
     apply_disclosure_overrides,
     load_effective_disclosure,
@@ -1844,3 +1850,550 @@ def test_artifact_gate_units_owner_unmapped_and_download(mem_store: dict) -> Non
     # An unmapped artifact type keeps the pre-063 retention policy authority.
     unmapped = {**base, "artifact_type": "mystery_type", "access_policy": "public_safe"}
     assert disclosure_service.artifact_action_allowed(mem_store, unmapped, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FULL ACCESS (migration 064) — the deliberate "everything supported is public"
+# mode. Matrix: maximum resolution, superset guarantee, private/owner/cross-
+# tenant boundaries, per-route reachability, persistence, and leak scans.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _full_setup(client: TestClient, mem_store: dict) -> dict:
+    """Published passport + project carrying every artifact family at once."""
+    ctx = _publish_setup(
+        client, mem_store, document=True, website=True, github_code_evidence=True
+    )
+    ctx["frame"] = _register_artifact(
+        mem_store,
+        artifact_type="website_frame",
+        proof_type="website",
+        proof_id=ctx["website_session_id"],
+        project_id=ctx["project_id"],
+        mime="image/jpeg",
+        data=b"frame-bytes",
+    )
+    ctx["replay"] = _register_artifact(
+        mem_store,
+        artifact_type="website_replay_video",
+        proof_type="website",
+        proof_id=ctx["website_session_id"],
+        project_id=ctx["project_id"],
+        mime="video/webm",
+        data=b"replay-bytes",
+    )
+    ctx["doc_artifact"] = _register_artifact(
+        mem_store,
+        artifact_type="document_original",
+        proof_type="document",
+        proof_id=ctx["document_id"],
+        project_id=ctx["project_id"],
+        mime="application/pdf",
+        data=b"original-doc-bytes",
+        file_name="report.pdf",
+    )
+    return ctx
+
+
+def _seed_video_proof(
+    mem_store: dict,
+    *,
+    owner: str = USER_ID,
+    project_id: str | None = None,
+    public_safe: bool = False,
+) -> dict:
+    """Minimal first-class Video Proof row with one transcript segment + frame."""
+    proof_id = str(uuid4())
+    row = {
+        "id": proof_id,
+        "user_id": owner,
+        "project_id": project_id,
+        "title": "Demo walkthrough",
+        "source_kind": "uploaded_demo",
+        "status": "analyzed",
+        "transcript_status": "ready",
+        "frames_status": "ready",
+        "analysis_status": "ready",
+        "public_safe": public_safe,
+        "created_at": "2026-01-01T00:00:00+00:00",
+    }
+    mem_store.setdefault("video_proofs", {})[proof_id] = row
+    seg_id = str(uuid4())
+    mem_store.setdefault("video_proof_transcript_segments", {})[seg_id] = {
+        "id": seg_id,
+        "video_proof_id": proof_id,
+        "seq": 0,
+        "start_s": 0.0,
+        "end_s": 4.0,
+        "text": "Here I walk through the deployment pipeline.",
+    }
+    frame_id = str(uuid4())
+    mem_store.setdefault("video_proof_frames", {})[frame_id] = {
+        "id": frame_id,
+        "video_proof_id": proof_id,
+        "timestamp_s": 2.0,
+        "activity_summary": "Terminal showing a successful deploy.",
+    }
+    return row
+
+
+# ── Resolution: maximum, closed-vocabulary-legal, and a strict superset ───────
+
+
+def test_full_access_resolves_every_node_to_its_maximum(mem_store: dict) -> None:
+    """(F1) Every resource type resolves to ``FULL_ACCESS_DEFAULTS``, every one
+    of those values is legal for its type, and the map covers the whole closed
+    vocabulary — no node can silently fall through to Hidden."""
+    project_id = str(uuid4())
+    full = EffectiveDisclosure(
+        user_id=USER_ID,
+        passport_public=True,
+        mode=MODE_FULL_ACCESS,
+        disclosure_version=1,
+        overrides={},
+    )
+
+    assert set(FULL_ACCESS_DEFAULTS) == set(RESOURCE_TYPES)
+    for rtype, value in FULL_ACCESS_DEFAULTS.items():
+        assert value in RESOURCE_TYPES[rtype], rtype
+
+    for rtype in PROJECT_ASPECTS:
+        assert full.aspect(project_id, rtype) == FULL_ACCESS_DEFAULTS[rtype], rtype
+    assert full.project_visible(project_id)
+    assert full.report_visible(project_id)
+    assert full.project_card_visible(project_id)
+    assert full.skill_group_visible("Backend")
+    assert full.skill_visible("Backend", "python")
+    assert full.project_skill_visible(project_id, "Backend", "python")
+
+    document_key = str(uuid4())
+    assert full.document_state(project_id, document_key) == VIEWABLE
+    assert full.document_downloadable(project_id, document_key) is True
+
+    # Unknown resource types still fail closed.
+    assert full.aspect(project_id, "not_an_aspect") == HIDDEN
+
+
+def test_full_access_is_a_superset_of_recruiter_safe(mem_store: dict) -> None:
+    """(F2) For every node, full access is at least as open as recruiter-safe —
+    the mode can never narrow what the legacy default already exposed."""
+    rank = {HIDDEN: 0, SUMMARY: 1, VISIBLE: 1, VIEWABLE: 2, "downloadable": 3}
+    for rtype, safe_value in RECRUITER_SAFE_DEFAULTS.items():
+        assert rank[FULL_ACCESS_DEFAULTS[rtype]] >= rank[safe_value], rtype
+
+
+def test_full_access_ignores_overrides_and_restores_them_on_custom(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F3) Stored overrides stay dormant under full access and are reapplied
+    verbatim on the way back to custom — the student's granular policy is never
+    destroyed by opting into openness."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_CUSTOM)
+    _apply(client, _ov("project", ctx["project_id"], "hidden"))
+    assert _get_disclosure(client).json()["passport"]["override_count"] == 1
+
+    _as_anon(client)
+    assert _featured_by_token(_public_passport(client, ctx["slug"]).json(), ctx["token"]) is None
+
+    _as_user(client, USER_ID)
+    assert _set_mode(client, MODE_FULL_ACCESS).status_code == 200
+    body = _get_disclosure(client).json()["passport"]
+    assert body["mode"] == MODE_FULL_ACCESS
+    assert body["custom_overrides_active"] is False
+    assert body["override_count"] == 1  # kept, not deleted
+
+    _as_anon(client)
+    assert _featured_by_token(_public_passport(client, ctx["slug"]).json(), ctx["token"])
+
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_CUSTOM)
+    _as_anon(client)
+    assert _featured_by_token(_public_passport(client, ctx["slug"]).json(), ctx["token"]) is None
+
+
+# ── Public reachability of every supported evidence family ───────────────────
+
+
+def test_full_access_opens_frames_replay_document_view_and_download(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F4) Anonymous visitor gets every website + document capability at once:
+    frame descriptors serve, the replay route streams, the document is viewable
+    AND downloadable, and each direct route agrees with the page payload."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    report = _public_report(client, ctx["token"]).json()
+
+    proof = report["website_proofs"][0]
+    assert proof["frame_views"] == [
+        {
+            "view_path": f"/api/v1/proofs/artifacts/{ctx['frame']['id']}/view",
+            "mime_type": "image/jpeg",
+        }
+    ]
+    assert proof["replay_path"] == f"/api/v1/proofs/website/{ctx['website_session_id']}/replay"
+    assert client.get(proof["frame_views"][0]["view_path"]).status_code == 200
+    replay_res = client.get(proof["replay_path"])
+    assert replay_res.status_code == 200
+    assert replay_res.content == b"replay-bytes"
+
+    doc = report["documents"][0]
+    assert doc["disclosure"] == VIEWABLE
+    view = doc["shared_view"]
+    assert view["can_download"] is True
+    assert view["open_path"] == f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view"
+    assert view["download_path"] == f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/download"
+
+    opened = client.get(view["open_path"])
+    assert opened.status_code == 200
+    assert opened.content == b"original-doc-bytes"
+    downloaded = client.get(view["download_path"])
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"original-doc-bytes"
+    assert 'attachment; filename="report.pdf"' in downloaded.headers["content-disposition"]
+
+
+def test_full_access_opens_code_evidence_and_exact_lines(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F5) Repository identity and exact file/line references both resolve to
+    Viewable, so code evidence renders with its blob links intact."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    report = _public_report(client, ctx["token"])
+    assert report.status_code == 200
+    assert _REPO_URL in report.text
+    assert _BLOB_PREFIX in report.text
+
+
+def test_full_access_opens_video_proof_detail_transcript_and_frames(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F6) The first-class Video Proof routes (detail / transcript / frames)
+    all open for an anonymous visitor when the proof belongs to a project."""
+    ctx = _full_setup(client, mem_store)
+    proof = _seed_video_proof(mem_store, project_id=ctx["project_id"])
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    detail = client.get(f"/api/v1/proofs/video/{proof['id']}")
+    assert detail.status_code == 200
+    transcript = client.get(f"/api/v1/proofs/video/{proof['id']}/transcript")
+    assert transcript.status_code == 200
+    assert transcript.json()["segment_count"] == 1
+    frames = client.get(f"/api/v1/proofs/video/{proof['id']}/frames")
+    assert frames.status_code == 200
+    assert frames.json()["frame_count"] == 1
+
+
+def test_full_access_video_playback_artifacts_open_but_never_download(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F7) Download is modeled for documents ONLY. A video/replay artifact
+    streams inline under full access but its download route stays 404 — the
+    closed vocabulary has no download state for recordings."""
+    ctx = _full_setup(client, mem_store)
+    original = _register_artifact(
+        mem_store,
+        artifact_type="video_proof_original",
+        proof_type="video",
+        proof_id=str(uuid4()),
+        project_id=ctx["project_id"],
+        mime="video/mp4",
+        data=b"video-bytes",
+    )
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{original['id']}/view").status_code == 200
+    assert client.get(f"/api/v1/proofs/artifacts/{original['id']}/download").status_code == 404
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['replay']['id']}/view").status_code == 200
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['replay']['id']}/download").status_code == 404
+
+
+# ── Boundaries that full access must NEVER cross ─────────────────────────────
+
+
+def test_private_passport_denies_everything_even_in_full_access(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F8) The master switch stays above the mode: unpublishing while in full
+    access closes the passport, the report, every artifact route, and the video
+    proof routes."""
+    ctx = _full_setup(client, mem_store)
+    proof = _seed_video_proof(
+        mem_store, project_id=ctx["project_id"], public_safe=True
+    )
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 200
+
+    _as_user(client, USER_ID)
+    assert _unpublish_passport(client).status_code == 200
+
+    _as_anon(client)
+    assert _public_passport(client, ctx["slug"]).status_code == 404
+    assert _public_report(client, ctx["token"]).status_code == 404
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 404
+    assert (
+        client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/download").status_code
+        == 404
+    )
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['frame']['id']}/view").status_code == 404
+    assert (
+        client.get(f"/api/v1/proofs/website/{ctx['website_session_id']}/replay").status_code == 404
+    )
+    assert client.get(f"/api/v1/proofs/video/{proof['id']}").status_code == 404
+    assert client.get(f"/api/v1/proofs/video/{proof['id']}/transcript").status_code == 404
+    assert client.get(f"/api/v1/proofs/video/{proof['id']}/frames").status_code == 404
+
+
+def test_full_access_never_reaches_another_tenant(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F9) Full access is scoped to its own owner: another student's artifacts
+    and video proofs stay 404, and their still-recruiter-safe passport keeps its
+    own narrower policy."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    seed_published_passport(mem_store, OTHER_USER_ID)
+    other_doc = _register_artifact(
+        mem_store,
+        artifact_type="document_original",
+        proof_type="document",
+        proof_id=str(uuid4()),
+        project_id=str(uuid4()),
+        owner=OTHER_USER_ID,
+        mime="application/pdf",
+        data=b"other-student-doc",
+    )
+    other_video = _seed_video_proof(mem_store, owner=OTHER_USER_ID, project_id=str(uuid4()))
+
+    _as_anon(client)
+    # The full-access student's own document is open …
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 200
+    # … and reveals nothing about the other student's.
+    assert client.get(f"/api/v1/proofs/artifacts/{other_doc['id']}/view").status_code == 404
+    assert client.get(f"/api/v1/proofs/artifacts/{other_doc['id']}/download").status_code == 404
+    assert client.get(f"/api/v1/proofs/video/{other_video['id']}").status_code == 404
+
+
+def test_full_access_denies_unknown_deleted_and_malformed_ids(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F10) Missing, removed, and malformed identifiers all fail with the same
+    indistinct 404 — full access never turns id guessing into an oracle."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{uuid4()}/view").status_code == 404
+    assert client.get("/api/v1/proofs/artifacts/not-a-uuid/view").status_code == 404
+    assert client.get("/api/v1/proofs/artifacts/..%2F..%2Fetc%2Fpasswd/view").status_code == 404
+    assert client.get(f"/api/v1/proofs/video/{uuid4()}").status_code == 404
+    assert client.get(f"/api/v1/proofs/website/{uuid4()}/replay").status_code == 404
+
+    # A deleted (tombstoned) artifact stays closed even though its aspect is open.
+    mem_store["proof_artifacts"][ctx["doc_artifact"]["id"]]["retained"] = False
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 404
+
+
+def test_full_access_does_not_expose_unshared_unlinked_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F11) The superset floor is a FLOOR, not a blanket grant: an artifact or
+    video proof the hierarchy cannot resolve (no project linkage) is served only
+    when the owner had already shared it. Unshared drafts stay private."""
+    ctx = _full_setup(client, mem_store)
+    unlinked_shared = _register_artifact(
+        mem_store,
+        artifact_type="website_frame",
+        proof_type="website",
+        proof_id=str(uuid4()),
+        project_id=None,  # type: ignore[arg-type]
+        policy="public_safe",
+        mime="image/jpeg",
+    )
+    unlinked_private = _register_artifact(
+        mem_store,
+        artifact_type="website_frame",
+        proof_type="website",
+        proof_id=str(uuid4()),
+        project_id=None,  # type: ignore[arg-type]
+        policy="owner_only",
+        mime="image/jpeg",
+    )
+    draft_video = _seed_video_proof(mem_store, project_id=None, public_safe=False)
+    shared_video = _seed_video_proof(mem_store, project_id=None, public_safe=True)
+
+    # Baseline: this is exactly what recruiter-safe already served.
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{unlinked_shared['id']}/view").status_code == 200
+    assert client.get(f"/api/v1/proofs/artifacts/{unlinked_private['id']}/view").status_code == 404
+
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    # Superset: previously shared evidence must NOT disappear …
+    assert client.get(f"/api/v1/proofs/artifacts/{unlinked_shared['id']}/view").status_code == 200
+    assert client.get(f"/api/v1/proofs/video/{shared_video['id']}").status_code == 200
+    # … and unshared drafts must NOT appear.
+    assert client.get(f"/api/v1/proofs/artifacts/{unlinked_private['id']}/view").status_code == 404
+    assert client.get(f"/api/v1/proofs/video/{draft_video['id']}").status_code == 404
+    # The floor never upgrades a view into a download.
+    assert (
+        client.get(f"/api/v1/proofs/artifacts/{unlinked_shared['id']}/download").status_code == 404
+    )
+
+
+def test_full_access_public_payloads_carry_no_owner_or_storage_internals(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F12) Leak scan at maximum exposure — the most open mode is exactly where
+    private locators, owner-only descriptors, and disclosure keys must not
+    appear in any public payload."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    passport_text = _public_passport(client, ctx["slug"]).text
+    report_res = _public_report(client, ctx["token"])
+    report_text = report_res.text
+
+    for blob in (passport_text, report_text):
+        for forbidden in (
+            "storage_path",
+            "storage_bucket",
+            "owner_user_id",
+            "access_policy",
+            "signed_url",
+            "website_key",
+            USER_ID,
+        ):
+            assert forbidden not in blob, forbidden
+
+    # These survive as DECLARED fields on the shared owner/public schema; their
+    # VALUES — the per-document disclosure key, the candidate's spoken answer,
+    # and the owner-only retained-original descriptor — must never be populated
+    # on a public surface, in any mode.
+    def _assert_stripped_values(node: object) -> None:
+        if isinstance(node, dict):
+            for field in ("document_key", "answer_excerpt", "original_document"):
+                assert node.get(field) is None, (field, node)
+            for value in node.values():
+                _assert_stripped_values(value)
+        elif isinstance(node, list):
+            for value in node:
+                _assert_stripped_values(value)
+
+    _assert_stripped_values(report_res.json())
+    _assert_stripped_values(_public_passport(client, ctx["slug"]).json())
+    assert ctx["document_id"] not in report_text
+    assert ctx["document_id"] not in passport_text
+
+    # The document descriptor exposes only the gated route pair.
+    view = report_res.json()["documents"][0]["shared_view"]
+    assert set(view) == {"open_path", "mime_type", "page_count", "can_download", "download_path"}
+
+
+def test_full_access_leaves_owner_access_untouched(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F13) Disclosure never locks the student out of their own evidence, and
+    owner-only surfaces stay authenticated in every mode."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_user(client, USER_ID)
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 200
+    assert (
+        client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/download").status_code
+        == 200
+    )
+    assert _get_disclosure(client).status_code == 200
+
+    # The owner-only editor context is never reachable without auth.
+    _as_anon(client)
+    assert _get_disclosure(client).status_code == 401
+    assert _set_mode(client, MODE_CUSTOM).status_code == 401
+
+
+# ── Persistence and mode transitions ─────────────────────────────────────────
+
+
+def test_full_access_is_never_a_default_and_survives_reload(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F14) No passport lands in full access implicitly: the default stays
+    recruiter-safe and an unknown/legacy mode value fails closed to it. Once
+    chosen explicitly, full access persists across reloads and bumps the
+    version so cached public representations are recognized as stale."""
+    ctx = _full_setup(client, mem_store)
+    assert _get_disclosure(client).json()["passport"]["mode"] == MODE_RECRUITER_SAFE
+
+    before = _get_disclosure(client).json()["passport"]["disclosure_version"]
+    assert _set_mode(client, MODE_FULL_ACCESS).status_code == 200
+    after = _get_disclosure(client).json()["passport"]
+    assert after["mode"] == MODE_FULL_ACCESS
+    assert after["disclosure_version"] > before
+
+    # Reload from storage — the persisted row still resolves to full access.
+    assert load_effective_disclosure(mem_store, USER_ID).mode == MODE_FULL_ACCESS
+    assert _get_disclosure(client).json()["passport"]["mode"] == MODE_FULL_ACCESS
+
+    # Migration drift / a hand-edited row fails closed, never open.
+    policy = next(iter(mem_store["passport_disclosure_policies"].values()))
+    policy["mode"] = "wide_open"
+    assert load_effective_disclosure(mem_store, USER_ID).mode == MODE_RECRUITER_SAFE
+
+    # And the write path refuses anything outside the closed vocabulary.
+    policy["mode"] = MODE_FULL_ACCESS
+    assert _set_mode(client, "wide_open").status_code == 422
+    assert load_effective_disclosure(mem_store, USER_ID).mode == MODE_FULL_ACCESS
+    assert ctx["slug"]
+
+
+def test_narrowing_from_full_access_revokes_immediately(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F15) Switching away from full access contracts access on the very next
+    request — no stale grant survives on either the payload or the routes."""
+    ctx = _full_setup(client, mem_store)
+    _set_mode(client, MODE_FULL_ACCESS)
+
+    _as_anon(client)
+    assert (
+        client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/download").status_code
+        == 200
+    )
+
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_RECRUITER_SAFE)
+
+    _as_anon(client)
+    report = _public_report(client, ctx["token"]).json()
+    assert report["documents"][0]["disclosure"] == SUMMARY
+    assert report["documents"][0]["shared_view"] is None
+    assert report["website_proofs"][0]["replay_path"] is None
+    assert report["website_proofs"][0]["frame_views"] == []
+    assert (
+        client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/download").status_code
+        == 404
+    )
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 404
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['frame']['id']}/view").status_code == 404
+
+    # Custom mode then narrows independently of the recruiter-safe defaults.
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_CUSTOM)
+    _apply(client, _ov("report", ctx["project_id"], "hidden"))
+    _as_anon(client)
+    assert _public_report(client, ctx["token"]).status_code == 404

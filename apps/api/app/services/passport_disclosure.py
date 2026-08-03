@@ -4,21 +4,39 @@ The ONE place that decides what an anonymous recruiter may see of a
 student's evidence. Every public serializer and media gate consults this
 resolver — policy logic is never duplicated in endpoints.
 
-Three passport modes (the ``vbr_work_passports.is_published`` master
-switch stays authoritative above everything here):
+Passport modes (the ``vbr_work_passports.is_published`` master switch
+stays authoritative above everything here):
 
 * **Private** — ``is_published = false``. Every public surface fails
   closed; the rows managed here stay stored but dormant.
-* **Public recruiter-safe** (``mode = 'recruiter_safe'``, the default) —
-  fixed safe defaults identical to the pre-063 product behavior:
-  summaries visible, public GitHub repository links allowed, raw
-  artifacts private, downloads disabled, videos/transcripts hidden.
-  Overrides are stored but NOT applied.
+* **Public full access** (``mode = 'full_access'``, migration 064) —
+  every disclosure-eligible node resolves to its MAXIMUM state
+  (``FULL_ACCESS_DEFAULTS``): repositories and exact line references
+  viewable, website frames/recordings viewable, documents viewable AND
+  downloadable, defense transcript/recording viewable, full video
+  playback viewable. Overrides are stored but NOT applied, so newly
+  published evidence inherits full exposure automatically and the
+  student's granular policy survives intact for a later Custom switch.
+  Guaranteed to be a SUPERSET of recruiter-safe: mapped artifacts the
+  project-keyed hierarchy cannot resolve fall back to the legacy
+  ``public_safe`` decision rather than failing closed.
+  Truth gates are NOT relaxed: private repositories, unsafe URLs,
+  non-retained artifacts, and privacy-flagged content stay withheld by
+  the builders and retention checks exactly as before. Downloads remain
+  modeled for documents ONLY (``document_download`` is the sole download
+  state in the closed vocabulary) — full access never turns recordings
+  or transcripts into downloadable files.
 * **Public custom** (``mode = 'custom'``) — per-resource overrides apply,
   resolved hierarchically. In custom mode disclosure is authoritative for
   anonymous artifact access: it can both grant (a document preview the
   student opted in) and revoke (a previously public-safe video the
   student hid).
+* **Public recruiter-safe** (``mode = 'recruiter_safe'``) — the column
+  default and the fail-safe landing mode for any unknown/legacy value:
+  fixed safe defaults identical to the pre-063 product behavior.
+  Overrides are stored but NOT applied. Unchanged by migration 064 — no
+  existing passport moves into full access without an explicit,
+  confirmed owner action.
 
 Deterministic inheritance rules:
 
@@ -52,8 +70,14 @@ _AUDIT_TABLE = "passport_disclosure_audit"
 _PASSPORTS_TABLE = "vbr_work_passports"
 
 MODE_RECRUITER_SAFE = "recruiter_safe"
+MODE_FULL_ACCESS = "full_access"
 MODE_CUSTOM = "custom"
-MODES = frozenset({MODE_RECRUITER_SAFE, MODE_CUSTOM})
+MODES = frozenset({MODE_RECRUITER_SAFE, MODE_FULL_ACCESS, MODE_CUSTOM})
+
+# Modes in which the disclosure policy is AUTHORITATIVE for anonymous
+# artifact access (grant and revoke). Legacy recruiter_safe keeps the
+# pre-063 retention-policy behavior instead.
+_AUTHORITATIVE_MODES = frozenset({MODE_FULL_ACCESS, MODE_CUSTOM})
 
 HIDDEN = "hidden"
 SUMMARY = "summary"
@@ -113,6 +137,32 @@ RECRUITER_SAFE_DEFAULTS: dict[str, str] = {
     "video_full": HIDDEN,
 }
 
+# Full-access resolution — the MAXIMUM state of every resource type. Used
+# only while ``mode = 'full_access'``; never written as override rows, so
+# evidence published later inherits it automatically. This widens
+# DISCLOSURE only: repo-privacy, safe-URL, retention, and privacy-scan
+# gates in the builders still apply on top.
+FULL_ACCESS_DEFAULTS: dict[str, str] = {
+    "project": VISIBLE,
+    "report": VISIBLE,
+    "skill_group": VISIBLE,
+    "skill": VISIBLE,
+    "project_skill": VISIBLE,
+    "github_repo": VIEWABLE,
+    "github_lines": VIEWABLE,
+    "website_summary": VISIBLE,
+    "website_url": VISIBLE,
+    "website_frames": VIEWABLE,
+    "website_video": VIEWABLE,
+    "document": VIEWABLE,
+    "document_download": DOWNLOADABLE,
+    "defense_summary": VISIBLE,
+    "defense_transcript": VIEWABLE,
+    "defense_video": VIEWABLE,
+    "video_summary": VISIBLE,
+    "video_full": VIEWABLE,
+}
+
 # Per-project proof aspects (resource_key = the project uuid).
 PROJECT_ASPECTS = frozenset(
     {
@@ -148,7 +198,9 @@ ARTIFACT_TYPE_ASPECT: dict[str, str] = {
 __all__ = [
     "MODES",
     "MODE_CUSTOM",
+    "MODE_FULL_ACCESS",
     "MODE_RECRUITER_SAFE",
+    "FULL_ACCESS_DEFAULTS",
     "HIDDEN",
     "SUMMARY",
     "VIEWABLE",
@@ -363,7 +415,8 @@ def _write_audit(
 
 
 def set_disclosure_mode(db: Any, user_id: str, mode: str) -> dict[str, Any]:
-    """Switch between recruiter-safe and custom. Bumps ``disclosure_version``."""
+    """Switch the disclosure mode (full_access | custom | legacy
+    recruiter_safe). Bumps ``disclosure_version``."""
     if mode not in MODES:
         raise DisclosureValidationError("mode", f"Unknown disclosure mode: {mode!r}")
     policy = _ensure_policy(db, user_id)
@@ -544,7 +597,10 @@ class EffectiveDisclosure:
         return self._overrides.get((rtype, str(key)))
 
     def _resolved(self, rtype: str, key: str) -> str:
-        """Override in custom mode, else the recruiter-safe default."""
+        """Full-access maximum, override in custom mode, else the
+        recruiter-safe default. Unknown resource types stay Hidden."""
+        if self.mode == MODE_FULL_ACCESS:
+            return FULL_ACCESS_DEFAULTS.get(rtype, HIDDEN)
         if self.mode == MODE_CUSTOM:
             configured = self._overrides.get((rtype, str(key)))
             if configured is not None:
@@ -640,11 +696,11 @@ class EffectiveDisclosure:
     def artifact_access(self, artifact: dict[str, Any]) -> str:
         """'none' | 'view' | 'download' for an anonymous caller.
 
-        Only meaningful in custom mode — recruiter-safe mode returns
-        'none' so the pre-063 retention policy (``can_access_artifact``)
-        stays the sole authority there.
+        Only meaningful in the authoritative modes (full_access / custom) —
+        legacy recruiter-safe mode returns 'none' so the pre-063 retention
+        policy (``can_access_artifact``) stays the sole authority there.
         """
-        if not self.passport_public or self.mode != MODE_CUSTOM:
+        if not self.passport_public or self.mode not in _AUTHORITATIVE_MODES:
             return "none"
         artifact_type = str(artifact.get("artifact_type") or "")
         aspect = ARTIFACT_TYPE_ASPECT.get(artifact_type)
@@ -668,11 +724,19 @@ class EffectiveDisclosure:
         return "none"
 
     def custom_mode_revokes(self, artifact: dict[str, Any]) -> bool:
-        """True when custom mode explicitly hides this artifact's aspect —
-        used to REVOKE anonymous access an artifact row's own retention
-        policy (e.g. ``public_safe``) would otherwise allow. In
-        recruiter-safe mode nothing is revoked (pre-063 behavior)."""
-        if self.mode != MODE_CUSTOM:
+        """True when an authoritative mode (full_access / custom) hides this
+        artifact's aspect — used to REVOKE anonymous access an artifact row's
+        own retention policy (e.g. ``public_safe``) would otherwise allow. In
+        legacy recruiter-safe mode nothing is revoked (pre-063 behavior).
+
+        NOTE: this is the raw DISCLOSURE verdict, not the final access
+        decision. In full-access mode it can still report True for an
+        artifact the hierarchy cannot resolve (null ``project_id`` /
+        ``proof_id``); ``artifact_action_allowed`` applies the legacy
+        recruiter-safe floor to those, so the effective answer there is
+        "not revoked". Consult ``artifact_action_allowed`` — never this —
+        for an authorization decision."""
+        if self.mode not in _AUTHORITATIVE_MODES:
             return False
         return self.artifact_access(artifact) == "none" and str(
             artifact.get("artifact_type") or ""
@@ -697,10 +761,13 @@ def artifact_action_allowed(
     * privileged non-owner (recruiter/admin/reviewer) → the retention
       consent flow stays authoritative, unchanged;
     * anonymous / plain non-owner student, artifact type governed by a
-      disclosure aspect → requires a PUBLIC passport; then custom mode is
-      fully authoritative (it can grant view/download the retention policy
-      would deny, and revoke access it would allow), while recruiter-safe
-      mode keeps the legacy ``public_safe`` behavior with downloads denied;
+      disclosure aspect → requires a PUBLIC passport; then the authoritative
+      modes (full_access / custom) fully decide (they can grant view/download
+      the retention policy would deny, and revoke access it would allow),
+      while legacy recruiter-safe mode keeps the pre-063 ``public_safe``
+      behavior with downloads denied. Full access additionally carries a
+      recruiter-safe FLOOR for viewing, so it is a strict superset of the
+      mode it supersedes and can never narrow access;
     * anything unmapped falls back to the retention policy alone.
     """
     from app.services.proof_artifact_service import can_access_artifact
@@ -720,11 +787,23 @@ def artifact_action_allowed(
     disclosure = load_effective_disclosure(db, owner)
     if not disclosure.passport_public:
         return False
-    if disclosure.mode == MODE_CUSTOM:
+    if disclosure.mode in _AUTHORITATIVE_MODES:
         access = disclosure.artifact_access(artifact)
-        if action == "download":
-            return access == "download"
-        return access != "none"
+        granted = access == "download" if action == "download" else access != "none"
+        if granted:
+            return True
+        if disclosure.mode == MODE_FULL_ACCESS and action != "download":
+            # Full access must never be NARROWER than the recruiter-safe mode
+            # it supersedes. ``proof_artifacts.project_id`` / ``proof_id`` are
+            # both nullable (migration 056), so a legacy artifact the student
+            # already shared can be unresolvable by the project-keyed
+            # hierarchy. Fall back to the pre-063 retention decision the owner
+            # explicitly consented to — this restores exactly what
+            # recruiter-safe served and never grants more. Downloads stay
+            # denied here: a download is only ever an explicit grant on a
+            # resolvable document.
+            return can_access_artifact(artifact, caller_user_id, caller_is_privileged=False)
+        return False
     # Recruiter-safe: pre-063 behavior for viewing, downloads never granted
     # to a non-owner without an explicit custom-mode grant.
     if action == "download":
@@ -736,19 +815,27 @@ def video_proof_public_access(db: Any, proof: dict[str, Any]) -> bool:
     """Non-owner access decision for a first-class Video Proof row.
 
     Mirrors :func:`artifact_action_allowed` for the ``video_proofs`` table
-    (detail / transcript / frames routes): requires a public passport;
-    custom mode requires the project's ``video_full`` aspect to be
-    Viewable; recruiter-safe mode keeps the legacy ``public_safe`` flag.
+    (detail / transcript / frames routes): requires a public passport; the
+    authoritative modes (full_access / custom) require the project's
+    ``video_full`` aspect to be Viewable; legacy recruiter-safe mode keeps
+    the pre-063 ``public_safe`` flag.
     """
     owner = str(proof.get("user_id") or "")
     disclosure = load_effective_disclosure(db, owner)
     if not disclosure.passport_public:
         return False
-    if disclosure.mode == MODE_CUSTOM:
+    if disclosure.mode in _AUTHORITATIVE_MODES:
         project_id = proof.get("project_id")
-        if not project_id:
-            return False
-        return disclosure.aspect(project_id, "video_full") == VIEWABLE
+        if project_id and disclosure.aspect(project_id, "video_full") == VIEWABLE:
+            return True
+        if disclosure.mode == MODE_FULL_ACCESS:
+            # Superset floor — see ``artifact_action_allowed``. A video proof
+            # with no ``project_id`` cannot be resolved by the project-keyed
+            # hierarchy; full access then serves exactly what recruiter-safe
+            # served (the owner's explicit ``public_safe`` share) and no more,
+            # so an unattached private draft is never exposed.
+            return bool(proof.get("public_safe", False))
+        return False
     return bool(proof.get("public_safe", False))
 
 
