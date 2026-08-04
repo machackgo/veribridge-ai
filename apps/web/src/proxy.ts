@@ -38,9 +38,14 @@ export async function proxy(request: NextRequest) {
   //   /p/<slug>[/skills/<skill>] — published public Work Passport + Skill Report
   //   /card/<slug>        — public Passport Card (subset of /p data)
   //   /b/<code>           — revocable Beam short link (fail-closed resolver)
+  //   /extension/**       — recorder install help / privacy policy / support
+  //                         (must stay public: they are the Chrome Web Store
+  //                         listing's privacy-policy and support URLs)
   const isPublic =
     pathname === "/" ||
     pathname === "/login" ||
+    pathname === "/extension" ||
+    pathname.startsWith("/extension/") ||
     pathname.startsWith("/auth/") ||
     pathname.startsWith("/recruiter") ||
     pathname.startsWith("/university") ||
