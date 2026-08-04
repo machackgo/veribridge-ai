@@ -613,7 +613,11 @@ function LoginInner() {
       })
       if (error) throw error
       if (data.session) {
-        const destination = redirectTo.startsWith("/") ? redirectTo : "/student"
+        // Same-origin paths only — "//host" is protocol-relative (open redirect).
+        const destination =
+          redirectTo.startsWith("/") && !redirectTo.startsWith("//") && !redirectTo.startsWith("/\\")
+            ? redirectTo
+            : "/student"
         router.push(destination)
         router.refresh()
       }

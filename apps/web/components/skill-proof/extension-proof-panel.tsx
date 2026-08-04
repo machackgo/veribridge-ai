@@ -6013,16 +6013,10 @@ function PrivacyScanBadge({
               >
                 Re-record Proof
               </button>
-              <button
-                type="button"
-                onClick={() => { /* TODO: mark-private API */ alert("Proof marked as private. It will not appear in recruiter view.") }}
-                style={{
-                  fontSize: 12, fontWeight: 600, padding: "7px 14px", borderRadius: 8,
-                  border: "1px solid #e2e8f0", background: "transparent", color: "#475569", cursor: "pointer",
-                }}
-              >
-                Keep Private
-              </button>
+              {/* No "Keep Private" action button: a flagged proof is ALREADY
+                  hidden from recruiter/public view server-side (fail-closed),
+                  so offering a button that claims to change that state would
+                  be a false affordance. Doing nothing keeps it hidden. */}
             </div>
           </>
         )}

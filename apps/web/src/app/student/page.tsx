@@ -147,21 +147,28 @@ function StudentDashboardInner() {
   const [checkpoints, setCheckpoints] = useState<ResumeCheckpoint[] | null>(null)
   const [reportStatuses, setReportStatuses] = useState<Record<string, ProjectReportPublishStatus> | null>(null)
   const [projectsError, setProjectsError] = useState<string | null>(null)
+  // True when any of the three proof lists failed to load. Failed lists stay
+  // null (never []) so an API outage can NEVER render as "Not started" —
+  // that would tell a student their existing work doesn't exist.
+  const [proofListsFailed, setProofListsFailed] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
 
   useEffect(() => {
     let cancelled = false
+    setProofListsFailed(false)
+    setProjectsError(null)
 
     async function load() {
       // Independent loads: one failing surface never blanks the others.
       listGitHubProofs()
         .then((rows) => !cancelled && setGithubProofs(rows))
-        .catch(() => !cancelled && setGithubProofs([]))
+        .catch(() => !cancelled && setProofListsFailed(true))
       listWebsiteProofs()
         .then((rows) => !cancelled && setWebsiteProofs(rows))
-        .catch(() => !cancelled && setWebsiteProofs([]))
+        .catch(() => !cancelled && setProofListsFailed(true))
       listDocumentProofs()
         .then((rows) => !cancelled && setDocumentProofs(rows))
-        .catch(() => !cancelled && setDocumentProofs([]))
+        .catch(() => !cancelled && setProofListsFailed(true))
       getWorkPassportStatus()
         .then((status) => !cancelled && setPassport(status))
         .catch(() => {
@@ -226,7 +233,7 @@ function StudentDashboardInner() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [reloadTick])
 
   // Legacy /student/vbr links land on ?section=proofs — bring that section into view.
   useEffect(() => {
@@ -339,6 +346,42 @@ function StudentDashboardInner() {
         </p>
       </header>
 
+      {proofListsFailed && (
+        <div
+          role="alert"
+          style={{
+            background: "var(--rose-soft)",
+            border: "1px solid var(--rose)",
+            borderRadius: 10,
+            padding: "12px 16px",
+            fontSize: 14,
+            color: "var(--ink)",
+            marginBottom: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <span>Some of your proofs couldn&apos;t be loaded right now — the tiles below may be incomplete.</span>
+          <button
+            type="button"
+            onClick={() => setReloadTick((t) => t + 1)}
+            style={{
+              border: "1px solid var(--line)",
+              background: "#fff",
+              borderRadius: 8,
+              padding: "6px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
       {projectsError && (
         <div
           role="alert"
@@ -352,7 +395,23 @@ function StudentDashboardInner() {
             marginBottom: 20,
           }}
         >
-          {projectsError}
+          <span>{projectsError}</span>
+          <button
+            type="button"
+            onClick={() => setReloadTick((t) => t + 1)}
+            style={{
+              border: "1px solid var(--line)",
+              background: "#fff",
+              borderRadius: 8,
+              padding: "6px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              marginLeft: 12,
+            }}
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -410,7 +469,11 @@ function StudentDashboardInner() {
               <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ink)" }}>{card.title}</div>
               <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", flex: 1 }}>
                 <span style={{ ...chipStyle, ...stateChipColor(card.state) }}>
-                  {card.count === null ? "Loading…" : card.state}
+                  {card.count === null
+                    ? proofListsFailed
+                      ? "Unavailable"
+                      : "Loading…"
+                    : card.state}
                 </span>
                 {card.count !== null && card.count > 0 && (
                   <span style={{ fontSize: 12, color: "var(--muted)" }}>

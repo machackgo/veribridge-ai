@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { DashboardShell } from "../../../components/dashboard/DashboardShell";
+import { SampleDataNotice } from "../../../components/dashboard/SampleDataNotice";
 
 const nav = [
   { label: "Search", href: "/recruiter", icon: "▣", count: "240" },
@@ -38,6 +39,11 @@ export default function RecruiterLayout({ children }: { children: ReactNode }) {
       }}
       accent="indigo"
     >
+      {/* Prototype role preview: every persona, count, and metric in this
+          shell is fabricated sample content (linked from the landing page as a
+          preview). The banner must stay until this portal is wired to real
+          data. */}
+      <SampleDataNotice controlsInert />
       {children}
     </DashboardShell>
   );

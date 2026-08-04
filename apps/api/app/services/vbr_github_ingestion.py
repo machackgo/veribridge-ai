@@ -21,6 +21,7 @@ import logging
 import socket
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urljoin
 from uuid import uuid4
 
 import httpx

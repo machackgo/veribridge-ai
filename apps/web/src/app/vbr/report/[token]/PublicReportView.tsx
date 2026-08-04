@@ -150,6 +150,31 @@ function DeepEvidenceSection({
   const analysis = report.project_defense_analysis
   const pkg = report.evidence_package
 
+  // The jump-nav pills link to anchors that live INSIDE this collapsed
+  // section. Auto-expand (and scroll) when the hash targets one of them —
+  // otherwise 4 of the 6 nav links silently do nothing on the public report.
+  useEffect(() => {
+    const deepAnchors = new Set([
+      "#github-proof",
+      "#documents",
+      "#website-proof",
+      "#project-defense",
+      "#evidence-traceability",
+      "#evidence-by-source",
+    ])
+    const openForHash = () => {
+      const hash = window.location.hash
+      if (!deepAnchors.has(hash)) return
+      setOpen(true)
+      requestAnimationFrame(() => {
+        document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" })
+      })
+    }
+    openForHash()
+    window.addEventListener("hashchange", openForHash)
+    return () => window.removeEventListener("hashchange", openForHash)
+  }, [])
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <button

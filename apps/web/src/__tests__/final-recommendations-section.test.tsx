@@ -727,7 +727,7 @@ describe("Detected Skill Profile (grouped skill evidence)", () => {
   })
 })
 
-describe("VeriBridge AI Review MVP flow", () => {
+describe("Evidence Review MVP flow", () => {
   it("starts review, shows progress UI, and disables submit during review", () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date("2026-06-06T00:00:00.000Z"))
@@ -742,12 +742,12 @@ describe("VeriBridge AI Review MVP flow", () => {
     )
 
     expect(screen.getByText(/Status: Not submitted/i)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     expect(screen.getByText(/Status: Review in progress/i)).toBeInTheDocument()
-    expect(screen.getByText(/VeriBridge AI review in progress/i)).toBeInTheDocument()
+    expect(screen.getByText(/Evidence review in progress/i)).toBeInTheDocument()
     expect(screen.getByText(/Estimated time: about 1 minute/i)).toBeInTheDocument()
     expect(screen.getAllByText(/Packaging evidence/i).length).toBeGreaterThan(0)
-    expect(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Submit for Evidence Review" })).toBeDisabled()
   })
 
   it("after 60 seconds review becomes approved and badge appears", () => {
@@ -763,16 +763,16 @@ describe("VeriBridge AI Review MVP flow", () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     act(() => {
       vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000)
     })
 
     expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
-    expect(screen.getByText("VeriBridge AI Reviewed")).toBeInTheDocument()
+    expect(screen.getByText("Evidence Reviewed")).toBeInTheDocument()
     expect(screen.getByText(/Decision: Approved/i)).toBeInTheDocument()
-    expect(screen.getByText(/VeriBridge AI Approved/i)).toBeInTheDocument()
-    expect(screen.getByText(/This proof package passed VeriBridge AI review for MVP/i)).toBeInTheDocument()
+    expect(screen.getByText(/Evidence Review Passed/i)).toBeInTheDocument()
+    expect(screen.getByText(/This proof package passed VeriBridge's automated evidence review for MVP/i)).toBeInTheDocument()
   })
 
   it("review snapshot includes all major evidence source fields", () => {
@@ -788,7 +788,7 @@ describe("VeriBridge AI Review MVP flow", () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     const stored = JSON.parse(localStorage.getItem("vb_mvp_ai_review:s1") ?? "{}")
     expect(stored.snapshot).toMatchObject({
       proofSessionId: "s1",
@@ -823,7 +823,7 @@ describe("VeriBridge AI Review MVP flow", () => {
         snapshot={reviewSnapshot()}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     act(() => {
       vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000)
     })
@@ -840,7 +840,7 @@ describe("VeriBridge AI Review MVP flow", () => {
       />,
     )
     expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
-    expect(screen.getByText("VeriBridge AI Reviewed")).toBeInTheDocument()
+    expect(screen.getByText("Evidence Reviewed")).toBeInTheDocument()
   })
 
   it("review state resets for a new proof session", () => {
@@ -855,7 +855,7 @@ describe("VeriBridge AI Review MVP flow", () => {
         snapshot={reviewSnapshot({ proofSessionId: "s1" })}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     act(() => {
       vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000)
     })
@@ -903,13 +903,13 @@ describe("VeriBridge AI Review MVP flow", () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     const stored = localStorage.getItem("vb_mvp_ai_review:s1") ?? ""
     expect(stored).not.toMatch(/access_token|storage_path|supabase\.co|env secrets/i)
   })
 })
 
-describe("VeriBridge AI Review — backend persistence wiring", () => {
+describe("Evidence Review — backend persistence wiring", () => {
   it("loads approved state from backend when localStorage is empty", async () => {
     vi.mocked(getReviewStatus).mockResolvedValueOnce(mockApprovedReview())
     render(
@@ -924,7 +924,7 @@ describe("VeriBridge AI Review — backend persistence wiring", () => {
     await waitFor(() => {
       expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
     })
-    expect(screen.getByText("VeriBridge AI Reviewed")).toBeInTheDocument()
+    expect(screen.getByText("Evidence Reviewed")).toBeInTheDocument()
   })
 
   it("submit button calls backend submitForAiReview with sessionId and score", async () => {
@@ -937,7 +937,7 @@ describe("VeriBridge AI Review — backend persistence wiring", () => {
         snapshot={reviewSnapshot()}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     await waitFor(() => {
       expect(vi.mocked(submitForAiReview)).toHaveBeenCalledWith("s1", 82, "strong")
     })
@@ -956,7 +956,7 @@ describe("VeriBridge AI Review — backend persistence wiring", () => {
         snapshot={reviewSnapshot()}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     act(() => { vi.advanceTimersByTime(MVP_AI_REVIEW_SECONDS * 1000) })
     expect(screen.getByText(/Status: Approved/i)).toBeInTheDocument()
   })
@@ -973,7 +973,7 @@ describe("VeriBridge AI Review — backend persistence wiring", () => {
         snapshot={reviewSnapshot()}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     await waitFor(() => {
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("Using local review fallback"),
@@ -1015,7 +1015,7 @@ describe("VeriBridge AI Review — backend persistence wiring", () => {
         snapshot={reviewSnapshot()}
       />,
     )
-    fireEvent.click(screen.getByRole("button", { name: "Submit for VeriBridge AI Review" }))
+    fireEvent.click(screen.getByRole("button", { name: "Submit for Evidence Review" }))
     await waitFor(() => { expect(vi.mocked(submitForAiReview)).toHaveBeenCalled() })
     expect(warnSpy).not.toHaveBeenCalledWith(
       expect.stringContaining("Using local review fallback"),

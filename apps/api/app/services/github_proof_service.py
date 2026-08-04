@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -19,6 +20,8 @@ from app.services.public_work_passport_service import (
     PublicWorkPassportNotFoundError,
 )
 from app.services.github_evidence_service import GitHubRepoRef, parse_github_repo_url
+
+logger = logging.getLogger(__name__)
 
 _GITHUB_PROOFS = "github_proof_submissions"
 _USERS = "users"
@@ -119,8 +122,9 @@ class GitHubProofService:
                 live_page_title="",
                 proof_objective="Standalone GitHub proof analysis",
             )
-        except Exception:
-            analysis = _fallback_analysis_result(str(row.get("repo_url") or ""), claims)
+        except Exception as exc:
+            logger.warning("GITHUB_PROOF_ANALYSIS_FAILED proof_id=%s error=%s", github_proof_id, exc)
+            analysis = _fallback_analysis_result(str(row.get("repo_url") or ""), claims, exc)
 
         session_id = str(row.get("proof_session_id") or "")
         project_defense = self._row_by_session(_PROJECT_DEFENSE, user_id, session_id) if session_id else None
@@ -671,8 +675,36 @@ def _parse_dt(value: Any) -> datetime | None:
     return parsed
 
 
-def _fallback_analysis_result(repo_url: str, claims: list[str]) -> dict[str, Any]:
+def _fallback_failure_reason(exc: Exception | None) -> str:
+    """Honest, cause-specific failure copy — a rate limit, a private repo, and
+    a network outage are different problems with different student fixes, and
+    must never all be reported as "GitHub API is not configured"."""
+    text = str(exc or "").lower()
+    if exc is None:
+        return "GitHub analysis could not run."
+    if "rate limit" in text or "403" in text:
+        return (
+            "GitHub analysis was rate-limited. Wait a few minutes and re-run "
+            "the analysis."
+        )
+    if "404" in text or "not found" in text:
+        return (
+            "The repository could not be found. Check that the URL is correct "
+            "and the repository is public."
+        )
+    if "timeout" in text or "timed out" in text or "connect" in text or "network" in text:
+        return (
+            "GitHub could not be reached. Check your connection and re-run "
+            "the analysis."
+        )
+    return "GitHub analysis failed unexpectedly. Re-run the analysis; if it keeps failing, contact support."
+
+
+def _fallback_analysis_result(
+    repo_url: str, claims: list[str], exc: Exception | None = None
+) -> dict[str, Any]:
     now = _now().isoformat()
+    reason = _fallback_failure_reason(exc)
     return {
         "repo_url": repo_url,
         "status": "failed",
@@ -683,8 +715,8 @@ def _fallback_analysis_result(repo_url: str, claims: list[str]) -> dict[str, Any
         "missing_claimed_skills": claims,
         "evidence_files": [],
         "confidence_score": 0.0,
-        "warnings": ["GitHub analysis is limited because GitHub API is not configured."],
-        "recruiter_summary": "GitHub analysis is limited because GitHub API is not configured.",
+        "warnings": [reason],
+        "recruiter_summary": reason,
         "created_at": now,
     }
 

@@ -26,7 +26,12 @@ export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get("code")
   const next = searchParams.get("next") ?? "/student"
-  const safeNext = next.startsWith("/") ? next : "/student"
+  // Same-origin paths only: "//host" and "/\host" are protocol-relative URLs
+  // that new URL(..., origin) resolves OFF-origin (open redirect).
+  const safeNext =
+    next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
+      ? next
+      : "/student"
 
   if (code) {
     const supabase = await createSupabaseServerClient()

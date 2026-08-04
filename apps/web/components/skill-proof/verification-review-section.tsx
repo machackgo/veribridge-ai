@@ -3,7 +3,7 @@
 /**
  * VerificationReviewSection
  *
- * MVP-only local VeriBridge AI review flow for Website Proof.
+ * MVP-only local VeriBridge evidence review flow for Website Proof (deterministic rules engine — no AI/LLM involved, so labels must never claim AI review).
  * This intentionally does not set any human/faculty review state.
  */
 
@@ -64,7 +64,7 @@ export const MVP_REVIEW_STAGES = [
 
 const REVIEW_STORAGE_PREFIX = "vb_mvp_ai_review:"
 const APPROVED_SUMMARY =
-  "This proof package passed VeriBridge AI review for MVP. Evidence sources were checked for completeness, privacy, and recruiter readiness."
+  "This proof package passed VeriBridge's automated evidence review for MVP. Evidence sources were checked for completeness, privacy, and recruiter readiness."
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -280,7 +280,7 @@ export function VerificationReviewSection({
             Verification Review
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-2, #6b7280)", marginTop: 2 }}>
-            VeriBridge AI review for recruiter-ready proof packages
+            VeriBridge evidence review for recruiter-ready proof packages
           </div>
         </div>
         <span style={{
@@ -299,7 +299,7 @@ export function VerificationReviewSection({
       {!review && (
         <div style={{ display: "grid", gap: 10 }}>
           <p style={{ margin: 0, fontSize: 12, color: "#475569", lineHeight: 1.6 }}>
-            Submit the current evidence package for VeriBridge AI review. Human/faculty review is separate and coming soon.
+            Submit the current evidence package for VeriBridge's automated evidence review. Human/faculty review is separate and coming soon.
           </p>
           <button
             type="button"
@@ -316,7 +316,7 @@ export function VerificationReviewSection({
               cursor: "pointer",
             }}
           >
-            Submit for VeriBridge AI Review
+            Submit for Evidence Review
           </button>
         </div>
       )}
@@ -324,7 +324,7 @@ export function VerificationReviewSection({
       {isInProgress && (
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "#1e40af" }}>
-            VeriBridge AI review in progress
+            Evidence review in progress
           </div>
           <div style={{ fontSize: 12, color: "#3b82f6" }}>Estimated time: about 1 minute</div>
           <div>
@@ -365,7 +365,7 @@ export function VerificationReviewSection({
               cursor: "not-allowed",
             }}
           >
-            Submit for VeriBridge AI Review
+            Submit for Evidence Review
           </button>
         </div>
       )}
@@ -374,13 +374,13 @@ export function VerificationReviewSection({
         <div style={{ display: "grid", gap: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, fontWeight: 800, color: "#065f46", background: "#d1fae5", border: "1px solid #bbf7d0", borderRadius: 999, padding: "5px 10px" }}>
-              VeriBridge AI Reviewed
+              Evidence Reviewed
             </span>
             <span style={{ fontSize: 12, fontWeight: 700, color: "#065f46" }}>Decision: Approved</span>
             <span style={{ fontSize: 11, color: "#64748b" }}>Approved at {review?.approvedAt ? new Date(review.approvedAt).toLocaleString() : "now"}</span>
           </div>
           <div style={{ border: "1px solid #bbf7d0", background: "#f0fdf4", borderRadius: 10, padding: "10px 12px", display: "grid", gap: 5 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#065f46" }}>VeriBridge AI Approved</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#065f46" }}>Evidence Review Passed</div>
             <p style={{ margin: 0, fontSize: 12, color: "#047857", lineHeight: 1.6 }}>{APPROVED_SUMMARY}</p>
             <div style={{ fontSize: 11, color: "#047857" }}>Approved proof package</div>
             <div style={{ fontSize: 11, color: "#64748b" }}>Human/faculty review not completed</div>
@@ -436,7 +436,7 @@ export function VerificationReviewSection({
           Request human/faculty review — Coming soon
         </button>
         <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
-          What recruiters see: {isApproved ? "VeriBridge AI Reviewed, Approved proof package, Human/faculty review not completed." : "No VeriBridge AI review badge yet."}
+          What recruiters see: {isApproved ? "Evidence Reviewed, Approved proof package, Human/faculty review not completed." : "No evidence review badge yet."}
         </div>
       </div>
     </div>
