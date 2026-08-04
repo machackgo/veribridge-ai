@@ -17,7 +17,7 @@ Everything below is copy-paste-ready for the Developer Dashboard. Items marked
 | **Homepage URL** | https://veribridgeai.com |
 | **Support URL** | https://veribridgeai.com/extension/support |
 | **Privacy policy URL** | https://veribridgeai.com/extension/privacy |
-| **Support email** | support@veribridgeai.com **[USER DECISION — this mailbox must exist, or replace it before the pages deploy]** |
+| **Support email** | support@veribridgeai.com — confirmed 2026-08-04; free forwarding to the publisher's Gmail (DNS on GoDaddy; forwarder setup pending the publisher's one-time DNS records) |
 
 ### Detailed description
 
