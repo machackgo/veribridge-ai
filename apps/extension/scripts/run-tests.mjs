@@ -9,6 +9,7 @@ const entries = [
   "tests/background-recorder-lifecycle.test.ts",
   "tests/background-recovery.test.ts",
   "tests/background-finalize-orchestration.test.ts",
+  "tests/background-init-gates.test.ts",
 ]
 
 await build({

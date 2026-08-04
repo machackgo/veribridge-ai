@@ -16,8 +16,9 @@ import {
   RECORDER_TARGET_OPEN_ACK,
   RECORDER_TARGET_OPEN_REQUEST,
   RECORDER_TARGET_READY,
-  WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+  WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION,
   WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+  isRecorderBuildAtLeast,
   normalizeWebsiteProofRecorderConfig,
   normalizeWebsiteProofApiBase,
   safeRecorderDiagnostic,
@@ -37,6 +38,11 @@ const EXTENSION_MESSAGE_SOURCE = "veribridge-extension"
 const INIT_RETRY_MS = [0, 250, 750, 1500, 3000, 5000] as const
 const BRIDGE_PING_RETRY_MS = [0, 400, 1200, 2500, 4500] as const
 const INIT_TIMEOUT_MS = 10_000
+// The bridge PONG is answered synchronously by the content script (no MV3
+// worker involved), so several unanswered pings mean the extension is not
+// installed — fail fast to the install screen instead of burning the full
+// initialization deadline.
+const INIT_ABSENT_FAST_FAIL_MS = 3_000
 // A response observed shortly before the deadline earns one extension: the
 // bridge is alive and the worker may still be waking, so a late ACK remains
 // relevant and must not be discarded because a timer fired first.
@@ -104,8 +110,8 @@ function postToExtension(type: string, payload: unknown): void {
 
 export function recorderFailureMessage(result: RecorderHandshakeFailure): string {
   const messages: Record<RecorderProtocolErrorCode, string> = {
-    extension_not_detected: "VeriBridge Recorder was not detected. Reload the unpacked extension and refresh this proof page.",
-    extension_version_incompatible: "The loaded VeriBridge Recorder is out of date. Reload the extension from this worktree, then retry.",
+    extension_not_detected: "The VeriBridge Recorder extension is not installed in this browser (or is disabled).",
+    extension_version_incompatible: "Your VeriBridge Recorder extension is out of date. Update it, then retry.",
     extension_worker_unreachable: "The recorder's background worker did not answer. Retry — if it keeps failing, reload the extension and refresh this page.",
     initialization_timeout: "Recorder initialization timed out. Keep this page open and retry.",
     invalid_config: "The recorder rejected this session configuration.",
@@ -127,6 +133,78 @@ export function recorderFailureMessage(result: RecorderHandshakeFailure): string
     unknown_error: "The recorder could not initialize this session.",
   }
   return `${messages[result.error_code]} (${result.diagnostic_code})`
+}
+
+export type RecorderExtensionProbe = {
+  /** True when any recorder bridge answered the ping. */
+  installed: boolean
+  /** True when installed AND schema/min-build compatible AND context valid. */
+  ready: boolean
+  /** Build version the bridge reported, when installed. */
+  build_version: string | null
+  /** False when the extension was updated/reloaded and needs a page refresh. */
+  context_valid: boolean
+  /** True when installed but older than the supported minimum. */
+  outdated: boolean
+}
+
+const PROBE_PING_RETRY_MS = [0, 300, 900] as const
+const PROBE_TIMEOUT_MS = 2_000
+
+/**
+ * Lightweight installed/compatible check for the install and returning-user
+ * screens. Uses only the synchronous content-script bridge ping — it never
+ * wakes the service worker, never sends a token, and resolves fast.
+ */
+export async function probeRecorderExtension(): Promise<RecorderExtensionProbe> {
+  const absent: RecorderExtensionProbe = {
+    installed: false,
+    ready: false,
+    build_version: null,
+    context_valid: true,
+    outdated: false,
+  }
+  if (typeof window === "undefined") return absent
+  const correlationId = requestId()
+  return await new Promise<RecorderExtensionProbe>((resolve) => {
+    let settled = false
+    const timers: number[] = []
+    const finish = (result: RecorderExtensionProbe) => {
+      if (settled) return
+      settled = true
+      window.removeEventListener("message", onMessage)
+      timers.forEach(timer => window.clearTimeout(timer))
+      resolve(result)
+    }
+    const onMessage = (event: MessageEvent) => {
+      if (event.source !== window || event.origin !== window.location.origin) return
+      const data = event.data as { source?: unknown; type?: unknown; payload?: unknown } | null
+      if (data?.source !== EXTENSION_MESSAGE_SOURCE) return
+      if (data.type !== RECORDER_BRIDGE_PONG) return
+      const pong = data.payload as Partial<RecorderBridgePong>
+      if (pong.request_id !== correlationId) return
+      const buildVersion = typeof pong.build_version === "string" ? pong.build_version : null
+      const compatible =
+        pong.schema_version === WEBSITE_PROOF_RECORDER_SCHEMA_VERSION &&
+        isRecorderBuildAtLeast(pong.build_version, WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION)
+      const contextValid = pong.context_valid !== false
+      finish({
+        installed: true,
+        ready: compatible && contextValid,
+        build_version: buildVersion,
+        context_valid: contextValid,
+        outdated: !compatible,
+      })
+    }
+    window.addEventListener("message", onMessage)
+    for (const delayMs of PROBE_PING_RETRY_MS) {
+      timers.push(window.setTimeout(
+        () => postToExtension(RECORDER_BRIDGE_PING, { request_id: correlationId }),
+        delayMs,
+      ))
+    }
+    timers.push(window.setTimeout(() => finish(absent), PROBE_TIMEOUT_MS))
+  })
 }
 
 export async function initializeWebsiteProofRecorder(
@@ -168,7 +246,9 @@ export async function initializeWebsiteProofRecorder(
   const request: RecorderInitRequest = {
     request_id: correlationId,
     expected_schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
-    expected_build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+    // MINIMUM supported build. Store-distributed extensions update on
+    // Chrome's schedule, so any build >= this version must be accepted.
+    expected_build_version: WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION,
     config,
   }
   diagnostic("extension_init_requested", config)
@@ -212,7 +292,7 @@ export async function initializeWebsiteProofRecorder(
         if (pong.request_id !== correlationId) return
         if (
           pong.schema_version !== WEBSITE_PROOF_RECORDER_SCHEMA_VERSION ||
-          pong.build_version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION
+          !isRecorderBuildAtLeast(pong.build_version, WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION)
         ) {
           diagnostic("extension_init_rejected", config, "extension_version_incompatible")
           finish(failure("extension_version_incompatible", "The recorder bridge reported an incompatible build."))
@@ -255,7 +335,7 @@ export async function initializeWebsiteProofRecorder(
       if (
         ack.api_base_url !== config.api_base_url ||
         ack.schema_version !== WEBSITE_PROOF_RECORDER_SCHEMA_VERSION ||
-        ack.build_version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION ||
+        !isRecorderBuildAtLeast(ack.build_version, WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION) ||
         ack.ready !== true
       ) {
         finish(failure("extension_version_incompatible", "The recorder compatibility acknowledgement did not match."))
@@ -282,6 +362,11 @@ export async function initializeWebsiteProofRecorder(
       finish(failure(code, "No matching recorder acknowledgement arrived before the deadline."))
     }
     window.addEventListener("message", onMessage)
+    timers.push(window.setTimeout(() => {
+      if (sawExtensionMessage) return
+      diagnostic("extension_init_failed", config, "extension_not_detected")
+      finish(failure("extension_not_detected", "No recorder bridge answered any ping."))
+    }, INIT_ABSENT_FAST_FAIL_MS))
     for (const delayMs of INIT_RETRY_MS) {
       timers.push(window.setTimeout(() => postToExtension(RECORDER_INIT_REQUEST, request), delayMs))
     }
@@ -292,15 +377,11 @@ export async function initializeWebsiteProofRecorder(
         delayMs,
       ))
     }
-    // Compatibility probe: a pre-schema extension responds to this legacy
-    // shape, allowing a stale build to be distinguished from a missing one.
-    timers.push(window.setTimeout(() => postToExtension("VERIBRIDGE_SET_RECORDER_AUTH", {
-      requestId: correlationId,
-      sessionId: config.session_id,
-      apiUrl: config.api_base_url,
-      authToken: config.auth.access_token,
-      claimedSkills: config.claimed_skills,
-    }), 2_000))
+    // NOTE: the former legacy compatibility probe (VERIBRIDGE_SET_RECORDER_AUTH)
+    // was removed deliberately: it posted the bearer token in a legacy field
+    // shape before build compatibility was established. A pre-schema build now
+    // classifies as extension_not_detected, which routes the user to the
+    // install/update screen — the correct outcome for a build that old.
     timers.push(window.setTimeout(onDeadline, INIT_TIMEOUT_MS))
   })
 }

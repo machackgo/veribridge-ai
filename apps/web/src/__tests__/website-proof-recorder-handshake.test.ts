@@ -183,7 +183,16 @@ describe("initializeWebsiteProofRecorder", () => {
     const promise = initializeWebsiteProofRecorder(input)
     await flushPosts()
     const requestId = lastRequestId(RECORDER_INIT_REQUEST)
-    // Bridge answers a ping right before the 10s deadline...
+    // The bridge is alive from the start (a PONG lands well before the
+    // 3s absent-extension fast-fail)...
+    extensionReply(RECORDER_BRIDGE_PONG, {
+      request_id: lastRequestId(RECORDER_BRIDGE_PING),
+      schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+      build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+      context_valid: true,
+      bridge_trusted: true,
+    })
+    // ...and answers again right before the 10s deadline...
     await vi.advanceTimersByTimeAsync(9_000)
     extensionReply(RECORDER_BRIDGE_PONG, {
       request_id: lastRequestId(RECORDER_BRIDGE_PING),
@@ -212,6 +221,24 @@ describe("initializeWebsiteProofRecorder", () => {
     const result = await promise
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.error_code).toBe("extension_version_incompatible")
+  })
+
+  it("accepts a NEWER installed build than the page's minimum (store rollout)", async () => {
+    // Chrome Web Store updates extensions before the site redeploys — a newer
+    // build answering an older page must complete the handshake.
+    const promise = initializeWebsiteProofRecorder(input)
+    await flushPosts()
+    extensionReply(RECORDER_BRIDGE_PONG, {
+      request_id: lastRequestId(RECORDER_BRIDGE_PING),
+      schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+      build_version: "9.9.9",
+      context_valid: true,
+      bridge_trusted: true,
+    })
+    const requestId = lastRequestId(RECORDER_INIT_REQUEST)
+    extensionReply(RECORDER_INIT_ACK, { ...validAck(requestId), build_version: "9.9.9" })
+    const result = await promise
+    expect(result.ok).toBe(true)
   })
 
   it("fails fast when the bridge belongs to a reloaded (orphaned) extension", async () => {

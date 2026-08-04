@@ -11,6 +11,9 @@ Security invariants:
 - user_data_dir (cookies, storage) is deleted on session close.
 - Sessions expire automatically after SESSION_TTL_SECONDS.
 - No auth cookies are persisted to the database.
+- Sessions are bound to their creator's user_id; get/resume/close fail closed
+  with SessionNotFoundError for any other caller, indistinguishable from a
+  missing session (no existence leak, no side effects).
 
 TODO(production): For cloud/headless deployment replace headful Playwright with
 one of: remote browser streaming, noVNC, browserless.io, or an isolated ephemeral
@@ -73,6 +76,7 @@ class SessionExpiredError(RuntimeError):
 @dataclass
 class _ActiveSession:
     session_id: str
+    user_id: str
     auth_mode: str
     website_url: str
     frontend_url: str | None
@@ -95,12 +99,28 @@ class _ActiveSession:
     login_url: str | None = None
 
 
+# ── Ownership gate ────────────────────────────────────────────────────────────
+
+def _require_owned_session(session_id: str, user_id: str) -> _ActiveSession:
+    """Fail closed: a foreign session is indistinguishable from a missing one.
+
+    Ownership is checked BEFORE any expiry handling so a foreign caller can
+    never trigger side effects (cleanup) or learn that the session exists.
+    """
+    with _LOCK:
+        session = _SESSIONS.get(session_id)
+    if session is None or session.user_id != user_id:
+        raise SessionNotFoundError(session_id)
+    return session
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def create_proof_session(
     request: WebsiteProofSessionCreateRequest,
+    user_id: str,
 ) -> WebsiteProofSessionResumeResponse:
-    """Launch a controlled browser session and detect login wall."""
+    """Launch a controlled browser session (owned by ``user_id``) and detect login wall."""
     _expire_stale_sessions()
 
     session_id = uuid4().hex
@@ -111,6 +131,7 @@ def create_proof_session(
 
     session = _ActiveSession(
         session_id=session_id,
+        user_id=user_id,
         auth_mode=request.auth_mode,
         website_url=request.website_url,
         frontend_url=request.frontend_url,
@@ -190,15 +211,11 @@ def create_proof_session(
     return _to_response(session)
 
 
-def resume_proof_session(session_id: str) -> WebsiteProofSessionResumeResponse:
+def resume_proof_session(session_id: str, user_id: str) -> WebsiteProofSessionResumeResponse:
     """Check login status and continue workflow if authenticated."""
     _expire_stale_sessions()
 
-    with _LOCK:
-        session = _SESSIONS.get(session_id)
-
-    if session is None:
-        raise SessionNotFoundError(session_id)
+    session = _require_owned_session(session_id, user_id)
 
     if datetime.now(UTC) > session.expires_at:
         _cleanup_and_remove(session_id)
@@ -231,18 +248,24 @@ def resume_proof_session(session_id: str) -> WebsiteProofSessionResumeResponse:
     return _to_response(session)
 
 
-def close_proof_session(session_id: str) -> None:
-    """Close and permanently destroy a proof session."""
+def close_proof_session(session_id: str, user_id: str) -> None:
+    """Close and permanently destroy a proof session owned by ``user_id``.
+
+    A close for a foreign or unknown session is a silent no-op: the caller
+    cannot distinguish "not yours" from "never existed", and a foreign caller
+    can never destroy someone else's live session.
+    """
+    with _LOCK:
+        session = _SESSIONS.get(session_id)
+    if session is None or session.user_id != user_id:
+        return
     _cleanup_and_remove(session_id)
 
 
-def get_proof_session(session_id: str) -> WebsiteProofSessionResumeResponse:
+def get_proof_session(session_id: str, user_id: str) -> WebsiteProofSessionResumeResponse:
     """Return current session status."""
     _expire_stale_sessions()
-    with _LOCK:
-        session = _SESSIONS.get(session_id)
-    if session is None:
-        raise SessionNotFoundError(session_id)
+    session = _require_owned_session(session_id, user_id)
     return _to_response(session)
 
 

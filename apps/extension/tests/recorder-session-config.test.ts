@@ -3,7 +3,11 @@ import test from "node:test"
 
 import {
   WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+  WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION,
   WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+  isAllowedRecorderApiBase,
+  isRecorderBuildAtLeast,
+  isTrustedVeriBridgeAppLocation,
   normalizeWebsiteProofApiBase,
   normalizeWebsiteProofRecorderConfig,
   refreshWebsiteProofRecorderAuth,
@@ -32,7 +36,43 @@ function config(overrides: Partial<WebsiteProofRecorderConfig> = {}): WebsitePro
 
 test("schema and extension build versions are explicit", () => {
   assert.equal(WEBSITE_PROOF_RECORDER_SCHEMA_VERSION, 1)
-  assert.equal(WEBSITE_PROOF_RECORDER_BUILD_VERSION, "0.2.1")
+  assert.equal(WEBSITE_PROOF_RECORDER_BUILD_VERSION, "1.0.0")
+  assert.equal(WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION, "1.0.0")
+})
+
+test("build comparison treats the page value as a minimum, failing closed", () => {
+  assert.equal(isRecorderBuildAtLeast("1.0.0", "1.0.0"), true)
+  assert.equal(isRecorderBuildAtLeast("1.0.1", "1.0.0"), true)
+  assert.equal(isRecorderBuildAtLeast("1.2.0", "1.0.9"), true)
+  assert.equal(isRecorderBuildAtLeast("2.0.0", "1.9.9"), true)
+  assert.equal(isRecorderBuildAtLeast("0.2.1", "1.0.0"), false)
+  assert.equal(isRecorderBuildAtLeast("1.0.0", "1.0.1"), false)
+  // Non-semver strings (labels, garbage, non-strings) never pass.
+  assert.equal(isRecorderBuildAtLeast("1.0.0 (recorder schema 1)", "1.0.0"), false)
+  assert.equal(isRecorderBuildAtLeast(undefined, "1.0.0"), false)
+  assert.equal(isRecorderBuildAtLeast("1.0.0", "not-a-version"), false)
+})
+
+test("release channel pins uploads to production API origins", () => {
+  // Store build (allowLocalDev=false): production origins only.
+  assert.equal(isAllowedRecorderApiBase("https://veribridge-api.onrender.com", false), true)
+  assert.equal(isAllowedRecorderApiBase("https://api.veribridgeai.com", false), true)
+  assert.equal(isAllowedRecorderApiBase("http://localhost:8128", false), false)
+  assert.equal(isAllowedRecorderApiBase("https://evil.example.com", false), false)
+  assert.equal(isAllowedRecorderApiBase("https://veribridge-api.onrender.com.evil.io", false), false)
+  // Dev build also accepts loopback, but still never an arbitrary https origin.
+  assert.equal(isAllowedRecorderApiBase("http://localhost:8128", true), true)
+  assert.equal(isAllowedRecorderApiBase("http://127.0.0.1:8000", true), true)
+  assert.equal(isAllowedRecorderApiBase("https://evil.example.com", true), false)
+})
+
+test("release channel drops localhost from the trusted app surface", () => {
+  const loc = (hostname: string, pathname: string) => ({ hostname, pathname })
+  assert.equal(isTrustedVeriBridgeAppLocation(loc("veribridgeai.com", "/student/proofs/website"), false), true)
+  assert.equal(isTrustedVeriBridgeAppLocation(loc("www.veribridgeai.com", "/dashboard"), false), true)
+  assert.equal(isTrustedVeriBridgeAppLocation(loc("localhost", "/student/proofs/website"), false), false)
+  assert.equal(isTrustedVeriBridgeAppLocation(loc("localhost", "/student/proofs/website"), true), true)
+  assert.equal(isTrustedVeriBridgeAppLocation(loc("127.0.0.1", "/dashboard"), false), false)
 })
 
 test("normalizes the required localhost:8128 API origin", () => {

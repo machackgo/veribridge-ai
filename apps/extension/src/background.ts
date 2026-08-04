@@ -14,8 +14,9 @@ import {
   RECORDER_INIT_REQUEST,
   RECORDER_START_REQUEST,
   RECORDER_TARGET_OPEN_REQUEST,
-  WEBSITE_PROOF_RECORDER_BUILD_VERSION,
   WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
+  isAllowedRecorderApiBase,
+  isRecorderBuildAtLeast,
   refreshWebsiteProofRecorderAuth,
   safeRecorderDiagnostic,
   type RecorderInitRequest,
@@ -23,6 +24,7 @@ import {
   type RecorderStartRequest,
   type RecorderTargetOpenRequest,
 } from "../../../packages/shared/websiteProofRecorderContract"
+import { IS_DEV_BUILD } from "./buildChannel"
 
 // ── Debug flag ────────────────────────────────────────────────────────────────
 const DEBUG_VISIBLE_EVIDENCE = false
@@ -951,15 +953,18 @@ chrome.runtime.onMessage.addListener(
       case RECORDER_INIT_REQUEST: {
         const request = (msg.payload ?? {}) as Partial<RecorderInitRequest>
         const requestId = typeof request.request_id === "string" ? request.request_id : "unknown"
+        // Schema must match exactly; the build only has to be AT LEAST the
+        // page's declared minimum. Store updates roll out on Chrome's
+        // schedule, so a newer installed build must keep working against a
+        // page that has not been redeployed yet.
         if (
           request.expected_schema_version !== WEBSITE_PROOF_RECORDER_SCHEMA_VERSION ||
-          request.expected_build_version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION ||
-          chrome.runtime.getManifest().version !== WEBSITE_PROOF_RECORDER_BUILD_VERSION
+          !isRecorderBuildAtLeast(chrome.runtime.getManifest().version, String(request.expected_build_version ?? ""))
         ) {
           sendResponse(protocolNack(
             requestId,
             "extension_version_incompatible",
-            "The loaded recorder build is incompatible with this Website Proof page.",
+            "The installed recorder build is older than this Website Proof page requires. Update the extension.",
           ))
           break
         }
@@ -973,6 +978,16 @@ chrome.runtime.onMessage.addListener(
             requestId,
             selection.error_code ?? "invalid_config",
             "The recorder session configuration was rejected.",
+          ))
+          break
+        }
+        // Channel gate: evidence may only ever be uploaded to an approved
+        // VeriBridge API origin (store builds: production only).
+        if (!isAllowedRecorderApiBase(selection.config.api_base_url, IS_DEV_BUILD)) {
+          sendResponse(protocolNack(
+            requestId,
+            "invalid_api_base",
+            "This recorder build does not accept the configured API address.",
           ))
           break
         }
@@ -1424,7 +1439,7 @@ chrome.runtime.onMessage.addListener(
         // drifted (e.g. a second tab detected a different session).
         const providedId = (msg.payload as { sessionId?: string } | undefined)?.sessionId
         const sid = providedId ?? state.sessionId
-        console.log(`Background stored dismissed session: ${sid}`)
+        dbgVE("stored dismissed session:", sid)
         state.dismissedForSessionId = sid
         sendResponse({ ok: true })
         break
@@ -1579,51 +1594,6 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
     chrome.tabs.sendMessage(activeInfo.tabId, { type: "START_CAPTURING" }).catch(() => undefined)
   })
 })
-
-/**
- * Push a lightweight live feedback snapshot to the backend during recording.
- * Fire-and-forget — never throws, never blocks proof upload.
- * Called every 5 VISIBLE_EVIDENCE_EVENTs during active recording.
- */
-async function pushLiveSnapshot(): Promise<void> {
-  if (!state.sessionId || !state.isRecording) return
-  if (!state.authToken) return
-
-  const events = state.visibleEvidenceEvents
-  const allText = events.flatMap(e => e.visible_text_blocks).join(" ")
-  const allUrls = events.map(e => e.url).join(" ")
-  const lastEvent = events[events.length - 1]
-
-  const payload = {
-    claimed_skills: state.claimedSkills,
-    current_url: lastEvent?.url ?? "",
-    page_title: lastEvent?.page_title ?? "",
-    dom_text_snippets: events.flatMap(e => e.visible_text_blocks).slice(-20),  // last 20 blocks
-    click_count: events.filter(e => e.event_type === "click").length,
-    input_count: events.filter(e => e.event_type === "input_change").length,
-    form_submit_count: events.filter(e => e.event_type === "form_submit").length,
-    output_block_count: events.filter(e => e.result_like_blocks.length > 0).length,
-    canvas_count: Math.max(0, ...events.map(e => e.canvas_count ?? 0)),
-    svg_count: Math.max(0, ...events.map(e => e.svg_count ?? 0)),
-    github_url_seen: events.some(e => /github\.com\/[\w\-]+\/[\w\-]/i.test(e.url)),
-    recording_duration_s: state.startedAt
-      ? (Date.now() - new Date(state.startedAt).getTime()) / 1000
-      : 0,
-    sensitive_warning_seen: state.sensitiveWarningSeen,
-  }
-
-  const url = `${state.apiUrl}/api/v1/student/extension-proof/sessions/${state.sessionId}/live-feedback`
-  const headers: Record<string, string> = { "Content-Type": "application/json" }
-  if (state.authToken) headers["Authorization"] = `Bearer ${state.authToken}`
-
-  dbgVE("[LiveCoach] pushing snapshot — events=%d score=%d", events.length, state.liveCoach?.live_score ?? 0)
-
-  try {
-    await fetch(url, { method: "POST", headers, body: JSON.stringify(payload) })
-  } catch {
-    // Silent — live snapshot push failure must never affect proof upload
-  }
-}
 
 /**
  * Upload accumulated visible evidence before advancing the session upload.

@@ -277,13 +277,34 @@ describe("initializeWebsiteProofRecorder", () => {
     await expect(pending).resolves.toMatchObject({ ok: false, error_code: "extension_not_detected" })
   })
 
-  it("identifies a legacy extension build distinctly", async () => {
+  it("never posts the bearer token in a legacy message shape", async () => {
+    vi.useFakeTimers()
+    getSession.mockResolvedValue({
+      data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
+    })
+    const posted: Array<{ type?: string; payload?: unknown }> = []
+    vi.spyOn(window, "postMessage").mockImplementation(((message: { type?: string }) => {
+      posted.push(message)
+    }) as never)
+
+    const pending = initializeWebsiteProofRecorder(recorderInput)
+    await vi.advanceTimersByTimeAsync(10_100)
+    await pending
+
+    // The removed legacy probe used to post the raw access token under
+    // authToken before the installed build was even identified.
+    expect(posted.some((m) => m.type === "VERIBRIDGE_SET_RECORDER_AUTH")).toBe(false)
+    const serialized = JSON.stringify(posted.filter((m) => m.type !== RECORDER_INIT_REQUEST))
+    expect(serialized).not.toContain("recorder-token")
+  })
+
+  it("classifies an unprompted legacy reply as an incompatible build", async () => {
     vi.useFakeTimers()
     getSession.mockResolvedValue({
       data: { session: { access_token: "recorder-token", user: { id: "user-1" }, expires_at: 1_900_000_000 } },
     })
     vi.spyOn(window, "postMessage").mockImplementation(((message: { type?: string }) => {
-      if (message.type !== "VERIBRIDGE_SET_RECORDER_AUTH") return
+      if (message.type !== RECORDER_INIT_REQUEST) return
       window.dispatchEvent(new MessageEvent("message", {
         data: { source: "veribridge-extension", type: "VERIBRIDGE_RECORDER_AUTH_APPLIED", payload: {} },
         origin: window.location.origin,
@@ -292,7 +313,7 @@ describe("initializeWebsiteProofRecorder", () => {
     }) as never)
 
     const pending = initializeWebsiteProofRecorder(recorderInput)
-    await vi.advanceTimersByTimeAsync(2_100)
+    await vi.advanceTimersByTimeAsync(100)
 
     await expect(pending).resolves.toMatchObject({ ok: false, error_code: "extension_version_incompatible" })
   })

@@ -9,7 +9,40 @@
  */
 
 export const WEBSITE_PROOF_RECORDER_SCHEMA_VERSION = 1 as const
-export const WEBSITE_PROOF_RECORDER_BUILD_VERSION = "0.2.1" as const
+export const WEBSITE_PROOF_RECORDER_BUILD_VERSION = "1.0.0" as const
+
+/**
+ * Oldest extension build the web app accepts. Store-distributed extensions
+ * auto-update on Chrome's schedule, so the page compares builds as
+ * "at least this version" — never as an exact match, which would break every
+ * user mid-rollout. Pre-1.0 dev builds compare exact-match on their side and
+ * therefore NACK themselves against this value, which routes them to the
+ * update-required screen.
+ */
+export const WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION = "1.0.0" as const
+
+/**
+ * Parse a "major.minor.patch" build version. Extra label suffixes (e.g.
+ * "1.0.0 (recorder schema 1)") are rejected — manifest versions never carry
+ * them. Returns null for anything non-conforming.
+ */
+export function parseRecorderBuildVersion(value: unknown): [number, number, number] | null {
+  if (typeof value !== "string") return null
+  const match = /^(\d{1,4})\.(\d{1,4})\.(\d{1,4})$/.exec(value.trim())
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+/** True when `actual` is a valid build version >= `minimum`. Fails closed. */
+export function isRecorderBuildAtLeast(actual: unknown, minimum: string): boolean {
+  const a = parseRecorderBuildVersion(actual)
+  const m = parseRecorderBuildVersion(minimum)
+  if (!a || !m) return false
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== m[i]) return a[i] > m[i]
+  }
+  return true
+}
 
 export const RECORDER_BRIDGE_PING = "VERIBRIDGE_RECORDER_BRIDGE_PING" as const
 export const RECORDER_BRIDGE_PONG = "VERIBRIDGE_RECORDER_BRIDGE_PONG" as const
@@ -110,7 +143,9 @@ export const RECORDER_KNOWN_EXTENSION_MESSAGE_TYPES: ReadonlySet<string> = new S
 export type RecorderInitRequest = {
   request_id: string
   expected_schema_version: typeof WEBSITE_PROOF_RECORDER_SCHEMA_VERSION
-  expected_build_version: typeof WEBSITE_PROOF_RECORDER_BUILD_VERSION
+  /** MINIMUM build the page accepts — the extension passes when its own
+   *  manifest version is >= this value (same schema). */
+  expected_build_version: string
   config: WebsiteProofRecorderConfig
 }
 
@@ -205,18 +240,50 @@ const TRUSTED_APP_PATH_PREFIXES = [
  * may exchange recorder messages (including the auth handoff) with the
  * extension. Shared by the page and the content script so both sides agree.
  *
+ * `allowLocalDev` extends trust to localhost app routes. Store-distributed
+ * (production-channel) extension builds pass false so a page served from an
+ * arbitrary local port can never reach the recorder bridge; dev builds and the
+ * web app keep the default.
+ *
  * IMPORTANT: single-page navigations change the pathname without re-running
  * the content script, so callers MUST evaluate this per message — never cache
  * the result from script-load time.
  */
 export function isTrustedVeriBridgeAppLocation(
   location: { hostname: string; pathname: string },
+  allowLocalDev = true,
 ): boolean {
   if (isProductionVeriBridgeHostname(location.hostname)) return true
-  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+  if (allowLocalDev && (location.hostname === "localhost" || location.hostname === "127.0.0.1")) {
     return TRUSTED_APP_PATH_PREFIXES.some(prefix => location.pathname.startsWith(prefix))
   }
   return false
+}
+
+/**
+ * Production API origins the recorder may upload to. The onrender.com host is
+ * the live deployment today; any true veribridgeai.com subdomain covers the
+ * planned api.veribridgeai.com custom domain without another release.
+ */
+const PRODUCTION_API_HOSTNAMES = new Set(["veribridge-api.onrender.com"])
+
+/**
+ * True when a normalized recorder API base may receive session evidence.
+ * Production-channel extension builds pass allowLocalDev=false, pinning
+ * uploads to the production API; dev builds also accept loopback bases.
+ * The input must already be normalized via normalizeWebsiteProofApiBase.
+ */
+export function isAllowedRecorderApiBase(apiBase: string, allowLocalDev = true): boolean {
+  const normalized = normalizeWebsiteProofApiBase(apiBase)
+  if (!normalized) return false
+  const { protocol, hostname } = new URL(normalized)
+  if (protocol === "https:") {
+    // Any other https origin is rejected in every channel — evidence must
+    // never be uploadable to an arbitrary server.
+    return PRODUCTION_API_HOSTNAMES.has(hostname) || isProductionVeriBridgeHostname(hostname)
+  }
+  // normalizeWebsiteProofApiBase only lets HTTP through for loopback hosts.
+  return allowLocalDev
 }
 const SENSITIVE_URL_PARAMS = new Set([
   "token", "access_token", "id_token", "refresh_token", "api_key", "key",
