@@ -81,12 +81,16 @@ def _log_visual_reasoning_config() -> None:
 
 
 def create_app() -> FastAPI:
+    # Interactive API docs + schema are development conveniences: in
+    # production they enumerate the full route surface to anonymous callers,
+    # so they are disabled there.
+    expose_docs = settings.environment != "production"
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        docs_url="/docs" if expose_docs else None,
+        redoc_url="/redoc" if expose_docs else None,
+        openapi_url="/openapi.json" if expose_docs else None,
     )
 
     # Added BEFORE CORSMiddleware so CORS wraps it (last-added is outermost):

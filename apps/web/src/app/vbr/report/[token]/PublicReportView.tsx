@@ -170,9 +170,12 @@ function DeepEvidenceSection({
         document.getElementById(hash.slice(1))?.scrollIntoView({ behavior: "smooth", block: "start" })
       })
     }
-    openForHash()
+    const initial = window.setTimeout(openForHash, 0)
     window.addEventListener("hashchange", openForHash)
-    return () => window.removeEventListener("hashchange", openForHash)
+    return () => {
+      window.clearTimeout(initial)
+      window.removeEventListener("hashchange", openForHash)
+    }
   }, [])
 
   return (

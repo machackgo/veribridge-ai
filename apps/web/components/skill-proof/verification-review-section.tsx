@@ -299,7 +299,7 @@ export function VerificationReviewSection({
       {!review && (
         <div style={{ display: "grid", gap: 10 }}>
           <p style={{ margin: 0, fontSize: 12, color: "#475569", lineHeight: 1.6 }}>
-            Submit the current evidence package for VeriBridge's automated evidence review. Human/faculty review is separate and coming soon.
+            Submit the current evidence package for VeriBridge&apos;s automated evidence review. Human/faculty review is separate and coming soon.
           </p>
           <button
             type="button"

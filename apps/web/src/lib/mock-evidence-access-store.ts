@@ -14,7 +14,7 @@
  * tokens, raw transcripts, admin notes, or debug metadata.
  */
 
-import type { EvidenceAccessRequest, EvidenceAccessStatus, EvidenceAccessFormInput } from "../types/evidence-access"
+import type { EvidenceAccessRequest, EvidenceAccessFormInput } from "../types/evidence-access"
 
 // ── Canonical demo passport slug ──────────────────────────────────────────────
 // All dev/mock pages must use this constant so recruiter, student dev, and

@@ -155,8 +155,6 @@ function StudentDashboardInner() {
 
   useEffect(() => {
     let cancelled = false
-    setProofListsFailed(false)
-    setProjectsError(null)
 
     async function load() {
       // Independent loads: one failing surface never blanks the others.
@@ -366,7 +364,11 @@ function StudentDashboardInner() {
           <span>Some of your proofs couldn&apos;t be loaded right now — the tiles below may be incomplete.</span>
           <button
             type="button"
-            onClick={() => setReloadTick((t) => t + 1)}
+            onClick={() => {
+              setProofListsFailed(false)
+              setProjectsError(null)
+              setReloadTick((t) => t + 1)
+            }}
             style={{
               border: "1px solid var(--line)",
               background: "#fff",
@@ -398,7 +400,11 @@ function StudentDashboardInner() {
           <span>{projectsError}</span>
           <button
             type="button"
-            onClick={() => setReloadTick((t) => t + 1)}
+            onClick={() => {
+              setProofListsFailed(false)
+              setProjectsError(null)
+              setReloadTick((t) => t + 1)
+            }}
             style={{
               border: "1px solid var(--line)",
               background: "#fff",
