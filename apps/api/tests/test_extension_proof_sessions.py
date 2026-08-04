@@ -20,6 +20,8 @@ from app.schemas.extension_proof import (
 )
 from app.services.extension_proof_service import mask_sensitive
 
+from tests.conftest import seed_skill_evidence
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -51,6 +53,8 @@ def mem_store() -> dict:
 def client(mem_store: dict) -> TestClient:
     app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
+    # Session creation fail-closes on unowned skill_evidence_id (G6).
+    seed_skill_evidence(mem_store, DEMO_USER_ID, EVIDENCE_ID)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -153,6 +157,85 @@ class TestCreateExtensionProofSession:
         )
         assert response.status_code == 422
 
+    # ── G6: caller-supplied ids are validated fail-closed ────────────────────
+
+    def test_unknown_skill_evidence_id_returns_404(self, client: TestClient) -> None:
+        """A garbage skill_evidence_id fails closed at create time (404), never
+        persisted to surface later as an opaque FK 503."""
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={"skill_evidence_id": "eeeeeeee-9999-9999-9999-999999999999"},
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "skill_evidence_not_found"
+
+    def test_foreign_skill_evidence_id_returns_404(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        """Another student's evidence id is rejected with the SAME 404 — its
+        existence is never confirmed, and it can never be bound as this
+        caller's evidence."""
+        other_user = "ffffffff-0000-0000-0000-000000000002"
+        foreign_id = "eeeeeeee-0000-0000-0000-000000000777"
+        seed_skill_evidence(mem_store, other_user, foreign_id)
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={"skill_evidence_id": foreign_id},
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "skill_evidence_not_found"
+        # Nothing was persisted.
+        assert mem_store.get("extension_proof_sessions", {}) == {}
+
+    def test_unknown_parent_proof_session_id_returns_404(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={
+                "skill_evidence_id": EVIDENCE_ID,
+                "parent_proof_session_id": "99999999-9999-9999-9999-999999999999",
+            },
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "extension_proof_session_not_found"
+
+    def test_foreign_parent_proof_session_id_returns_404(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        other_user = "ffffffff-0000-0000-0000-000000000002"
+        mem_store.setdefault("extension_proof_sessions", {})["parent-foreign"] = {
+            "id": "parent-foreign",
+            "user_id": other_user,
+            "skill_evidence_id": "e-x",
+            "status": "completed",
+        }
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={
+                "skill_evidence_id": EVIDENCE_ID,
+                "parent_proof_session_id": "parent-foreign",
+            },
+        )
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "extension_proof_session_not_found"
+
+    def test_owned_parent_proof_session_id_is_accepted(
+        self, client: TestClient, mem_store: dict
+    ) -> None:
+        parent = client.post(
+            "/api/v1/student/extension-proof/sessions", json=VALID_POST_BODY
+        ).json()
+        response = client.post(
+            "/api/v1/student/extension-proof/sessions",
+            json={
+                "skill_evidence_id": EVIDENCE_ID,
+                "parent_proof_session_id": parent["id"],
+                "proof_attempt_type": "followup",
+            },
+        )
+        assert response.status_code == 201
+        stored = mem_store["extension_proof_sessions"][response.json()["id"]]
+        assert stored["parent_proof_session_id"] == parent["id"]
+
     def test_two_sessions_get_distinct_ids(self, client: TestClient) -> None:
         r1 = client.post(
             "/api/v1/student/extension-proof/sessions", json=VALID_POST_BODY
@@ -240,6 +323,7 @@ class TestGetExtensionProofSession:
     def test_user_isolation(self, mem_store: dict) -> None:
         app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
         app.dependency_overrides[get_db] = lambda: mem_store
+        seed_skill_evidence(mem_store, DEMO_USER_ID, EVIDENCE_ID)
         client_a = TestClient(app)
         created = client_a.post(
             "/api/v1/student/extension-proof/sessions", json=VALID_POST_BODY

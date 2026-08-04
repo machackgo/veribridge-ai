@@ -32,6 +32,8 @@ from app.services.user_provisioning_service import ensure_public_user_for_auth_u
 from app.services.transcription_service import TranscriptionUnavailableError
 from app.services.video_keyframe_extractor_service import VideoKeyframeResult
 
+from tests.conftest import seed_skill_evidence
+
 FRESH_USER = "aaaaaaaa-1111-2222-3333-444444444444"
 OTHER_USER = "bbbbbbbb-5555-6666-7777-888888888888"
 
@@ -90,9 +92,14 @@ def _users(mem_store: dict) -> dict:
 
 
 def test_fresh_user_can_create_extension_proof_session(client: TestClient, mem_store: dict) -> None:
+    # Session creation fail-closes on unowned skill_evidence_id (G6) — the
+    # referenced evidence row must exist and belong to the caller. The users
+    # row is still absent: provisioning remains the behaviour under test.
+    evidence_id = "eeeeeeee-0000-0000-0000-000000000001"
+    seed_skill_evidence(mem_store, FRESH_USER, evidence_id)
     res = client.post(
         "/api/v1/student/extension-proof/sessions",
-        json={"skill_evidence_id": "eeeeeeee-0000-0000-0000-000000000001"},
+        json={"skill_evidence_id": evidence_id},
     )
     assert res.status_code == 201
     assert res.json()["user_id"] == FRESH_USER
@@ -216,6 +223,7 @@ def test_provisioning_uses_verified_email_claim(mem_store: dict) -> None:
         id=FRESH_USER, email="fresh@example.edu"
     )
     app.dependency_overrides[get_db] = lambda: mem_store
+    seed_skill_evidence(mem_store, FRESH_USER, "eeeeeeee-0000-0000-0000-000000000001")
     try:
         client = TestClient(app)
         res = client.post(
@@ -240,6 +248,7 @@ def test_provisioning_is_idempotent_and_never_overwrites(client: TestClient, mem
             "full_name": "Original Name",
         }
     }
+    seed_skill_evidence(mem_store, FRESH_USER, "eeeeeeee-0000-0000-0000-000000000001")
     res = client.post(
         "/api/v1/student/extension-proof/sessions",
         json={"skill_evidence_id": "eeeeeeee-0000-0000-0000-000000000001"},
@@ -262,6 +271,7 @@ def test_helper_is_idempotent_across_calls() -> None:
 
 
 def test_user_a_cannot_read_user_b_session(client: TestClient, mem_store: dict) -> None:
+    seed_skill_evidence(mem_store, FRESH_USER, "eeeeeeee-0000-0000-0000-000000000001")
     res = client.post(
         "/api/v1/student/extension-proof/sessions",
         json={"skill_evidence_id": "eeeeeeee-0000-0000-0000-000000000001"},

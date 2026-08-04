@@ -1,5 +1,5 @@
 /**
- * Auth flow tests — public routes, login page UI, and .edu validation.
+ * Auth flow tests — public routes, login page UI, and email validation.
  *
  * Network calls to Supabase are intercepted with page.route() so these
  * tests are fully deterministic and require no real Supabase credentials.
@@ -13,8 +13,8 @@
  * What is tested:
  *  - / is always public (no redirect to /login)
  *  - /login renders with correct UI elements
- *  - Non-.edu email shows a validation error (no network call needed)
- *  - .edu email + mocked OTP send → transitions to OTP screen
+ *  - Invalid email format shows a validation error (no network call needed)
+ *  - Valid email + mocked OTP send → transitions to OTP screen
  *  - OTP screen shows updated copy ("Enter your verification code")
  *  - "Verify and continue" button is present
  *  - Invalid OTP + mocked verify error → shows error message
@@ -139,7 +139,7 @@ test.describe("Login page — renders", () => {
 
   test("shows the sign-in headline", async ({ page }) => {
     await expect(
-      page.getByRole("heading", { name: /sign in with your \.edu email/i })
+      page.getByRole("heading", { name: /sign in to veribridge/i })
     ).toBeVisible()
   })
 
@@ -153,9 +153,9 @@ test.describe("Login page — renders", () => {
     ).toBeVisible()
   })
 
-  test("shows the .edu-only note", async ({ page }) => {
+  test("shows the one-time-code explainer", async ({ page }) => {
     await expect(
-      page.getByText(/currently available for verified \.edu students/i)
+      page.getByText(/one-time verification code/i)
     ).toBeVisible()
   })
 
@@ -171,21 +171,22 @@ test.describe("Login page — renders", () => {
 
 // ── Email validation ───────────────────────────────────────────────────────────
 
-test.describe("Login page — .edu validation", () => {
+test.describe("Login page — email validation", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/login")
   })
 
-  test("shows error for non-.edu email", async ({ page }) => {
-    await page.getByTestId("email-input").fill(NON_EDU_EMAIL)
+  test("shows error for an invalid email format", async ({ page }) => {
+    await page.getByTestId("email-input").fill("not-an-email")
     await page.getByRole("button", { name: /send verification code/i }).click()
-    await expect(page.getByTestId("error-banner")).toContainText(/\.edu students/)
+    await expect(page.getByTestId("error-banner")).toContainText(/valid email/i)
   })
 
-  test("shows error for Gmail address", async ({ page }) => {
+  test("accepts a Gmail address (no .edu restriction)", async ({ page }) => {
+    await mockOtpSend(page)
     await page.getByTestId("email-input").fill("student@gmail.com")
     await page.getByRole("button", { name: /send verification code/i }).click()
-    await expect(page.getByTestId("error-banner")).toBeVisible()
+    await expect(page.getByTestId("error-banner")).not.toBeVisible()
   })
 
   test("shows error for empty submission", async ({ page }) => {
@@ -193,7 +194,7 @@ test.describe("Login page — .edu validation", () => {
     await expect(page.getByTestId("error-banner")).toBeVisible()
   })
 
-  test("does NOT show error for valid .edu email (before network)", async ({
+  test("does NOT show error for a valid email (before network)", async ({
     page,
   }) => {
     // The error should not appear until after the network call resolves.
@@ -201,7 +202,7 @@ test.describe("Login page — .edu validation", () => {
     await mockOtpSend(page)
     await page.getByTestId("email-input").fill(EDU_EMAIL)
     await page.getByRole("button", { name: /send verification code/i }).click()
-    // Should NOT see the .edu error
+    // Should NOT see a validation error
     await expect(page.getByTestId("error-banner")).not.toBeVisible()
   })
 
@@ -293,7 +294,7 @@ test.describe("Login page — OTP screen", () => {
     await goToOtpStep(page)
     await page.getByTestId("change-email-btn").click()
     await expect(
-      page.getByRole("heading", { name: /sign in with your \.edu email/i })
+      page.getByRole("heading", { name: /sign in to veribridge/i })
     ).toBeVisible()
     await expect(page.getByTestId("email-input")).toBeVisible()
   })

@@ -23,11 +23,28 @@ import { type NextRequest, NextResponse } from "next/server"
 export async function proxy(request: NextRequest) {
   // NEXT_PUBLIC_ prefix ensures this is baked into the Edge Runtime bundle
   // at build time (plain DEMO_MODE is not available in Edge Runtime).
-  if (process.env.NEXT_PUBLIC_DEMO_MODE === "true") {
+  // HARD production guard: the demo bypass disables ALL auth redirects, so a
+  // mis-set Vercel env var must never be able to open the app in production.
+  const demoBypass =
+    process.env.NEXT_PUBLIC_DEMO_MODE === "true" &&
+    process.env.VERCEL_ENV !== "production" &&
+    process.env.NODE_ENV !== "production"
+  if (demoBypass) {
     return NextResponse.next()
   }
 
   const { pathname } = request.nextUrl
+
+  // /dev/* pages are local development previews built on fabricated sample
+  // data (fake candidates, invented review labels). They must never render in
+  // production — a recruiter or student reaching one would see invented
+  // "verified" evidence with no sample banner.
+  if (
+    (pathname === "/dev" || pathname.startsWith("/dev/")) &&
+    (process.env.VERCEL_ENV === "production" || process.env.NODE_ENV === "production")
+  ) {
+    return new NextResponse(null, { status: 404 })
+  }
 
   // Paths that never require auth (add more as the app grows).
   // Tokenized/slug public share routes are gated by the token/slug itself and
@@ -63,7 +80,11 @@ export async function proxy(request: NextRequest) {
       if (session) {
         const next = request.nextUrl.searchParams.get("next") ?? "/student"
         const dest = request.nextUrl.clone()
-        dest.pathname = next.startsWith("/") ? next : "/dashboard"
+        // Same-origin paths only — reject protocol-relative "//host" values.
+        dest.pathname =
+          next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\")
+            ? next
+            : "/dashboard"
         dest.search = ""
         return NextResponse.redirect(dest)
       }

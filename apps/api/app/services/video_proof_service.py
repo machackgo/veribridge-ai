@@ -43,7 +43,10 @@ from fastapi import HTTPException, status
 
 from app.services import proof_artifact_service as artifacts
 from app.services.transcription_service import (
+    MEANINGFUL_WORD_THRESHOLD,
     TranscriptionUnavailableError,
+    count_meaningful_words,
+    is_low_quality_transcript,
     transcribe_audio,
 )
 from app.services.video_keyframe_extractor_service import (
@@ -222,6 +225,28 @@ def _run_transcription(db: Any, video_proof_id: str, data: bytes, filename: str,
 
     segments = [s for s in (result.transcript_segments or []) if (s.text or "").strip()]
     if not segments and not (result.transcript_text or "").strip():
+        return "no_speech", 0
+
+    # ── No-speech / low-quality guard (mirrors the VBR gates) ─────────────────
+    # Whisper over silent/near-silent audio does not error — it emits
+    # punctuation-only segments (a run of "." tokens), and degraded audio can
+    # yield a single hallucinated token repeated dozens of times. Neither is a
+    # real narration transcript and must never be persisted as ``completed``.
+    # Measure meaningful words / repetitiveness across the provider's full text
+    # AND its joined segment texts (max, same as ``vbr_transcription``). The
+    # migration-057 status vocabulary has no ``low_quality``; a repeated-token
+    # hallucination contains no usable narration speech, so both gates report
+    # the honest ``no_speech`` and persist nothing.
+    segment_source_text = " ".join(s.text.strip() for s in segments)
+    meaningful_word_count = max(
+        count_meaningful_words(result.transcript_text or ""),
+        count_meaningful_words(segment_source_text),
+    )
+    if meaningful_word_count < MEANINGFUL_WORD_THRESHOLD:
+        return "no_speech", 0
+    if is_low_quality_transcript(result.transcript_text or "") or is_low_quality_transcript(
+        segment_source_text
+    ):
         return "no_speech", 0
 
     if not segments and result.transcript_text.strip():
@@ -547,10 +572,15 @@ def set_video_proof_visibility(db: Any, *, user_id: str, video_proof_id: str, pu
 
     updated = _update(db, _PROOFS_TABLE, video_proof_id, {"public_safe": bool(public_safe)})
 
-    policy = "public_safe" if public_safe else "owner_only"
+    # The toggle's consented scope is RECRUITERS — retained bytes (original
+    # video / frames / transcript artifacts) go recruiter_safe, never
+    # public_safe, so anonymous callers can never stream them. The artifact
+    # ``public_safe`` column stays a mirror of (access_policy = 'public_safe').
+    # Pre-fix rows: see docs/data-repairs/2026-08-recruiter-share-access-policy.md.
+    policy = "recruiter_safe" if public_safe else "owner_only"
     for artifact in artifacts.list_artifacts_for_proof(db, proof_type="video", proof_id=video_proof_id):
         artifacts.update_artifact(
-            db, str(artifact["id"]), {"access_policy": policy, "public_safe": bool(public_safe)}
+            db, str(artifact["id"]), {"access_policy": policy, "public_safe": policy == "public_safe"}
         )
     return updated or proof
 

@@ -34,7 +34,10 @@ from app.schemas.recruiter_shortlist import (
 from app.schemas.skill_evidence_timeline import SkillEvidenceTimelineResponse
 from app.schemas.work_passport_status import PublicWorkPassportStatusResponse
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
-from app.services.passport_visibility import owner_passport_blocks_public_access
+from app.services.passport_visibility import (
+    owner_has_canonical_passport,
+    owner_passport_blocks_public_access,
+)
 from app.services.public_work_passport_service import (
     EvidenceAccessDeniedError,
     EvidenceAccessGrantNotFoundError,
@@ -62,13 +65,16 @@ admin_router = APIRouter()
 
 
 def _enforce_canonical_passport_visibility(db: Any, public_slug: str) -> None:
-    """Black out this legacy surface while the owner's canonical Passport is Private.
+    """Black out this legacy surface for every canonical-era owner.
 
-    The legacy session passport keeps its own ``is_public`` flag, but the
-    canonical Work Passport visibility (``vbr_work_passports.is_published``)
-    is the master privacy switch: an owner who set their Passport to Private
-    must not remain reachable through legacy slugs. Owners with no canonical
-    Passport row keep the legacy behavior. Fails closed on lookup errors.
+    The legacy session passport keeps its own ``is_public`` flag, but it
+    predates the canonical disclosure system entirely (it never consults
+    ``load_effective_disclosure`` / ``enforce_public_safe``). So the moment an
+    owner has ANY canonical ``vbr_work_passports`` row — public or private —
+    their exclusive public surface is the canonical, disclosure-enforced one,
+    and every legacy slug returns the standard indistinguishable 404. Owners
+    with no canonical Passport row keep the legacy behavior (their legacy
+    ``is_public`` flag still applies). Fails closed on lookup errors.
     """
     try:
         if isinstance(db, dict):
@@ -94,6 +100,10 @@ def _enforce_canonical_passport_visibility(db: Any, public_slug: str) -> None:
         raise _passport_not_found(public_slug) from exc
     if row is None:
         return  # unknown slug: the service raises its own not-found
+    # Retirement gate first (any canonical row → dark), then the older
+    # private-canonical gate as belt-and-braces; both raise the same 404.
+    if owner_has_canonical_passport(db, row.get("user_id")):
+        raise _passport_not_found(public_slug)
     if owner_passport_blocks_public_access(db, row.get("user_id")):
         raise _passport_not_found(public_slug)
 

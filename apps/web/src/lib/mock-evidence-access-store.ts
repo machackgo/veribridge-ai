@@ -14,7 +14,7 @@
  * tokens, raw transcripts, admin notes, or debug metadata.
  */
 
-import type { EvidenceAccessRequest, EvidenceAccessStatus, EvidenceAccessFormInput } from "../types/evidence-access"
+import type { EvidenceAccessRequest, EvidenceAccessFormInput } from "../types/evidence-access"
 
 // ── Canonical demo passport slug ──────────────────────────────────────────────
 // All dev/mock pages must use this constant so recruiter, student dev, and
@@ -59,14 +59,18 @@ const STORE_KEY = "vb_dev_access_requests"
 // ── Persistence helpers ───────────────────────────────────────────────────────
 
 function load(): EvidenceAccessRequest[] {
-  if (typeof window === "undefined") return [...SAMPLE_REQUESTS]
+  // Default to EMPTY, never to fabricated sample requests: this store also
+  // backs the student-reachable /dashboard/passport/access page, and a real
+  // student must never see a fake pending request from a real company.
+  // Sample data is opt-in via resetStoreToSamples() on /dev/* pages only.
+  if (typeof window === "undefined") return []
   try {
     const raw = window.localStorage.getItem(STORE_KEY)
-    if (!raw) return [...SAMPLE_REQUESTS]
+    if (!raw) return []
     const parsed = JSON.parse(raw) as EvidenceAccessRequest[]
-    return Array.isArray(parsed) ? parsed : [...SAMPLE_REQUESTS]
+    return Array.isArray(parsed) ? parsed : []
   } catch {
-    return [...SAMPLE_REQUESTS]
+    return []
   }
 }
 

@@ -87,15 +87,6 @@ from app.services.website_skill_proof_focus import (
     VERIFICATION_MODE_LIVE,
     VERIFICATION_MODE_RECORDED,
 )
-from app.services.proof_synthesis_agent_service import (
-    PROOF_GITHUB,
-    PROOF_WEBSITE,
-    PROOF_DOCUMENT,
-    PROOF_DEFENSE,
-    PROOF_VIDEO,
-    PROOF_SKILL_GRAPH,
-)
-
 __all__ = [
     "PublicReportUnsafeError",
     "scrub_public_text",
@@ -627,20 +618,6 @@ _QUALITATIVE_TIER_FALLBACK = TIER_NEEDS_REVIEW
 _ALLOWED_SYNTHESIS_SOURCES = frozenset({"deterministic", "llm"})
 _SYNTHESIS_SOURCE_FALLBACK = "deterministic"
 
-# Display-label proof types for unlinked cards ("GitHub Proof", …).
-_ALLOWED_PROOF_TYPES = frozenset(
-    {
-        PROOF_GITHUB,
-        PROOF_WEBSITE,
-        PROOF_DOCUMENT,
-        PROOF_DEFENSE,
-        PROOF_VIDEO,
-        PROOF_SKILL_GRAPH,
-    }
-)
-_PROOF_TYPE_FALLBACK = "Other"
-
-
 def _safe_enum(value: Any, allowed: frozenset[str], fallback: str) -> str:
     """Echo an enum-like value only on an EXACT allowlist match, else the fallback.
 
@@ -1056,22 +1033,6 @@ def _safe_source_coverage(value: Any) -> dict[str, bool]:
     return out
 
 
-def _public_unlinked_card(card: dict[str, Any]) -> dict[str, Any]:
-    """Project one unlinked supporting-evidence card to a safe dict (no source_id)."""
-    if not isinstance(card, dict):
-        return {}
-    return {
-        "proof_type": _safe_enum(
-            card.get("proof_type"), _ALLOWED_PROOF_TYPES, _PROOF_TYPE_FALLBACK
-        ),
-        "title": public_safe_skill_name(card.get("title")) or "",
-        "safe_summary": scrub_public_text(card.get("safe_summary")),
-        "safe_location": _scrub_text_or_none(card.get("safe_location")),
-        "corroborates": _scrub_text_or_none(card.get("corroborates")) or "",
-        "limitation": _scrub_text_or_none(card.get("limitation")) or "",
-    }
-
-
 def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
     """Project a Work-Passport skill-report payload to a recruiter-safe shape.
 
@@ -1086,7 +1047,8 @@ def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
       :func:`public_safe_linked_chain`),
     * the synthesis results marked ``public_safe`` (via
       :func:`public_safe_synthesis_result`),
-    * a capped, safe ``unlinked_supporting_evidence`` bucket, and
+    * an always-EMPTY ``unlinked_supporting_evidence`` bucket (shape kept for
+      client compatibility), and
     * scrubbed limitations.
 
     Fail-closed: any linked chain or synthesis result whose ``public_safe`` is not
@@ -1094,17 +1056,18 @@ def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
     dropped by their projections), so a section becomes a safe empty list rather
     than leaking an unsafe item. The rich internal ``proof_chains`` (which still
     carry private source_ids and raw per-source fields) are intentionally
-    dropped — the linked chains are the public, citation-safe representation. The
-    result is run through :func:`enforce_public_safe` so it fail-closes on
-    anything that slips through.
+    dropped — the linked chains are the public, citation-safe representation.
+    ``unlinked_supporting_evidence`` is dropped ENTIRELY (items and counts):
+    those cards are built from private vault documents the student never
+    attached to any published project, so no disclosure node governs them and
+    their titles / match reasons must never surface publicly. The result is run
+    through :func:`enforce_public_safe` so it fail-closes on anything that
+    slips through.
     """
     if not isinstance(report, dict):
         return {}
 
     safe_coverage = _safe_source_coverage(report.get("source_coverage"))
-
-    unlinked = report.get("unlinked_supporting_evidence") or {}
-    unlinked_items = unlinked.get("items") if isinstance(unlinked, dict) else None
 
     projected = {
         "skill": public_safe_skill_name(report.get("skill")),
@@ -1120,17 +1083,10 @@ def public_safe_skill_report(report: dict[str, Any]) -> dict[str, Any]:
             for s in (report.get("llm_synthesis") or [])
             if isinstance(s, dict) and s.get("public_safe")
         ],
-        "unlinked_supporting_evidence": {
-            "items": [
-                _public_unlinked_card(card)
-                for card in (unlinked_items or [])
-                if isinstance(card, dict)
-            ],
-            "count": int(unlinked.get("count", 0) or 0) if isinstance(unlinked, dict) else 0,
-            "more_count": int(unlinked.get("more_count", 0) or 0)
-            if isinstance(unlinked, dict)
-            else 0,
-        },
+        # Public skill reports show only evidence chained to published
+        # projects. Unattached private vault evidence (and even its counts)
+        # never rides out — the empty bucket keeps the payload shape stable.
+        "unlinked_supporting_evidence": {"items": [], "count": 0, "more_count": 0},
         "limitations": _scrub_str_list(report.get("limitations")),
     }
     return enforce_public_safe(projected)

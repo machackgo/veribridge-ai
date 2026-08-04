@@ -22,6 +22,9 @@ from app.services.optional_evidence_service import (
 )
 
 _MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+# Bounded streaming chunk size — same OOM-safe pattern as the workflow-video
+# upload (workflow_visual_frames.py): never whole-body read before the size gate.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _STANDALONE_SOURCE_TYPES = ("document", "certificate_transcript")
 
 _DOCUMENT_MIME_BY_EXT = {
@@ -205,12 +208,22 @@ async def upload_document_proof(
             },
         )
 
-    content = await file.read()
-    if len(content) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail={"code": "file_too_large", "message": "File exceeds 20 MB limit."},
-        )
+    # Stream the body in bounded chunks — a bare ``await file.read()`` would
+    # materialize an oversized body in memory BEFORE the size check (the same
+    # failure mode as the workflow-video OOM incident). The 413 fires as soon
+    # as the limit is crossed, without ever buffering more than limit + chunk.
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={"code": "file_too_large", "message": "File exceeds 20 MB limit."},
+            )
+    content = bytes(buffer)
 
     skills = _clean_skills((claimed_skills or "").split(",")) if claimed_skills else []
     extra_metadata: dict[str, Any] = {
@@ -240,8 +253,11 @@ async def upload_document_proof(
     # Best-effort and honest: when retention storage is not configured the
     # submission stays verified-excerpts-only (original_retained=False) — the
     # analysis above is unaffected either way. Consent maps to the access
-    # policy: shared → public_safe (served to recruiters via the gated
-    # artifact routes), otherwise owner-only.
+    # policy: shared → recruiter_safe (owner + AUTHENTICATED privileged
+    # recruiter/reviewer callers via the gated artifact routes — the consented
+    # scope is recruiters, never anonymous), otherwise owner-only.
+    # Data repair for rows written before this fix mapped consent to
+    # public_safe: see docs/data-repairs/2026-08-recruiter-share-access-policy.md.
     artifact = proof_artifact_service.register_artifact_with_bytes(
         db,
         owner_user_id=user_id,
@@ -251,7 +267,7 @@ async def upload_document_proof(
         file_name=filename,
         mime_type=file.content_type or _DOCUMENT_MIME_BY_EXT.get(ext, "application/octet-stream"),
         proof_id=str(row.get("id") or ""),
-        access_policy="public_safe" if share_with_recruiters else "owner_only",
+        access_policy="recruiter_safe" if share_with_recruiters else "owner_only",
     )
 
     response = _to_response(row, user_id)

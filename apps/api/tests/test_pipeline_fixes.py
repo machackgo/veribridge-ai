@@ -34,11 +34,8 @@ class TestWorkflowAnalysisDBInsert:
     """Verify that _analyze_workflow result dict contains all expected fields
     and the upsert helper can write them to the in-memory store without error."""
 
-    def _run_analysis(self):
-        from app.services.extension_proof_workflow_analysis_service import (
-            ExtensionProofWorkflowAnalysisService,
-        )
-        mem: dict = {
+    def _mem_store(self) -> dict:
+        return {
             "extension_proof_sessions": {
                 "sess-1": {
                     "id": "sess-1",
@@ -55,8 +52,9 @@ class TestWorkflowAnalysisDBInsert:
                 }
             }
         }
-        svc = ExtensionProofWorkflowAnalysisService(mem)
-        row = svc.run_analysis(
+
+    def _run_kwargs(self) -> dict:
+        return dict(
             user_id="u1",
             session_id="sess-1",
             claimed_skills=["Python", "FastAPI"],
@@ -65,6 +63,14 @@ class TestWorkflowAnalysisDBInsert:
             url_type="localhost_url",
             github_url=None,
         )
+
+    def _run_analysis(self):
+        from app.services.extension_proof_workflow_analysis_service import (
+            ExtensionProofWorkflowAnalysisService,
+        )
+        mem = self._mem_store()
+        svc = ExtensionProofWorkflowAnalysisService(mem)
+        row = svc.run_analysis(**self._run_kwargs())
         return row
 
     def test_db_insert_success(self):
@@ -98,6 +104,53 @@ class TestWorkflowAnalysisDBInsert:
         # _db_saved=True, the upsert wrote all fields without error.
         row = self._run_analysis()
         assert row["_db_saved"] is True
+
+    def test_db_insert_success_marks_session_completed(self):
+        """The happy path still completes the session (G4 guard must not change it)."""
+        from app.services.extension_proof_workflow_analysis_service import (
+            ExtensionProofWorkflowAnalysisService,
+        )
+        mem = self._mem_store()
+        svc = ExtensionProofWorkflowAnalysisService(mem)
+        row = svc.run_analysis(**self._run_kwargs())
+        assert row["_db_saved"] is True
+        assert mem["extension_proof_sessions"]["sess-1"]["status"] == "completed"
+
+    def test_failed_db_insert_never_marks_session_completed(self, monkeypatch):
+        """G4 regression: when the analysis row insert fails, the session must
+        NOT be marked 'completed' — 'completed' gates canonical usability
+        (canonical_project_evidence), so an analysis-less completed session
+        would read as usable evidence. It stays 'analyzing' (a valid
+        re-analyze state) so a retry re-runs analysis."""
+        from app.services.extension_proof_workflow_analysis_service import (
+            ExtensionProofWorkflowAnalysisService,
+        )
+        mem = self._mem_store()
+        svc = ExtensionProofWorkflowAnalysisService(mem)
+
+        real_upsert = svc._upsert_result
+        calls = {"n": 0}
+
+        def _boom_once(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("simulated analysis insert failure")
+            return real_upsert(*args, **kwargs)
+
+        monkeypatch.setattr(svc, "_upsert_result", _boom_once)
+        row = svc.run_analysis(**self._run_kwargs())
+
+        # Degraded in-memory result is still returned and honestly flagged…
+        assert row["_db_saved"] is False
+        # …but the session is NOT completed; it remains re-analyzable.
+        session = mem["extension_proof_sessions"]["sess-1"]
+        assert session["status"] != "completed"
+        assert session["status"] == "analyzing"
+
+        # A retry from 'analyzing' is accepted and completes once persistence works.
+        retry = svc.run_analysis(**self._run_kwargs())
+        assert retry["_db_saved"] is True
+        assert mem["extension_proof_sessions"]["sess-1"]["status"] == "completed"
 
 
 # ---------------------------------------------------------------------------

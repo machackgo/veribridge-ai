@@ -59,12 +59,25 @@ def create_session(
     db: Any = Depends(get_db),
 ) -> ExtensionProofSessionResponse:
     try:
+        # get_db is service-role scoped, so ownership of EVERY caller-supplied
+        # id must be checked explicitly before it is persisted as an FK — a
+        # foreign/garbage id otherwise becomes an opaque FK 503 at insert time
+        # and could bind another student's rows into this user's evidence.
+        _require_owned_skill_evidence(db, user_id, body.skill_evidence_id)
         if body.project_id:
-            # get_db is service-role scoped, so ownership must be checked
-            # explicitly before an external project id can become evidence.
             from app.api.v1.endpoints.vbr_projects import get_owned_vbr_project_or_404
 
             get_owned_vbr_project_or_404(db, body.project_id, user_id)
+        if body.parent_proof_session_id:
+            # A follow-up may only chain onto the caller's OWN session; the
+            # same fail-closed lookup every core route uses (404, never 403,
+            # so foreign session ids are never confirmed to exist).
+            try:
+                ExtensionProofSessionService(db).require_owned_session(
+                    user_id, body.parent_proof_session_id
+                )
+            except ExtensionProofSessionNotFoundError as exc:
+                raise _not_found(body.parent_proof_session_id) from exc
         return ExtensionProofSessionService(db).create_session(user_id, body)
     except HTTPException:
         # Preserve the ownership-safe 404 from the project lookup. Converting it
@@ -169,7 +182,45 @@ def complete_session(
         raise _database_unavailable(exc) from exc
 
 
+# ── Ownership validation ──────────────────────────────────────────────────────
+
+def _require_owned_skill_evidence(db: Any, user_id: str, evidence_id: str) -> None:
+    """Raise 404 unless ``evidence_id`` is a skill_evidence row owned by the caller.
+
+    Mirrors ``get_owned_vbr_project_or_404``: 404 (never 403) so the existence
+    of other students' evidence rows is never revealed.
+    """
+    if isinstance(db, dict):
+        row = db.setdefault("skill_evidence", {}).get(evidence_id)
+        if not row or str(row.get("user_id")) != str(user_id):
+            raise _skill_evidence_not_found(evidence_id)
+        return
+
+    result = (
+        db.table("skill_evidence")
+        .select("id")
+        .eq("id", evidence_id)
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    data = getattr(result, "data", None) if result is not None else None
+    if not data:
+        raise _skill_evidence_not_found(evidence_id)
+
+
 # ── Error helpers ─────────────────────────────────────────────────────────────
+
+def _skill_evidence_not_found(evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "skill_evidence_not_found",
+            "message": "Skill evidence not found for the current user.",
+            "skill_evidence_id": evidence_id,
+        },
+    )
+
 
 def _not_found(session_id: str) -> HTTPException:
     return HTTPException(

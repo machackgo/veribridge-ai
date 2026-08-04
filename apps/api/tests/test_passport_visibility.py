@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.main import app
 from app.services.passport_visibility import (
+    owner_has_canonical_passport,
     owner_passport_blocks_public_access,
     owner_passport_is_public,
 )
@@ -280,6 +281,47 @@ def test_legacy_session_passport_surface_respects_canonical_visibility(
         assert "Ada" not in res.text, path  # no identity leak in the 404 body
 
 
+def test_legacy_session_passport_surface_is_retired_for_canonical_owners(
+    client: TestClient, mem_store: dict
+) -> None:
+    """G3: the legacy session-passport surface predates the disclosure system
+    entirely, so ANY canonical Passport row — even a PUBLIC one — retires it:
+    every legacy public route 404s indistinguishably. The owner's only public
+    surface is the canonical, disclosure-enforced one."""
+    mem_store.setdefault("public_work_passports", {})["legacy-pass-2"] = {
+        "id": "legacy-pass-2",
+        "user_id": USER_ID,
+        "proof_session_id": "session-2",
+        "public_slug": "legacy-slug-2",
+        "is_public": True,
+    }
+    seed_published_passport(mem_store, USER_ID, is_published=True)  # PUBLIC canonical row
+    app.dependency_overrides.pop(get_current_user_id, None)
+
+    for path in (
+        "/api/v1/public/passports/legacy-slug-2",
+        "/api/v1/public/passports/legacy-slug-2/recruiter-view",
+        "/api/v1/public/passports/legacy-slug-2/status",
+        "/api/v1/public/passports/legacy-slug-2/skill-evidence-timeline",
+        "/api/v1/public/passports/legacy-slug-2/export",
+        "/api/v1/public/passports/legacy-slug-2/github-proofs",
+    ):
+        res = client.get(path)
+        assert res.status_code == 404, path
+        assert "Ada" not in res.text, path  # no identity leak in the 404 body
+
+    # The write-style legacy routes are retired too (request-access / save).
+    res = client.post(
+        "/api/v1/public/passports/legacy-slug-2/request-access",
+        json={
+            "requester_name": "Recruiter Person",
+            "requester_email": "recruiter@example.com",
+            "requested_sections": ["github_analysis"],
+        },
+    )
+    assert res.status_code == 404
+
+
 def test_public_responses_are_never_cacheable(client: TestClient) -> None:
     """Every /public/ response carries Cache-Control: no-store so browsers and
     CDNs re-check visibility on each open — Public → Private revokes instantly."""
@@ -336,11 +378,16 @@ def test_visibility_helpers_fail_closed() -> None:
     assert owner_passport_is_public(store, None) is False
     assert owner_passport_is_public(store, "no-row-user") is False
     assert owner_passport_blocks_public_access(store, "no-row-user") is False  # legacy keeps own gate
+    assert owner_has_canonical_passport(store, None) is False
+    assert owner_has_canonical_passport(store, "no-row-user") is False
 
     row = seed_published_passport(store, "u1")
     assert owner_passport_is_public(store, "u1") is True
     assert owner_passport_blocks_public_access(store, "u1") is False
+    # The retirement gate trips on ANY canonical row — public or private.
+    assert owner_has_canonical_passport(store, "u1") is True
 
     row["is_published"] = False
     assert owner_passport_is_public(store, "u1") is False
     assert owner_passport_blocks_public_access(store, "u1") is True
+    assert owner_has_canonical_passport(store, "u1") is True

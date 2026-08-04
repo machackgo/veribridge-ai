@@ -125,6 +125,51 @@ def test_check_url_rejects_local_private_host(client: TestClient, mem_store: dic
     assert len(mem_store["vbr_deployed_url_checks"]) == 1
 
 
+def test_check_url_follows_redirects_and_passes(
+    client: TestClient, mem_store: dict, monkeypatch
+) -> None:
+    """Regression: a redirecting deployed URL (http→https, apex→www — i.e. most
+    real deploys) must resolve via urljoin and record a pass, not collapse to
+    'unable' (a missing urljoin import previously NameError'd on every hop)."""
+    from app.services import vbr_github_ingestion as ing
+
+    calls: list[str] = []
+
+    class _Resp:
+        def __init__(self, status_code: int, headers: dict | None = None, text: str = "") -> None:
+            self.status_code = status_code
+            self.headers = headers or {}
+            self.text = text
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs) -> None: ...
+        def __enter__(self) -> "_FakeClient":
+            return self
+        def __exit__(self, *args) -> bool:
+            return False
+        def get(self, url: str) -> _Resp:
+            calls.append(url)
+            if url == "https://myapp-redirect.example.com":
+                return _Resp(308, {"location": "/home"})
+            return _Resp(200, {"content-type": "text/html"}, "<title>My App</title>")
+
+    monkeypatch.setattr(ing, "_host_resolves_public", lambda hostname: True)
+    monkeypatch.setattr(ing.httpx, "Client", _FakeClient)
+
+    project = _create_project(client, deployed_url="https://myapp-redirect.example.com")
+    response = client.post(f"/api/v1/student/vbr/projects/{project['id']}/check-url")
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["result"] == "pass"
+    assert body["status_code"] == 200
+    # The relative Location header must be resolved against the current URL.
+    assert calls == [
+        "https://myapp-redirect.example.com",
+        "https://myapp-redirect.example.com/home",
+    ]
+
+
 def test_create_project_rejects_non_github_repo_url(client: TestClient) -> None:
     response = client.post(
         "/api/v1/student/vbr/projects",

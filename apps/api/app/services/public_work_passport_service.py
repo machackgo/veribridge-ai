@@ -997,7 +997,10 @@ def _public_response(passport: dict[str, Any], evidence: dict[str, Any]) -> Publ
         verified_skills=list(ai_domain.get("verified_skills") or readiness.strongly_supported_skills),
         partially_verified_skills=list(ai_domain.get("partially_verified_skills") or readiness.partially_supported_skills),
         skills_needing_more_evidence=list(ai_domain.get("skills_needing_more_evidence") or [_clean_need_more(s) for s in readiness.needs_more_evidence]),
-        readiness_score=readiness.readiness_score,
+        # Product rule (shared with the canonical scrubbers, see
+        # vbr_public_project_report): numeric scores never reach a public
+        # payload — the qualitative readiness_level is the public signal.
+        readiness_score=None,
         readiness_level=readiness.readiness_level,
         public_project_links=_public_links(evidence),
         disclosure_note=_PUBLIC_DISCLOSURE,

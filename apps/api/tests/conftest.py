@@ -74,6 +74,26 @@ def seed_published_passport(store: dict, user_id: str, *, is_published: bool = T
     return row
 
 
+def seed_skill_evidence(store: dict, user_id: str, evidence_id: str, **overrides) -> dict:
+    """Seed an owned ``skill_evidence`` row in a dict-mode store.
+
+    Extension-proof session creation fail-closes on caller-supplied ids (G6):
+    ``skill_evidence_id`` must reference a skill_evidence row owned by the
+    caller, so tests that create sessions seed the referenced row first.
+    """
+    row = {
+        "id": str(evidence_id),
+        "user_id": str(user_id),
+        "skill_name": "Test Skill",
+        "evidence_type": "website",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        **overrides,
+    }
+    store.setdefault("skill_evidence", {})[row["id"]] = row
+    return row
+
+
 @pytest.fixture(autouse=True)
 def _hermetic_llm_synthesis(monkeypatch):
     """Force the LLM synthesis layer offline for every backend test.

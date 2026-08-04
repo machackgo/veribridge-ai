@@ -483,20 +483,6 @@ export type WorkPassportAnalyticsResponse = {
   generated_at: string
 }
 
-export type ProofVersionResponse = {
-  id: string
-  user_id: string
-  proof_session_id: string
-  version_number: number
-  status: string
-  version_label?: string | null
-  snapshot_summary?: Record<string, unknown> | null
-  change_reason?: string | null
-  submitted_skills: string[]
-  created_at: string
-  updated_at: string
-}
-
 export type AdminQualityReviewCaseResponse = {
   id: string
   user_id: string
@@ -933,38 +919,6 @@ export function getWorkPassportAnalyticsActivity(
   if (params?.proof_session_id) qs.set("proof_session_id", params.proof_session_id)
   if (params?.limit != null) qs.set("limit", String(params.limit))
   return apiJson(`${API}/student/work-passport/analytics/activity${qs.size ? `?${qs}` : ""}`)
-}
-
-// ─── Proof Versioning ──────────────────────────────────────────────────────
-
-export function listProofVersions(sessionId: string): Promise<ProofVersionResponse[]> {
-  return apiJson(`${API}/student/extension-proof/sessions/${sessionId}/versions`)
-}
-
-export function getActiveProofVersion(sessionId: string): Promise<ProofVersionResponse | null> {
-  return apiJson<ProofVersionResponse>(`${API}/student/extension-proof/sessions/${sessionId}/versions/active`).catch(() => null)
-}
-
-export function createProofVersion(
-  sessionId: string,
-  body?: { change_reason?: string; version_label?: string },
-): Promise<ProofVersionResponse> {
-  return apiJson(`${API}/student/extension-proof/sessions/${sessionId}/versions`, {
-    method: "POST",
-    body: body ? JSON.stringify(body) : undefined,
-  })
-}
-
-export function activateProofVersion(sessionId: string, versionId: string): Promise<ProofVersionResponse> {
-  return apiJson(`${API}/student/extension-proof/sessions/${sessionId}/versions/${versionId}/activate`, {
-    method: "POST",
-  })
-}
-
-export function archiveProofVersion(sessionId: string, versionId: string): Promise<ProofVersionResponse> {
-  return apiJson(`${API}/student/extension-proof/sessions/${sessionId}/versions/${versionId}/archive`, {
-    method: "POST",
-  })
 }
 
 // ─── Recruiter Saved Passports ─────────────────────────────────────────────

@@ -1769,7 +1769,14 @@ def test_resolver_fails_closed_on_unknown_inputs(mem_store: dict) -> None:
     assert disclosure.mode == MODE_RECRUITER_SAFE
     assert disclosure.aspect(project_id, "not_an_aspect") == HIDDEN
 
-    # Invalid stored rows (bad type / bad value) are dropped on read.
+    # Invalid stored rows (bad type / bad value) are dropped on read. The
+    # project itself is seeded as published (on the passport) so the resolver
+    # answers from defaults — membership scoping is pinned by its own tests.
+    mem_store.setdefault("vbr_projects", {})[project_id] = {
+        "id": project_id,
+        "user_id": USER_ID,
+        "public_report_token": "tok-resolver-unit",
+    }
     mem_store.setdefault("passport_disclosure_overrides", {})["bad-1"] = {
         "id": "bad-1",
         "user_id": USER_ID,
@@ -1821,6 +1828,13 @@ def test_artifact_gate_units_owner_unmapped_and_download(mem_store: dict) -> Non
     seed_published_passport(mem_store, USER_ID)
     project_id = str(uuid4())
     document_key = str(uuid4())
+    # The document's project is ON the passport (published report) — this unit
+    # test exercises the retention/download gates, not membership scoping.
+    mem_store.setdefault("vbr_projects", {})[project_id] = {
+        "id": project_id,
+        "user_id": USER_ID,
+        "public_report_token": "tok-artifact-gate-unit",
+    }
     base = {
         "retained": True,
         "owner_user_id": USER_ID,
@@ -2334,6 +2348,127 @@ def test_full_access_scoping_never_narrows_below_recruiter_safe(
     )
     # Still never a download — the floor restores views only.
     assert client.get(f"/api/v1/proofs/artifacts/{shared['id']}/download").status_code == 404
+
+
+def test_passport_membership_gates_project_visibility_in_every_public_mode(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F11d) Membership scoping is mode-independent: a project absent from the
+    published passport never resolves VISIBLE on public surfaces — recruiter-safe
+    and custom resolve the project node VISIBLE by default, so without the gate
+    a never-published project's chains (title + evidence) surface on the public
+    Skill Report in those modes too, not only in full access."""
+    ctx = _publish_setup(client, mem_store)
+    unpublished = _make_project(
+        client,
+        mem_store,
+        title="Never Published Draft",
+        repo_owner="draftorg",
+        repo_name="draft-repo",
+    )
+
+    for mode in (MODE_RECRUITER_SAFE, MODE_CUSTOM, MODE_FULL_ACCESS):
+        assert _set_mode(client, mode).status_code == 200, mode
+        resolved = load_effective_disclosure(mem_store, USER_ID, passport_public=True)
+        # The published project keeps its normal resolution (override semantics
+        # for published projects are untouched by membership scoping) …
+        assert resolved.project_visible(ctx["project_id"]) is True, mode
+        assert resolved.report_visible(ctx["project_id"]) is True, mode
+        # … while the unpublished project fails closed at the project node,
+        # which every project-keyed path (report, aspects, documents, project
+        # skills) inherits.
+        assert resolved.on_passport(unpublished["project_id"]) is False, mode
+        assert resolved.project_visible(unpublished["project_id"]) is False, mode
+        assert resolved.report_visible(unpublished["project_id"]) is False, mode
+
+
+def test_stale_custom_override_never_reopens_an_unpublished_project(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F11e) Custom-mode mirror of F11b: a viewable grant written while a
+    project WAS published becomes inert the moment its report is unpublished.
+    Membership — not the stored override row — decides; republish restores the
+    grant (nothing is deleted)."""
+    _full_setup(client, mem_store)
+    draft = _make_project(
+        client,
+        mem_store,
+        title="Granted Then Unpublished",
+        repo_owner="staleorg",
+        repo_name="stale-repo",
+        website=True,
+    )
+    published = _publish_report(client, draft["project_id"])
+    assert published.status_code in (200, 201)
+    replay = _register_artifact(
+        mem_store,
+        artifact_type="website_replay_video",
+        proof_type="website",
+        proof_id=draft["website_session_id"],
+        project_id=draft["project_id"],
+        mime="video/webm",
+        data=b"stale-replay-bytes",
+    )
+    _set_mode(client, MODE_CUSTOM)
+    granted = _apply(
+        client,
+        _ov("website_video", draft["project_id"], "viewable"),
+        _ov("website_frames", draft["project_id"], "viewable"),
+    )
+    assert granted.status_code == 200
+
+    # While the project is published, the custom grant serves the replay.
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{replay['id']}/view").status_code == 200
+
+    # Unpublish the report → the project leaves the passport; the override row
+    # is still stored but must be inert.
+    _as_user(client, USER_ID)
+    unpublished_res = client.delete(
+        f"/api/v1/student/vbr/projects/{draft['project_id']}/public-report"
+    )
+    assert unpublished_res.status_code == 200
+
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{replay['id']}/view").status_code == 404
+    resolved = load_effective_disclosure(mem_store, USER_ID, passport_public=True)
+    assert resolved.configured("website_video", draft["project_id"]) == "viewable"  # stored…
+    assert resolved.project_visible(draft["project_id"]) is False  # …but inert
+
+    # Republish → the stored grant applies again (reversible, nothing deleted).
+    _as_user(client, USER_ID)
+    assert _publish_report(client, draft["project_id"]).status_code in (200, 201)
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{replay['id']}/view").status_code == 200
+
+
+def test_public_skill_report_never_names_unpublished_projects_in_any_mode(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F11f) The G1 leak itself, end-to-end: the public Skill Report scans the
+    whole vault, so a chain from a NEVER-published project must be dropped by
+    the membership gate in recruiter-safe AND custom modes (full access was
+    already covered by F11b's gate) — its title must not appear anywhere in the
+    public payload, while the published project's chain survives."""
+    ctx = _publish_setup(client, mem_store)  # "Skill Evidence Tracker", published
+    _make_project(
+        client,
+        mem_store,
+        title="Stealth Internal Rewrite",
+        repo_owner="ghostorg",
+        repo_name="ghost-repo",
+        claimed_skills=["Python"],
+    )
+
+    for mode in (MODE_RECRUITER_SAFE, MODE_CUSTOM, MODE_FULL_ACCESS):
+        _as_user(client, USER_ID)
+        assert _set_mode(client, mode).status_code == 200, mode
+        _as_anon(client)
+        res = _public_skill_report(client, ctx["slug"], "python")
+        assert res.status_code == 200, mode
+        assert "Stealth Internal Rewrite" not in res.text, mode
+        assert "ghost-repo" not in res.text, mode
+        assert "Skill Evidence Tracker" in res.text, mode
 
 
 def test_full_access_public_payloads_carry_no_owner_or_storage_internals(

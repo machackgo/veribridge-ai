@@ -2603,6 +2603,10 @@ describe("DevRecruiterPassportPreviewPage — onReset gating", () => {
 
   it("dev page: fallback mode shows inner reset button (onReset defined when backend unavailable)", async () => {
     vi.mocked(apiModule.listRecruiterSkillEvidencePipelines).mockResolvedValue(null)
+    // Samples are opt-in now (the store defaults to honestly-empty): seed them
+    // the way a dev user would via the page's reset-to-samples control.
+    const store = await import("@/lib/mock-evidence-access-store")
+    store.resetAccessRequestStore()
     render(<DevRecruiterPassportPreviewPage />)
     await waitFor(() => expect(screen.getByTestId("banner-fallback-badge")).toBeInTheDocument())
     // onReset=handleReset when backendStatus==="unavailable"

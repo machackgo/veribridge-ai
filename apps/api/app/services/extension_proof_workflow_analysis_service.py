@@ -1892,12 +1892,26 @@ class ExtensionProofWorkflowAnalysisService:
                 **result,
             }
 
-        try:
-            self._update_session_status(user_id, session_id, "completed")
-        except Exception:
+        if db_saved:
+            try:
+                self._update_session_status(user_id, session_id, "completed")
+            except Exception:
+                logger.warning(
+                    "WORKFLOW_ANALYSIS_STATUS_COMPLETED_FAILED session=%s",
+                    session_id, exc_info=True,
+                )
+        else:
+            # 'completed' gates canonical usability (see
+            # canonical_project_evidence.USABLE_WEBSITE_SESSION_STATUSES) — a
+            # session must never read completed while its analysis row was NOT
+            # persisted, or downstream surfaces would treat an analysis-less
+            # session as usable evidence. The session stays in its current
+            # status ('analyzing', a valid re-analyze state in
+            # _VALID_ANALYZE_FROM) so a retry re-runs analysis and persists.
             logger.warning(
-                "WORKFLOW_ANALYSIS_STATUS_COMPLETED_FAILED session=%s",
-                session_id, exc_info=True,
+                "WORKFLOW_ANALYSIS_SESSION_NOT_COMPLETED session=%s — analysis row "
+                "not persisted; session left re-analyzable instead of completed",
+                session_id,
             )
 
         row["_db_saved"] = db_saved

@@ -31,9 +31,12 @@ from app.services.project_defense_analysis_service import (
 from app.services.transcription_service import (
     TranscriptionResult,
     TranscriptionUnavailableError,
+    TranscriptSegment,
     transcribe_audio,
 )
 from app.services.verification_readiness_service import compute_readiness_report
+
+from tests.conftest import seed_skill_evidence
 
 # ── Test identifiers ──────────────────────────────────────────────────────────
 
@@ -52,6 +55,8 @@ def mem_store() -> dict:
 def client(mem_store: dict) -> TestClient:
     app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
+    # Session creation fail-closes on unowned skill_evidence_id (G6).
+    seed_skill_evidence(mem_store, DEMO_USER_ID, EVIDENCE_ID)
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -1766,3 +1771,143 @@ class TestStorageUpload:
         data = r.json()
         assert data["overall_defense_score"] > 0
         assert data["transcription_status"] == "analysis_complete"
+
+
+# ── No-speech / low-quality gates (G3) ────────────────────────────────────────
+
+
+class TestTranscribeNoSpeechAndLowQualityGates:
+    """G3 regression: Whisper's punctuation-only / repeated-token output must
+    never be refined, persisted or returned as ``transcript_ready`` — the
+    endpoint applies the same meaningfulness/quality gates as VBR
+    (``vbr_transcription``) and fails honestly with retry guidance."""
+
+    def _transcribe(self, client: TestClient, session_id: str, mock_result: TranscriptionResult):
+        with patch(
+            "app.services.transcription_service.transcribe_audio",
+            return_value=mock_result,
+        ):
+            return client.post(
+                f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcribe"
+            )
+
+    def test_punctuation_only_segments_return_no_speech_not_ready(
+        self, client: TestClient, mem_store: dict
+    ):
+        """A silent recording yields "." segments — honest no_speech, nothing saved."""
+        session_id = _make_session(client)
+        _upload_media(client, session_id, "silent.mp3")
+
+        mock_result = TranscriptionResult(
+            transcript_text=". . . .",
+            provider_used="openai",
+            transcript_segments=[
+                TranscriptSegment(0.0, 7.0, "."),
+                TranscriptSegment(7.0, 14.0, "."),
+                TranscriptSegment(14.0, 21.0, "."),
+            ],
+        )
+        r = self._transcribe(client, session_id, mock_result)
+
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["transcription_status"] == "no_speech"
+        assert data["transcript_text"] == ""
+        assert data["configured"] is True
+        assert "retry" in data["message"].lower() or "clearer" in data["message"].lower()
+
+        # Nothing was persisted — the session keeps its pre-transcribe state,
+        # so a retry re-runs transcription from scratch.
+        svc = ProjectDefenseAnalysisService(mem_store)
+        row = svc.get_analysis(DEMO_USER_ID, session_id)
+        assert row is not None
+        assert not row.get("transcript_text")
+        assert row["transcription_status"] == "uploaded"
+
+    def test_punctuation_only_output_is_never_refined_into_content(
+        self, client: TestClient, mem_store: dict
+    ):
+        """The gate runs BEFORE refinement — refinement must not be reached."""
+        session_id = _make_session(client)
+        _upload_media(client, session_id, "silent.webm")
+
+        mock_result = TranscriptionResult(transcript_text="...", provider_used="openai")
+        with patch(
+            "app.services.transcription_service.transcribe_audio",
+            return_value=mock_result,
+        ), patch(
+            "app.services.transcript_refinement_service.refine_project_defense_transcript"
+        ) as refine_mock:
+            r = client.post(
+                f"/api/v1/student/extension-proof/sessions/{session_id}/defense/transcribe"
+            )
+        assert r.status_code == 200, r.text
+        assert r.json()["transcription_status"] == "no_speech"
+        refine_mock.assert_not_called()
+
+    def test_repeated_token_hallucination_returns_low_quality(
+        self, client: TestClient, mem_store: dict
+    ):
+        """A "new new new …" hallucination fails closed as low_quality."""
+        session_id = _make_session(client)
+        _upload_media(client, session_id, "degraded.mp3")
+
+        hallucinated = " ".join(["new"] * 40)
+        mock_result = TranscriptionResult(
+            transcript_text=hallucinated,
+            provider_used="openai",
+            transcript_segments=[TranscriptSegment(0.0, 30.0, hallucinated)],
+        )
+        r = self._transcribe(client, session_id, mock_result)
+
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["transcription_status"] == "low_quality"
+        assert data["transcript_text"] == ""
+        assert "new new" not in r.text
+
+        svc = ProjectDefenseAnalysisService(mem_store)
+        row = svc.get_analysis(DEMO_USER_ID, session_id)
+        assert row is not None
+        assert not row.get("transcript_text")
+        assert row["transcription_status"] == "uploaded"
+
+    def test_degenerate_segments_fail_even_when_full_text_looks_clean(
+        self, client: TestClient, mem_store: dict
+    ):
+        """Gates measure BOTH sources — clean full_text cannot mask "." segments
+        hallucinated into a dominant repeated token."""
+        session_id = _make_session(client)
+        _upload_media(client, session_id, "mixed.mp3")
+
+        mock_result = TranscriptionResult(
+            transcript_text="ok ok ok ok ok ok",
+            provider_used="openai",
+            transcript_segments=[TranscriptSegment(0.0, 10.0, "ok ok ok ok ok ok")],
+        )
+        r = self._transcribe(client, session_id, mock_result)
+        assert r.status_code == 200, r.text
+        assert r.json()["transcription_status"] == "low_quality"
+
+    def test_real_speech_still_persists_transcript_ready(
+        self, client: TestClient, mem_store: dict
+    ):
+        """The gates do not block genuine short answers with distinct words."""
+        session_id = _make_session(client)
+        _upload_media(client, session_id, "talk.mp3")
+
+        mock_result = TranscriptionResult(
+            transcript_text="I built the backend scoring route with FastAPI.",
+            provider_used="openai",
+            transcript_segments=[
+                TranscriptSegment(0.0, 6.0, "I built the backend scoring route with FastAPI.")
+            ],
+        )
+        r = self._transcribe(client, session_id, mock_result)
+        assert r.status_code == 200, r.text
+        assert r.json()["transcription_status"] == "transcript_ready"
+
+        svc = ProjectDefenseAnalysisService(mem_store)
+        row = svc.get_analysis(DEMO_USER_ID, session_id)
+        assert row is not None
+        assert row["transcription_status"] == "transcript_ready"

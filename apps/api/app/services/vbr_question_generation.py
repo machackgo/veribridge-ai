@@ -238,6 +238,10 @@ def generate_claims(db: Any, project: dict[str, Any]) -> list[dict[str, Any]] | 
             "id": str(uuid4()),
             "project_id": project["id"],
             "claim_text": spec["claim_text"],
+            # Historical value kept for row compatibility: these claims come
+            # from deterministic templates, NOT an LLM. The value is internal
+            # provenance (regeneration filter) and is never surfaced to users
+            # as an AI/LLM label. Renaming would require a data migration.
             "source": "llm_proposed",
             "status": "proposed",
             "anchors": spec["anchors"],

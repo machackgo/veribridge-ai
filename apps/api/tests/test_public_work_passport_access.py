@@ -211,7 +211,10 @@ def test_public_passport_can_be_fetched_by_slug(client: TestClient, mem_store: d
     body = response.json()
     assert body["public_slug"] == passport["public_slug"]
     assert body["ai_domain_reviewer_name"] == "Astra"
-    assert body["readiness_score"] >= 80
+    # Product rule: numeric scores never reach a public payload — only the
+    # qualitative readiness level survives on the legacy public passport.
+    assert body["readiness_score"] is None
+    assert body["readiness_level"]
     view_events = list(mem_store.get("public_passport_view_events", {}).values())
     assert len(view_events) == 1
     assert view_events[0]["passport_id"] == passport["id"]

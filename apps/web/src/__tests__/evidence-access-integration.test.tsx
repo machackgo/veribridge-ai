@@ -92,12 +92,17 @@ describe("Shared evidence-access types", () => {
 describe("mock-evidence-access-store", () => {
   beforeEach(() => { clearAccessRequestStore() })
 
-  it("listStudentAccessRequests returns sample requests when store is empty", () => {
+  it("listStudentAccessRequests returns EMPTY when store is empty (no fabricated requests)", () => {
+    // Honest-default contract: a real student must never see a fake pending
+    // request from a real company. Samples are opt-in via resetAccessRequestStore().
+    expect(listStudentAccessRequests()).toHaveLength(0)
+  })
+
+  it("resetAccessRequestStore explicitly seeds the sample requests (dev pages only)", () => {
+    resetAccessRequestStore()
     const requests = listStudentAccessRequests()
     expect(requests.length).toBeGreaterThan(0)
-    // Sample data should include a Stripe pending request
-    const pending = requests.filter((r) => r.status === "pending")
-    expect(pending.length).toBeGreaterThan(0)
+    expect(requests.some((r) => r.requesterName === "Stripe Early Talent")).toBe(true)
   })
 
   it("createAccessRequest persists to store and is visible via list", () => {
@@ -261,8 +266,9 @@ describe("mock-evidence-access-store — canonical slug and upsert", () => {
   })
 
   it("recruiter submit with DEMO_PASSPORT_SLUG upserts over the sample-stripe entry", () => {
-    // After clearAccessRequestStore, load() returns SAMPLE_REQUESTS which has
-    // sample-stripe-001 with requesterEmail "recruiter@stripe.com" and DEMO_PASSPORT_SLUG.
+    // Samples are opt-in now: seed them explicitly, then upsert over the
+    // sample-stripe-001 entry (requesterEmail "recruiter@stripe.com").
+    resetAccessRequestStore()
     const req = createAccessRequest(
       {
         requesterName: "Stripe Recruiter Updated",
@@ -611,15 +617,14 @@ describe("clearMockEvidenceAccessRequests — named export", () => {
     expect(listStudentAccessRequests()).toHaveLength(0)
   })
 
-  it("differs from clearAccessRequestStore: clearMock prevents sample fallback; clearStore allows it", () => {
-    // clearMockEvidenceAccessRequests writes [] → empty, no sample fallback
+  it("both clear variants leave the store honestly empty (no sample fallback)", () => {
     clearMockEvidenceAccessRequests()
     expect(listStudentAccessRequests()).toHaveLength(0)
 
-    // clearAccessRequestStore removes the key → load() falls back to SAMPLE_REQUESTS
+    // Removing the key entirely also yields empty now — the sample fallback
+    // was removed so fabricated requests can never reach a real student.
     clearAccessRequestStore()
-    expect(listStudentAccessRequests().length).toBeGreaterThan(0)
-    expect(listStudentAccessRequests().some((r) => r.requesterName === "Stripe Early Talent")).toBe(true)
+    expect(listStudentAccessRequests()).toHaveLength(0)
   })
 
   it("even DEMO_PASSPORT_SLUG requests return empty after clearMockEvidenceAccessRequests", () => {

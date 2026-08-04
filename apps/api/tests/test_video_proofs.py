@@ -63,6 +63,18 @@ def _as(client, user_id):
     client.caller["optional"] = user_id
 
 
+def _grant_role(db, user_id, role):
+    db.setdefault("user_roles", {})[f"{user_id}:{role}"] = {
+        "id": f"{user_id}:{role}",
+        "user_id": user_id,
+        "role": role,
+        "scope": "global",
+        "scope_id": None,
+        "is_active": True,
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+
+
 @pytest.fixture()
 def transcription_unavailable(monkeypatch):
     def _unavailable(*_args, **_kwargs):
@@ -174,6 +186,65 @@ def test_upload_records_honest_unavailable_stages(client, transcription_unavaila
     assert "not configured" in analysis["demo_summary"]
 
 
+def test_punctuation_only_transcript_is_no_speech_not_completed(
+    client, mem_store, frames_unavailable, monkeypatch
+):
+    # G3 regression: Whisper over silent audio emits punctuation-only "."
+    # segments — those must never be persisted or reported as a completed
+    # transcript (same meaningfulness gate as VBR).
+    def _dots(*_args, **_kwargs):
+        return TranscriptionResult(
+            transcript_text=". . .",
+            provider_used="test",
+            transcript_segments=[
+                TranscriptSegment(0.0, 7.0, "."),
+                TranscriptSegment(7.0, 14.0, "."),
+                TranscriptSegment(14.0, 21.0, "."),
+            ],
+        )
+
+    monkeypatch.setattr(video_proof_service, "transcribe_audio", _dots)
+    proof = _upload(client).json()
+    assert proof["transcript_status"] == "no_speech"
+    assert proof["segment_count"] == 0
+    assert mem_store.get("video_proof_transcript_segments", {}) == {}
+    assert "no usable narration speech" in proof["analysis"]["demo_summary"].lower()
+
+
+def test_repeated_token_hallucination_is_no_speech_not_completed(
+    client, mem_store, frames_unavailable, monkeypatch
+):
+    # G3 regression: a "new new new …" hallucination clears the empty-check but
+    # is not usable narration — the low-quality gate fails it closed instead of
+    # persisting it as a completed transcript.
+    hallucinated = " ".join(["new"] * 40)
+
+    def _hallucinated(*_args, **_kwargs):
+        return TranscriptionResult(
+            transcript_text=hallucinated,
+            provider_used="test",
+            transcript_segments=[TranscriptSegment(0.0, 30.0, hallucinated)],
+        )
+
+    monkeypatch.setattr(video_proof_service, "transcribe_audio", _hallucinated)
+    proof = _upload(client).json()
+    assert proof["transcript_status"] == "no_speech"
+    assert proof["segment_count"] == 0
+    assert mem_store.get("video_proof_transcript_segments", {}) == {}
+
+
+def test_untimed_punctuation_only_text_is_no_speech(client, frames_unavailable, monkeypatch):
+    # Provider returned plain "." text without segments — previously persisted
+    # as one "completed" untimed segment.
+    def _dot_text(*_args, **_kwargs):
+        return TranscriptionResult(transcript_text="...", provider_used="test")
+
+    monkeypatch.setattr(video_proof_service, "transcribe_audio", _dot_text)
+    proof = _upload(client).json()
+    assert proof["transcript_status"] == "no_speech"
+    assert proof["segment_count"] == 0
+
+
 def test_analysis_epistemics_never_overclaim(client, transcription_ok, frames_ok):
     proof = _upload(client).json()
     analysis = proof["analysis"]
@@ -247,8 +318,37 @@ def test_video_proof_is_owner_only_until_shared(client, transcription_ok, frames
     assert client.get(f"/api/v1/proofs/video/{proof_id}").status_code == 200
     assert client.get(f"/api/v1/proofs/video/{proof_id}/transcript").status_code == 200
     assert client.get(f"/api/v1/proofs/video/{proof_id}/frames").status_code == 200
-    # Sharing propagated to the retained artifacts (original + frames).
+    # G1: the toggle consents to RECRUITERS — retained bytes (original +
+    # frames) go recruiter_safe, so an ANONYMOUS caller still gets the
+    # indistinct 404 while an authenticated recruiter streams them.
+    assert client.get(f"/api/v1/proofs/artifacts/{artifact_id}/view").status_code == 404
+
+    recruiter = "44444444-4444-4444-4444-444444444444"
+    _grant_role(mem_store, recruiter, "recruiter")
+    _as(client, recruiter)
     assert client.get(f"/api/v1/proofs/artifacts/{artifact_id}/view").status_code == 200
+
+
+def test_sharing_toggle_sets_recruiter_safe_artifact_policy(client, transcription_ok, frames_ok, mem_store):
+    # G1 regression: the recruiter-sharing toggle must never mark retained
+    # artifacts public_safe (anonymous-reachable) — and toggling back off
+    # returns every artifact to owner_only.
+    from app.services import proof_artifact_service as artifacts
+
+    proof = _upload(client).json()
+    proof_id = proof["id"]
+
+    client.post(f"/api/v1/proofs/video/{proof_id}/visibility", json={"public_safe": True})
+    rows = artifacts.list_artifacts_for_proof(mem_store, proof_type="video", proof_id=proof_id)
+    assert rows, "expected retained artifacts (original + frames)"
+    for row in rows:
+        assert row["access_policy"] == "recruiter_safe"
+        assert row["public_safe"] is False
+
+    client.post(f"/api/v1/proofs/video/{proof_id}/visibility", json={"public_safe": False})
+    for row in artifacts.list_artifacts_for_proof(mem_store, proof_type="video", proof_id=proof_id):
+        assert row["access_policy"] == "owner_only"
+        assert row["public_safe"] is False
 
 
 def test_non_owner_cannot_toggle_visibility(client, transcription_unavailable, frames_unavailable):

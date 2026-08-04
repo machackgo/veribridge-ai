@@ -300,7 +300,7 @@ export function PublicSkillReportView({ slug, skillSlug }: { slug: string; skill
   return (
     <div
       data-testid="public-skill-report"
-      style={{ maxWidth: 900, margin: "0 auto", padding: "48px 24px", display: "flex", flexDirection: "column", gap: 16 }}
+      style={{ maxWidth: 900, margin: "0 auto", padding: "clamp(16px, 5vw, 48px) clamp(12px, 4vw, 24px)", display: "flex", flexDirection: "column", gap: 16 }}
     >
       <a
         data-testid="public-skill-report-back"
