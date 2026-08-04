@@ -43,6 +43,10 @@ export interface RecorderBridgeDeps {
   sendToBackground: (message: { type: string; payload: unknown }) => Promise<RecorderBridgeResponse | null>
   /** Post a message back to the page (origin-pinned by the caller). */
   postToPage: (message: { source: "veribridge-extension"; type: string; payload: unknown }) => void
+  /** Trust localhost app routes (dev-channel builds). Default true. */
+  allowLocalDevOrigins?: boolean
+  /** Installed build version (manifest). Defaults to the contract constant. */
+  getBuildVersion?: () => string
 }
 
 const RELAYED_REQUEST_TYPES: ReadonlySet<string> = new Set([
@@ -71,11 +75,14 @@ function ackTypeFor(requestType: string, ok: boolean): string {
  * load-time gating silently dropped every recorder request on such tabs.
  */
 export function createRecorderBridgeHandler(deps: RecorderBridgeDeps) {
+  const allowLocalDev = deps.allowLocalDevOrigins ?? true
+  const buildVersion = (): string =>
+    deps.getBuildVersion?.() ?? WEBSITE_PROOF_RECORDER_BUILD_VERSION
   return (event: RecorderBridgeEvent): void => {
     if (!event.same_window) return
     const location = deps.getLocation()
     if (event.origin !== location.origin) return
-    if (!isTrustedVeriBridgeAppLocation(location)) return
+    if (!isTrustedVeriBridgeAppLocation(location, allowLocalDev)) return
     const data = event.data as
       | { source?: string; type?: string; payload?: Record<string, unknown> }
       | null
@@ -91,7 +98,7 @@ export function createRecorderBridgeHandler(deps: RecorderBridgeDeps) {
         payload: {
           request_id: String(data.payload?.request_id ?? ""),
           schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
-          build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+          build_version: buildVersion(),
           context_valid: !deps.isContextInvalidated(),
           bridge_trusted: true,
         },
@@ -116,7 +123,7 @@ export function createRecorderBridgeHandler(deps: RecorderBridgeDeps) {
             session_id: null,
             config_revision: null,
             schema_version: WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
-            build_version: WEBSITE_PROOF_RECORDER_BUILD_VERSION,
+            build_version: buildVersion(),
             ready: false,
             error_code: contextInvalidated
               ? "extension_context_invalidated"

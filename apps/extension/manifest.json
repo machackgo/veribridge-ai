@@ -1,21 +1,37 @@
 {
   "manifest_version": 3,
-  "name": "VeriBridge",
-  "version": "0.2.1",
-  "version_name": "0.2.1 (recorder schema 1)",
-  "description": "Record project workflow evidence for skill verification.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
-  "host_permissions": ["<all_urls>"],
+  "name": "VeriBridge Website Proof Recorder",
+  "version": "1.0.0",
+  "version_name": "1.0.0 (recorder schema 1)",
+  "description": "Record a Website Proof session you start from VeriBridge and attach the evidence to your selected project.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "background": {
     "service_worker": "dist/background.js"
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "VeriBridge"
+    "default_title": "VeriBridge Recorder",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
       "js": ["dist/content.js"],
       "run_at": "document_idle"
     }

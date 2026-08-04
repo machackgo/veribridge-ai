@@ -32,7 +32,7 @@ router = APIRouter()
 )
 def create_session(
     body: WebsiteProofSessionCreateRequest,
-    user_id: str = Depends(get_current_user_id),  # noqa: ARG001
+    user_id: str = Depends(get_current_user_id),
 ) -> WebsiteProofSessionResumeResponse:
     """
     Launch a Playwright browser session for the given URL.
@@ -43,7 +43,7 @@ def create_session(
       returns `status=completed` with a screenshot.
     """
     try:
-        return create_proof_session(body)
+        return create_proof_session(body, user_id)
     except Exception as exc:
         logger.exception("POST /website-proof/sessions: unexpected error")
         raise HTTPException(
@@ -59,10 +59,10 @@ def create_session(
 )
 def get_session(
     session_id: str,
-    user_id: str = Depends(get_current_user_id),  # noqa: ARG001
+    user_id: str = Depends(get_current_user_id),
 ) -> WebsiteProofSessionResumeResponse:
     try:
-        return get_proof_session(session_id)
+        return get_proof_session(session_id, user_id)
     except SessionNotFoundError as exc:
         raise _session_not_found(session_id) from exc
     except SessionExpiredError as exc:
@@ -76,7 +76,7 @@ def get_session(
 )
 def resume_session(
     session_id: str,
-    user_id: str = Depends(get_current_user_id),  # noqa: ARG001
+    user_id: str = Depends(get_current_user_id),
 ) -> WebsiteProofSessionResumeResponse:
     """
     After the user has manually logged in, call this endpoint to:
@@ -85,7 +85,7 @@ def resume_session(
     3. If authenticated: run the browser workflow and capture proof.
     """
     try:
-        return resume_proof_session(session_id)
+        return resume_proof_session(session_id, user_id)
     except SessionNotFoundError as exc:
         raise _session_not_found(session_id) from exc
     except SessionExpiredError as exc:
@@ -104,13 +104,16 @@ def resume_session(
 )
 def close_session(
     session_id: str,
-    user_id: str = Depends(get_current_user_id),  # noqa: ARG001
+    user_id: str = Depends(get_current_user_id),
 ) -> dict[str, str]:
     """
     Close the Playwright context, delete the temp user_data_dir (cookies),
     and remove the session from memory. Safe to call at any time.
+
+    A foreign or unknown session is a silent no-op with the same response,
+    so callers cannot probe for other users' sessions.
     """
-    close_proof_session(session_id)
+    close_proof_session(session_id, user_id)
     return {"status": "closed", "session_id": session_id}
 
 

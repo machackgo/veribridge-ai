@@ -29,11 +29,24 @@ from app.services.live_feedback_engine import compute_live_feedback, _build_chec
 
 DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
 SESSION_ID   = "llllllll-0000-0000-0000-000000000001"
+SESSION_ID_2 = "llllllll-0000-0000-0000-000000000002"
 
 
 @pytest.fixture()
 def mem_store() -> dict:
-    return {}
+    # Live-feedback routes fail closed on session ownership, so the caller's
+    # sessions must exist in the authoritative extension_proof_sessions table.
+    return {
+        "extension_proof_sessions": {
+            sid: {
+                "id": sid,
+                "user_id": DEMO_USER_ID,
+                "status": "recording",
+                "metadata": {},
+            }
+            for sid in (SESSION_ID, SESSION_ID_2)
+        }
+    }
 
 
 @pytest.fixture()
@@ -276,7 +289,7 @@ def test_live_feedback_get_returns_zero_state_when_no_snapshot(client: TestClien
 
 def test_live_feedback_post_stores_and_returns_state(client: TestClient):
     """POST /live-feedback computes and stores feedback; GET retrieves it."""
-    session_id_2 = "llllllll-0000-0000-0000-000000000002"
+    session_id_2 = SESSION_ID_2
 
     payload = {
         "claimed_skills": ["Data Visualization"],

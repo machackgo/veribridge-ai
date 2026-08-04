@@ -8,6 +8,7 @@ import {
   isProductionVeriBridgeHostname,
 } from "../../../packages/shared/websiteProofRecorderContract"
 import { createRecorderBridgeHandler } from "./recorderBridge"
+import { IS_DEV_BUILD } from "./buildChannel"
 
 // ── Debug flag — set to false to silence visible evidence logs in production ──
 const DEBUG_VISIBLE_EVIDENCE = false
@@ -153,7 +154,9 @@ function isVeriBridgeAppOrigin(): boolean {
   // can never disagree about which locations are trusted. Single-page
   // navigations change location.pathname without re-running this script, so
   // this MUST be re-evaluated per message — never cached at load time.
-  return isTrustedVeriBridgeAppLocation(location)
+  // Store-channel builds trust production origins only; dev builds also trust
+  // localhost app routes.
+  return isTrustedVeriBridgeAppLocation(location, IS_DEV_BUILD)
 }
 
 /** Collect a safe snapshot of current non-sensitive form input values. */
@@ -998,6 +1001,8 @@ const recorderBridgeHandler = createRecorderBridgeHandler({
   isContextInvalidated: () => contextInvalidated,
   sendToBackground: (message) => safeSendMessage<RecorderBridgeResponse>(message),
   postToPage: (message) => window.postMessage(message, window.location.origin),
+  allowLocalDevOrigins: IS_DEV_BUILD,
+  getBuildVersion: () => chrome.runtime.getManifest().version,
 })
 window.addEventListener("message", (event: MessageEvent) => {
   recorderBridgeHandler({
@@ -1019,25 +1024,27 @@ void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
   }
 })
 
-// ── Manual test hook ──────────────────────────────────────────────────────────
+// ── Manual test hook (dev builds only) ────────────────────────────────────────
 // Call window.__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__() from DevTools to
 // force one DOM snapshot from the current page and send it to the background.
 // This lets you verify the pipeline (content → background → backend) without
-// going through a full recording session.
-;(window as unknown as Record<string, unknown>).__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__ =
-  function (): void {
-    dbgVE("manual test hook triggered on", redactSensitiveQueryParams(location.href))
-    if (!capturing) {
-      // Temporarily enable capturing so captureSnapshot proceeds
-      capturing = true
-      recordingStartMs = Date.now()
-      captureSnapshot("dom_snapshot", { source: "manual_test" })
-      capturing = false
-    } else {
-      captureSnapshot("dom_snapshot", { source: "manual_test" })
+// going through a full recording session. Excluded from store builds.
+if (IS_DEV_BUILD) {
+  ;(window as unknown as Record<string, unknown>).__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__ =
+    function (): void {
+      dbgVE("manual test hook triggered on", redactSensitiveQueryParams(location.href))
+      if (!capturing) {
+        // Temporarily enable capturing so captureSnapshot proceeds
+        capturing = true
+        recordingStartMs = Date.now()
+        captureSnapshot("dom_snapshot", { source: "manual_test" })
+        capturing = false
+      } else {
+        captureSnapshot("dom_snapshot", { source: "manual_test" })
+      }
+      dbgVE("manual test hook: snapshot sent to background (check console + Network tab)")
     }
-    dbgVE("manual test hook: snapshot sent to background (check console + Network tab)")
-  }
+}
 
 // ── Floating recorder bar ──────────────────────────────────────────────────────
 
@@ -1291,7 +1298,7 @@ function shouldSkipRender(s: StateSnapshot): boolean {
   if (!sid) return false
   // Local flag: works even when background messaging is unavailable.
   if (isLocallyDismissed(sid)) {
-    console.log("Skip render because local dismissed flag exists")
+    dbgVE("skip render — local dismissed flag exists")
     return true
   }
   // Background flag: set by DISMISS_UPLOAD_SUCCESS handler.
@@ -1333,7 +1340,7 @@ function fetchAndRender(): void {
     if (s.status === "uploaded" && !autoDismissTimer) {
       const sessionId = s.sessionId ?? ""
       autoDismissTimer = setTimeout(() => {
-        console.log("Auto-dismissing success bar")
+        dbgVE("auto-dismissing success bar")
         if (sessionId) setLocallyDismissed(sessionId)
         hideFloatingBar()
         autoDismissTimer = null
@@ -1417,7 +1424,7 @@ function hideFloatingBar(): void {
     barHost = null
     barShadow = null
     lastState = null
-    console.log("Removed floating bar DOM")
+    dbgVE("removed floating bar DOM")
   }
 }
 

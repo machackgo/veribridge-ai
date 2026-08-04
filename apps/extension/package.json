@@ -1,11 +1,13 @@
 {
   "name": "veribridge-extension",
-  "version": "0.2.1",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/background.ts src/popup.ts src/content.ts src/recorder.ts --bundle --outdir=dist --target=chrome112 --platform=browser",
-    "dev": "esbuild src/background.ts src/popup.ts src/content.ts src/recorder.ts --bundle --outdir=dist --target=chrome112 --platform=browser --watch",
+    "build": "esbuild src/background.ts src/popup.ts src/content.ts src/recorder.ts --bundle --outdir=dist --target=chrome112 --platform=browser --define:__VB_DEV_BUILD__=true",
+    "build:release": "esbuild src/background.ts src/popup.ts src/content.ts src/recorder.ts --bundle --outdir=dist --target=chrome112 --platform=browser --define:__VB_DEV_BUILD__=false",
+    "dev": "esbuild src/background.ts src/popup.ts src/content.ts src/recorder.ts --bundle --outdir=dist --target=chrome112 --platform=browser --watch --define:__VB_DEV_BUILD__=true",
+    "package:release": "node scripts/package-release.mjs",
     "test": "node scripts/run-tests.mjs",
     "typecheck": "tsc --noEmit"
   },

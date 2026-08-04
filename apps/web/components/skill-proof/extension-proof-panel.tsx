@@ -53,6 +53,8 @@ import {
   refreshWebsiteProofRecorderSessionAuth,
   type RecorderHandshakeFailure,
 } from "@/lib/api"
+import { RecorderInstallGate, recorderGateReasonFor } from "./recorder-install-gate"
+import { probeRecorderExtension } from "@/lib/website-proof-recorder"
 import { workflowAnalysisReviewLabel } from "@/lib/analysis-review-labels"
 import { coherentOverallDefenseScore } from "@/lib/defense-score"
 import {
@@ -7446,6 +7448,9 @@ export function ExtensionProofPanel({
   const [recorderConfigRevision, setRecorderConfigRevision] = useState(0)
   const [recorderReady, setRecorderReady] = useState(false)
   const [recorderDiagnosticCode, setRecorderDiagnosticCode] = useState<string | null>(null)
+  // Proactive install banner: probed once on mount so a student without the
+  // extension sees the install screen before filling in the proof form.
+  const [recorderMissingOnMount, setRecorderMissingOnMount] = useState(false)
   const [pollingActive, setPoll]        = useState(false)
   const [extensionUploadState, setExtensionUploadState] = useState<ExtensionUploadBridgeState | null>(null)
   const [workflowAnalysis, setWorkflowAnalysis] = useState<WorkflowAnalysisResponse | null>(null)
@@ -7464,6 +7469,16 @@ export function ExtensionProofPanel({
   const workflowProgressLifecycleStartedAtRef = useRef(Date.now())
   const previousWorkflowProgressLifecycleRef = useRef<WebsiteProofProgressLifecycle>("idle")
   const explicitSessionIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void probeRecorderExtension()
+      .then((probe) => {
+        if (!cancelled) setRecorderMissingOnMount(!probe.installed)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
 
   function transitionWebsiteProofProgress(event: WebsiteProofProgressEvent): void {
     if (
@@ -8353,7 +8368,21 @@ export function ExtensionProofPanel({
           </div>
         )}
 
-        {error && (
+        {recorderMissingOnMount && !error && (
+          <RecorderInstallGate
+            reason="not_installed"
+            onContinue={() => setRecorderMissingOnMount(false)}
+            continuing={false}
+          />
+        )}
+        {error && recorderGateReasonFor(recorderDiagnosticCode) !== null && (
+          <RecorderInstallGate
+            reason={recorderGateReasonFor(recorderDiagnosticCode)!}
+            onContinue={handleStart}
+            continuing={starting}
+          />
+        )}
+        {error && recorderGateReasonFor(recorderDiagnosticCode) === null && (
           <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
             {error}
           </div>
@@ -8636,7 +8665,14 @@ export function ExtensionProofPanel({
           />
         )}
 
-        {error && (
+        {error && recorderGateReasonFor(recorderDiagnosticCode) !== null && (
+          <RecorderInstallGate
+            reason={recorderGateReasonFor(recorderDiagnosticCode)!}
+            onContinue={handleStart}
+            continuing={starting}
+          />
+        )}
+        {error && recorderGateReasonFor(recorderDiagnosticCode) === null && (
           <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
             {error}
           </div>
