@@ -17,7 +17,7 @@ Everything below is copy-paste-ready for the Developer Dashboard. Items marked
 | **Homepage URL** | https://veribridgeai.com |
 | **Support URL** | https://veribridgeai.com/extension/support |
 | **Privacy policy URL** | https://veribridgeai.com/extension/privacy |
-| **Support email** | support@veribridgeai.com — confirmed 2026-08-04; free forwarding to the publisher's Gmail (DNS on GoDaddy; forwarder setup pending the publisher's one-time DNS records) |
+| **Support email** | support@veribridgeai.com — live 2026-08-04 via free ImprovMX forwarding (catch-all) to the publisher's monitored Gmail; replies come from the publisher's Gmail for now. Receive-only is sufficient for Chrome Web Store purposes; professional outbound sending FROM the domain is an OPTIONAL post-launch enhancement, not a release requirement. |
 
 ### Detailed description
 
