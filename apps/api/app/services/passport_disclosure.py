@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import logging
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -68,6 +69,7 @@ _POLICIES_TABLE = "passport_disclosure_policies"
 _OVERRIDES_TABLE = "passport_disclosure_overrides"
 _AUDIT_TABLE = "passport_disclosure_audit"
 _PASSPORTS_TABLE = "vbr_work_passports"
+_PROJECTS_TABLE = "vbr_projects"
 
 MODE_RECRUITER_SAFE = "recruiter_safe"
 MODE_FULL_ACCESS = "full_access"
@@ -583,12 +585,20 @@ class EffectiveDisclosure:
         mode: str,
         disclosure_version: int,
         overrides: dict[tuple[str, str], str],
+        passport_project_ids: Iterable[Any] | None = None,
     ) -> None:
         self.user_id = str(user_id)
         self.passport_public = bool(passport_public)
         self.mode = mode if mode in MODES else MODE_RECRUITER_SAFE
         self.disclosure_version = int(disclosure_version or 1)
         self._overrides = dict(overrides)
+        # The projects actually ON the public passport (those with a published
+        # public report). ``None`` means the caller did not scope — used by the
+        # owner-facing editor, which only ever asks about published projects.
+        self._passport_project_ids = (
+            None if passport_project_ids is None
+            else frozenset(str(p) for p in passport_project_ids)
+        )
 
     # -- configured (what the student set, before inheritance) ---------------
 
@@ -609,8 +619,31 @@ class EffectiveDisclosure:
 
     # -- hierarchy: passport → project → report → aspect ---------------------
 
+    def on_passport(self, project_id: Any) -> bool:
+        """Is this project actually ON the public passport?
+
+        Passport membership means the project has a published public report.
+        Only meaningful when the caller scoped the disclosure (see
+        ``passport_project_ids``); unscoped callers get the legacy answer.
+
+        This gate matters ONLY in full-access mode. Recruiter-safe and custom
+        keep every sensitive aspect Hidden by default, so an unpublished
+        project is protected there by the defaults; full access maxes every
+        aspect out and would otherwise expose evidence attached to projects the
+        student never put on their passport.
+        """
+        if self._passport_project_ids is None:
+            return True
+        return str(project_id) in self._passport_project_ids
+
     def project_visible(self, project_id: Any) -> bool:
         if not self.passport_public:
+            return False
+        if self.mode == MODE_FULL_ACCESS and not self.on_passport(project_id):
+            # Full access opens what is ON the passport — never more. The
+            # recruiter-safe floor in ``artifact_action_allowed`` still serves
+            # anything recruiter-safe served, so this can only narrow to the
+            # mode full access supersedes, never below it.
             return False
         return self._resolved("project", str(project_id)) != HIDDEN
 
@@ -839,6 +872,37 @@ def video_proof_public_access(db: Any, proof: dict[str, Any]) -> bool:
     return bool(proof.get("public_safe", False))
 
 
+def _passport_project_ids(db: Any, user_id: str) -> frozenset[str]:
+    """The owner's projects that are ON the public passport.
+
+    Passport membership == the project has a published public report token.
+    Fails closed to an empty set so a lookup error can never widen exposure.
+    """
+    try:
+        if isinstance(db, dict):
+            rows = [
+                row
+                for row in db.setdefault(_PROJECTS_TABLE, {}).values()
+                if str(row.get("user_id")) == str(user_id)
+            ]
+        else:
+            result = (
+                db.table(_PROJECTS_TABLE)
+                .select("id, public_report_token")
+                .eq("user_id", user_id)
+                .execute()
+            )
+            rows = getattr(result, "data", []) or []
+    except Exception:  # pragma: no cover - defensive fail-closed
+        logger.warning("[Disclosure] Passport project lookup failed; failing closed.")
+        return frozenset()
+    return frozenset(
+        str(row.get("id"))
+        for row in rows
+        if row.get("id") and str(row.get("public_report_token") or "").strip()
+    )
+
+
 def load_effective_disclosure(
     db: Any,
     user_id: Any,
@@ -874,10 +938,18 @@ def load_effective_disclosure(
         policy = _default_policy(uid)
         overrides = {}
 
+    mode = str(policy.get("mode") or MODE_RECRUITER_SAFE)
+    # Full access maxes out every project-keyed node, so it — and only it —
+    # needs to know which projects are actually on the passport. Fails closed
+    # to an empty set: the recruiter-safe floor still serves whatever
+    # recruiter-safe would have.
+    project_ids = _passport_project_ids(db, uid) if mode == MODE_FULL_ACCESS else None
+
     return EffectiveDisclosure(
         user_id=uid,
         passport_public=bool(passport_public),
-        mode=str(policy.get("mode") or MODE_RECRUITER_SAFE),
+        mode=mode,
         disclosure_version=int(policy.get("disclosure_version") or 1),
         overrides=overrides,
+        passport_project_ids=project_ids,
     )

@@ -2254,6 +2254,88 @@ def test_full_access_does_not_expose_unshared_unlinked_evidence(
     )
 
 
+def test_full_access_does_not_expose_projects_absent_from_the_passport(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F11b) Full access opens what is ON the passport — never more.
+
+    Regression for a production leak found during the 2026-08-03 release QA:
+    a project whose public report was never published is not on the passport,
+    but its artifacts still carry a real ``project_id``. Because full access
+    resolved every project-keyed node to its maximum WITHOUT checking passport
+    membership, an anonymous visitor could open evidence attached to projects
+    the student never published — evidence both recruiter-safe and custom deny.
+    """
+    ctx = _full_setup(client, mem_store)
+
+    # A second project the student never published: no public report token,
+    # so it is absent from the passport and from the Privacy Center entirely.
+    unpublished = _make_project(client, mem_store, title="Unpublished Draft", website=True)
+    draft_replay = _register_artifact(
+        mem_store,
+        artifact_type="website_replay_video",
+        proof_type="website",
+        proof_id=unpublished["website_session_id"],
+        project_id=unpublished["project_id"],
+        mime="video/webm",
+        data=b"draft-replay-bytes",
+    )
+
+    # Neither of the modes full access supersedes exposes it …
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{draft_replay['id']}/view").status_code == 404
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_CUSTOM)
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{draft_replay['id']}/view").status_code == 404
+
+    # … and full access must not either.
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_FULL_ACCESS)
+    _as_anon(client)
+    assert client.get(f"/api/v1/proofs/artifacts/{draft_replay['id']}/view").status_code == 404
+    assert client.get(f"/api/v1/proofs/artifacts/{draft_replay['id']}/download").status_code == 404
+
+    # The published project's evidence is unaffected — full access still opens
+    # everything that IS on the passport.
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['replay']['id']}/view").status_code == 200
+    assert client.get(f"/api/v1/proofs/artifacts/{ctx['doc_artifact']['id']}/view").status_code == 200
+
+
+def test_full_access_scoping_never_narrows_below_recruiter_safe(
+    client: TestClient, mem_store: dict
+) -> None:
+    """(F11c) Passport-membership scoping must not cut into the superset floor:
+    an artifact of an unpublished project that the owner had ALREADY shared
+    (``public_safe`` retention) keeps serving exactly what recruiter-safe
+    served — the scoping denies only what recruiter-safe denied too."""
+    _full_setup(client, mem_store)
+    unpublished = _make_project(client, mem_store, title="Draft With Shared Proof", website=True)
+    shared = _register_artifact(
+        mem_store,
+        artifact_type="website_frame",
+        proof_type="website",
+        proof_id=unpublished["website_session_id"],
+        project_id=unpublished["project_id"],
+        policy="public_safe",
+        mime="image/jpeg",
+    )
+
+    _as_anon(client)
+    recruiter_safe_status = client.get(f"/api/v1/proofs/artifacts/{shared['id']}/view").status_code
+    assert recruiter_safe_status == 200
+
+    _as_user(client, USER_ID)
+    _set_mode(client, MODE_FULL_ACCESS)
+    _as_anon(client)
+    assert (
+        client.get(f"/api/v1/proofs/artifacts/{shared['id']}/view").status_code
+        == recruiter_safe_status
+    )
+    # Still never a download — the floor restores views only.
+    assert client.get(f"/api/v1/proofs/artifacts/{shared['id']}/download").status_code == 404
+
+
 def test_full_access_public_payloads_carry_no_owner_or_storage_internals(
     client: TestClient, mem_store: dict
 ) -> None:
