@@ -55,6 +55,13 @@ prompt.
   can render blank (pre-existing app-wide dev hydration quirk, tracked as
   QA-D-003 since 2026-07-18; production builds unaffected).
 
+## Support-contact verification (2026-08-04)
+End-to-end forwarding to the monitored inbox — **PASS**, two independent senders:
+1. WPI Outlook → support@veribridgeai.com → destination Gmail — delivered.
+2. Gmail (publisher's second account) → support@veribridgeai.com → destination Gmail — delivered (first message landed in Spam as expected for a brand-new forwarding domain; marked "Not spam").
+
+Infrastructure: GoDaddy DNS (authoritative) → MX mx1/mx2.improvmx.com + SPF include:spf.improvmx.com → free ImprovMX catch-all → monitored Gmail. Receive-only; replies come from the publisher's Gmail (outbound-from-domain is an optional post-launch enhancement).
+
 ## Release package
 - `release/veribridge-recorder-v1.0.0.zip`, 57.9 KB, 11 files, manifest at root
 - SHA-256 `4702db28bfc5b6ad34c0f68eb00b670b65b758f09e1651b1f1557102e2aaea32`
