@@ -38,6 +38,8 @@ from app.services.transcription_service import (
     TranscriptionResult,
 )
 
+from tests.conftest import seed_skill_evidence
+
 # ── Test identifiers ──────────────────────────────────────────────────────────
 
 DEMO_USER_ID = "00000000-0000-0000-0000-000000000088"
@@ -55,6 +57,8 @@ def mem_store() -> dict:
 def client(mem_store: dict) -> TestClient:
     app.dependency_overrides[get_current_user_id] = lambda: DEMO_USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
+    # Session creation fail-closes on unowned skill_evidence_id (G6).
+    seed_skill_evidence(mem_store, DEMO_USER_ID, EVIDENCE_ID)
     yield TestClient(app)
     app.dependency_overrides.clear()
 

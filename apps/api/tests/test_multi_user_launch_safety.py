@@ -29,6 +29,8 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_user_id, get_db
 from app.main import app
 
+from tests.conftest import seed_skill_evidence
+
 USER_A = "aaaaaaaa-0000-0000-0000-000000000001"
 USER_B = "bbbbbbbb-0000-0000-0000-000000000002"
 ADMIN_ID = "cccccccc-0000-0000-0000-000000000003"
@@ -255,6 +257,7 @@ class TestRecruiterCandidateDiscoveryGating:
 class TestProjectDefenseAnalysisCrossUserIsolation:
     def _create_session_and_analysis_as_a(self, mem_store: dict) -> str:
         client_a = _client_as(USER_A, mem_store)
+        seed_skill_evidence(mem_store, USER_A, EVIDENCE_ID)
         r = client_a.post(
             "/api/v1/student/extension-proof/sessions",
             json={"skill_evidence_id": EVIDENCE_ID},

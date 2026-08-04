@@ -2612,7 +2612,11 @@ def build_public_skill_report(
                 continue
             disclosed_chains.append(filtered_chain)
         else:
-            disclosed_chains.append(chain)
+            # A chain with no project anchor is built from private vault
+            # evidence the student never attached to a published project —
+            # no disclosure node governs it, so it must never surface on the
+            # PUBLIC projection (owner views still union everything).
+            continue
     report["linked_proof_chains"] = disclosed_chains
 
     # The per-chain synthesis was generated over the UNFILTERED chains, so a

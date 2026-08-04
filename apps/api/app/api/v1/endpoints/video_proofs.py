@@ -38,6 +38,10 @@ from app.services.passport_disclosure import video_proof_public_access
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Bounded streaming chunk size — same OOM-safe pattern as the workflow-video
+# upload (workflow_visual_frames.py): never whole-body read before the size gate.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
 _NOT_FOUND = HTTPException(
     status_code=status.HTTP_404_NOT_FOUND,
     detail={
@@ -156,8 +160,22 @@ async def upload_video_proof(
     db: Any = Depends(get_db),
 ) -> VideoProofResponse:
     filename = file.filename or "demo-video"
-    data = await file.read()
-    videos.validate_upload(filename, file.content_type, len(data), settings.max_video_size_bytes)
+    limit_bytes = settings.max_video_size_bytes
+    # Format/MIME rejects fire BEFORE the body is touched; the size limit is
+    # then enforced while streaming in bounded chunks — a bare
+    # ``await file.read()`` would materialize an oversized body in memory
+    # before the check (the workflow-video OOM failure mode).
+    videos.validate_upload(filename, file.content_type, 0, limit_bytes)
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > limit_bytes:
+            # Raises the endpoint's canonical 413 (code: video_too_large).
+            videos.validate_upload(filename, file.content_type, len(buffer), limit_bytes)
+    data = bytes(buffer)
 
     proof = videos.create_video_proof(
         db,

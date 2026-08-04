@@ -20,8 +20,12 @@ Two gate strengths exist because two product generations share the backend:
   Passport and keeps its own ``is_public`` flag for owners who never touched
   the canonical Passport; but once an owner has a canonical Passport row that
   is Private, the legacy surface must go dark too.
+- ``owner_has_canonical_passport``: RETIREMENT gate for the same legacy
+  surface — any canonical row at all (public OR private) means the owner's
+  only public surface is the canonical, disclosure-enforced one, so every
+  legacy public route 404s for them.
 
-Both helpers fail closed: any lookup error is treated as "not public".
+All helpers fail closed: any lookup error is treated as "not public".
 """
 
 from __future__ import annotations
@@ -34,7 +38,11 @@ logger = logging.getLogger(__name__)
 
 _PASSPORTS_TABLE = "vbr_work_passports"
 
-__all__ = ["owner_passport_is_public", "owner_passport_blocks_public_access"]
+__all__ = [
+    "owner_passport_is_public",
+    "owner_passport_blocks_public_access",
+    "owner_has_canonical_passport",
+]
 
 
 def _get_passport_row(db: Any, user_id: str) -> dict[str, Any] | None:
@@ -93,3 +101,25 @@ def owner_passport_blocks_public_access(db: Any, user_id: Any) -> bool:
     if not isinstance(row, dict):
         return False
     return not bool(row.get("is_published"))
+
+
+def owner_has_canonical_passport(db: Any, user_id: Any) -> bool:
+    """True when ANY canonical Passport row exists for this owner (public or
+    private).
+
+    Retires the legacy session-passport surface for canonical-era users: once
+    an owner has a canonical ``vbr_work_passports`` row, their ONLY public
+    surface is the canonical, disclosure-enforced one — every legacy public
+    route returns the standard indistinguishable 404, regardless of the
+    canonical row's visibility. Owners who never touched the canonical
+    Passport keep the legacy behavior. Lookup failures fail closed (treated
+    as "has one", which blocks the legacy surface).
+    """
+    if not user_id:
+        return False
+    try:
+        row = _get_passport_row(db, str(user_id))
+    except Exception:  # pragma: no cover - defensive: never leak on DB errors
+        logger.warning("[Visibility] Passport visibility lookup failed; failing closed.")
+        return True
+    return isinstance(row, dict)

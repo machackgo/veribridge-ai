@@ -37,6 +37,8 @@ from app.services.verification_review_service import (
     VerificationReviewNotFoundError,
 )
 
+from tests.conftest import seed_skill_evidence
+
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 DEMO_USER_ID = "00000000-0000-0000-0000-000000000042"
@@ -58,6 +60,8 @@ def client(mem_store: dict) -> TestClient:
     # exercise admin behaviour, so the role check is satisfied via override.
     app.dependency_overrides[require_admin_user_id] = lambda: DEMO_USER_ID
     app.dependency_overrides[get_db] = lambda: mem_store
+    # Session creation fail-closes on unowned skill_evidence_id (G6).
+    seed_skill_evidence(mem_store, DEMO_USER_ID, EVIDENCE_ID)
     yield TestClient(app)
     app.dependency_overrides.clear()
 

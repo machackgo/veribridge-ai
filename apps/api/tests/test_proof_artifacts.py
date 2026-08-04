@@ -318,11 +318,26 @@ def test_document_upload_retains_original_privately_by_default(client, mem_store
     assert client.get(f"/api/v1/proofs/artifacts/{artifact_id}/download").status_code == 404
 
 
-def test_document_share_consent_opens_gated_access(client, mem_store):
+def test_document_share_consent_opens_recruiter_gated_access(client, mem_store):
+    # G1: "share with recruiters" consents to RECRUITERS — the retained
+    # original goes recruiter_safe, never public_safe, so anonymous callers
+    # (and plain student peers) get the indistinct 404 while an authenticated
+    # recruiter streams the bytes.
     seed_published_passport(mem_store, OWNER)
     response = _upload_document(client, share=True)
     artifact_id = response.json()["original_artifact_id"]
-    _as(client, None)  # anonymous recruiter surface
+
+    stored = artifacts.get_artifact(mem_store, artifact_id)
+    assert stored is not None and stored["access_policy"] == "recruiter_safe"
+
+    _as(client, None)  # anonymous — sharing with recruiters is NOT public
+    assert client.get(f"/api/v1/proofs/artifacts/{artifact_id}/view").status_code == 404
+    _as(client, OTHER)  # plain student peer — denied too
+    assert client.get(f"/api/v1/proofs/artifacts/{artifact_id}/view").status_code == 404
+
+    recruiter = "44444444-4444-4444-4444-444444444444"
+    _grant_role(mem_store, recruiter, "recruiter")
+    _as(client, recruiter)
     view = client.get(f"/api/v1/proofs/artifacts/{artifact_id}/view")
     assert view.status_code == 200
     assert view.content.startswith(b"# Report")

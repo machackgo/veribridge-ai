@@ -46,6 +46,7 @@ from app.services.skill_evidence_pipeline_service import SkillEvidencePipelineSe
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 STUDENT_A = "aaaaaaaa-1111-0000-0000-000000000001"
+STUDENT_B = "bbbbbbbb-2222-0000-0000-000000000002"
 SESSION_1 = "sessssss-1111-0000-0000-000000000001"
 SESSION_2 = "sessssss-2222-0000-0000-000000000002"
 
@@ -79,6 +80,16 @@ def client(proof_db: dict, pipeline_db: dict) -> TestClient:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _seed_session(proof_db: dict, user_id: str, session_id: str) -> None:
+    """Seed the owned extension_proof_sessions row the endpoint's ownership
+    gate (G11) requires before any sync work runs."""
+    proof_db.setdefault("extension_proof_sessions", {})[session_id] = {
+        "id": session_id,
+        "user_id": user_id,
+        "status": "completed",
+    }
+
 
 def _seed_workflow(proof_db: dict, user_id: str, session_id: str, **kwargs) -> None:
     row_id = str(uuid4())
@@ -560,6 +571,7 @@ class TestHelperFunctions:
 
 class TestHttpEndpoint:
     def test_endpoint_returns_200(self, client, proof_db):
+        _seed_session(proof_db, STUDENT_A, SESSION_1)
         _seed_workflow(proof_db, STUDENT_A, SESSION_1)
         r = client.post(f"/api/v1/student/skill-pipelines/from-website-proof/{SESSION_1}")
         assert r.status_code == 200
@@ -570,20 +582,36 @@ class TestHttpEndpoint:
         assert "pipelines_upserted" in data
 
     def test_endpoint_idempotent_on_second_call(self, client, proof_db):
+        _seed_session(proof_db, STUDENT_A, SESSION_1)
         _seed_workflow(proof_db, STUDENT_A, SESSION_1)
         client.post(f"/api/v1/student/skill-pipelines/from-website-proof/{SESSION_1}")
         r = client.post(f"/api/v1/student/skill-pipelines/from-website-proof/{SESSION_1}")
         assert r.status_code == 200
         assert r.json()["already_synced"] is True
 
-    def test_endpoint_returns_empty_for_unknown_session(self, client, proof_db):
+    def test_endpoint_returns_indistinct_404_for_unknown_session(self, client, proof_db):
+        # G11: an unknown session must NOT come back as ok:true with an empty
+        # sync — it is the standard indistinguishable 404 (extension_proof.py).
         r = client.post("/api/v1/student/skill-pipelines/from-website-proof/unknown-session-id")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["artifacts_created"] == 0
-        assert len(data["errors"]) > 0
+        assert r.status_code == 404
+        assert r.json()["detail"]["code"] == "extension_proof_session_not_found"
+
+    def test_endpoint_returns_same_404_for_foreign_session(self, client, proof_db):
+        # Another student's session answers the SAME 404 as an unknown id, so
+        # session existence can never be probed through this route.
+        foreign = "other-student-session"
+        _seed_session(proof_db, STUDENT_B, foreign)
+        _seed_workflow(proof_db, STUDENT_B, foreign)
+        r = client.post(f"/api/v1/student/skill-pipelines/from-website-proof/{foreign}")
+        assert r.status_code == 404
+        assert r.json()["detail"] == client.post(
+            "/api/v1/student/skill-pipelines/from-website-proof/unknown-session-id"
+        ).json()["detail"] | {"session_id": foreign}
+        # No artifacts were created for the foreign session.
+        assert not proof_db.get("skill_evidence_artifacts")
 
     def test_full_flow_all_evidence_types(self, client, proof_db):
+        _seed_session(proof_db, STUDENT_A, SESSION_2)
         _seed_workflow(proof_db, STUDENT_A, SESSION_2)
         _seed_project_defense(proof_db, STUDENT_A, SESSION_2)
         _seed_optional_doc(proof_db, STUDENT_A, SESSION_2)

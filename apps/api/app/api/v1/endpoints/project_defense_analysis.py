@@ -42,6 +42,10 @@ from app.services.project_defense_analysis_service import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Bounded streaming chunk size — same OOM-safe pattern as the workflow-video
+# upload (workflow_visual_frames.py): never whole-body read before the size gate.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
 # Storage bucket name — read from pydantic-settings (which loads .env).
 # Do NOT use os.environ.get() here: pydantic-settings does not write back to
 # os.environ, so os.environ.get() always returns "" for values only in .env.
@@ -269,20 +273,29 @@ async def upload_project_defense_media(
             },
         )
 
-    # ── Read file and validate size ────────────────────────────────────────────
-    content = await file.read()
+    # ── Stream file in bounded chunks and validate size ────────────────────────
+    # A bare ``await file.read()`` would materialize an oversized body in
+    # memory BEFORE the size check (the workflow-video OOM failure mode); the
+    # 413 fires as soon as the limit is crossed instead.
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > MAX_MEDIA_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={
+                    "code": "media_too_large",
+                    "message": (
+                        f"File size {len(buffer) / (1024 * 1024):.1f} MB exceeds the "
+                        "200 MB limit."
+                    ),
+                },
+            )
+    content = bytes(buffer)
     size_bytes = len(content)
-    if size_bytes > MAX_MEDIA_SIZE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail={
-                "code": "media_too_large",
-                "message": (
-                    f"File size {size_bytes / (1024 * 1024):.1f} MB exceeds the "
-                    "200 MB limit."
-                ),
-            },
-        )
 
     # ── Supabase Storage upload ────────────────────────────────────────────────
     # When a bucket is configured, the file MUST be stored — failure is not
@@ -458,7 +471,10 @@ async def transcribe_defense_media(
     Final Verification is NEVER set to 'complete' from this endpoint.
     """
     from app.services.transcription_service import (
+        MEANINGFUL_WORD_THRESHOLD,
         TranscriptionUnavailableError,
+        count_meaningful_words,
+        is_low_quality_transcript,
         transcribe_audio,
     )
     from app.services.workflow_privacy_scan_service import scan_proof_data
@@ -554,6 +570,52 @@ async def transcribe_defense_media(
                 "code": "transcription_failed",
                 "message": str(exc),
             },
+        )
+
+    # ── No-speech / low-quality guard (mirrors the VBR gates) ─────────────────
+    # Whisper over a silent/near-silent recording does not error — it emits
+    # punctuation-only segments (a run of "." tokens), and degraded audio can
+    # yield a single hallucinated token repeated dozens of times. Neither is a
+    # real transcript: refining and persisting it would show "Transcript
+    # generated" over meaningless output. Same gate semantics as
+    # ``vbr_transcription``: measure meaningful (alphanumeric) words and
+    # repetitiveness across the provider's full text AND its raw segment texts
+    # (max of the two sources), and fail honestly with ``no_speech`` /
+    # ``low_quality`` — nothing is persisted, so a retry re-runs transcription.
+    segment_source_text = " ".join(
+        seg.text for seg in (tx_result.transcript_segments or [])
+    )
+    meaningful_word_count = max(
+        count_meaningful_words(tx_result.transcript_text),
+        count_meaningful_words(segment_source_text),
+    )
+    if meaningful_word_count < MEANINGFUL_WORD_THRESHOLD:
+        return ProjectDefenseTranscribeResponse(
+            proof_session_id=session_id,
+            transcript_text="",
+            transcription_status="no_speech",
+            transcript_reviewed=False,
+            provider_used=tx_result.provider_used,
+            configured=True,
+            message=(
+                "No useful speech was detected. Please retry with clearer audio "
+                "or paste the transcript manually."
+            ),
+        )
+    if is_low_quality_transcript(tx_result.transcript_text) or is_low_quality_transcript(
+        segment_source_text
+    ):
+        return ProjectDefenseTranscribeResponse(
+            proof_session_id=session_id,
+            transcript_text="",
+            transcription_status="low_quality",
+            transcript_reviewed=False,
+            provider_used=tx_result.provider_used,
+            configured=True,
+            message=(
+                "Transcript quality too low. Please re-record with clearer audio "
+                "or paste the transcript manually."
+            ),
         )
 
     # ── Privacy scan ───────────────────────────────────────────────────────────

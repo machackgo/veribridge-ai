@@ -465,8 +465,10 @@ def test_public_safe_skill_report_is_fail_closed_and_drops_private_chains() -> N
 
     # The rich internal proof_chains (with source_ids) are not exposed publicly.
     assert "proof_chains" not in out
-    # The unlinked card's private source_id is dropped.
-    assert "source_id" not in out["unlinked_supporting_evidence"]["items"][0]
+    # The unlinked bucket is dropped ENTIRELY: its cards are private vault
+    # documents never attached to a published project, so neither the card
+    # (title / match reason) nor even the counts survive the public projection.
+    assert out["unlinked_supporting_evidence"] == {"items": [], "count": 0, "more_count": 0}
     # The linked chain's project_id is dropped.
     assert "project_id" not in out["linked_proof_chains"][0]
     assert "project_id" not in out["synthesis"][0]
@@ -1274,7 +1276,11 @@ def test_stale_marker_source_type_secret_falls_back_to_other() -> None:
     assert contains_unsafe_fields(out) is False
 
 
-def test_unlinked_card_proof_type_secret_falls_back_to_other() -> None:
+def test_unlinked_bucket_is_always_empty_in_public_projection() -> None:
+    """Unattached vault evidence never surfaces publicly: even a hostile
+    unlinked card is dropped wholesale (no items, no counts) rather than
+    projected — the cards describe private vault documents the student never
+    attached to any published project."""
     report = {
         "skill": "Python",
         "synthesis_summary": "ok",
@@ -1282,17 +1288,18 @@ def test_unlinked_card_proof_type_secret_falls_back_to_other() -> None:
         "llm_synthesis": [],
         "unlinked_supporting_evidence": {
             "items": [
-                {"proof_type": "api_key=sk-private", "title": "Doc", "safe_summary": "ok",
-                 "safe_location": None, "corroborates": "", "limitation": ""}
+                {"proof_type": "api_key=sk-private", "title": "Private Vault Doc",
+                 "safe_summary": "ok", "safe_location": None, "corroborates": "",
+                 "limitation": ""}
             ],
-            "count": 1,
-            "more_count": 0,
+            "count": 7,
+            "more_count": 4,
         },
         "limitations": [],
     }
     out = public_safe_skill_report(report)
-    card = out["unlinked_supporting_evidence"]["items"][0]
-    assert card["proof_type"] == "Other"
+    assert out["unlinked_supporting_evidence"] == {"items": [], "count": 0, "more_count": 0}
+    assert "Private Vault Doc" not in json.dumps(out)
     _assert_no_enum_secrets(out)
 
 

@@ -33,7 +33,7 @@ from tests.test_vbr_work_passport import (
     _publish_project_report,
     _unpublish,
 )
-from tests.test_vbr_project_defense import USER_ID
+from tests.test_vbr_project_defense import USER_ID, _seed_github_proof
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -220,22 +220,150 @@ def test_public_skill_report_serves_only_public_safe_members(
             )
 
 
-def test_public_skill_report_unlinked_bucket_is_capped_and_safe(
+def test_public_skill_report_unlinked_bucket_is_always_empty(
     client: TestClient, mem_store: dict
 ) -> None:
+    """Unattached private vault evidence never surfaces publicly: the unlinked
+    bucket keeps its shape for clients but is ALWAYS empty (no items, no
+    counts) — public skill reports show only evidence chained to published
+    projects."""
     slug, skill = _published_passport_with_skill(client, mem_store)
     body = _get_public_skill_report(client, slug, skill).json()
 
-    bucket = body["unlinked_supporting_evidence"]
-    assert set(bucket.keys()) == {"items", "count", "more_count"}
-    for item in bucket["items"]:
-        # Compact safe card shape only — no ids, no snippets, no locators
-        # beyond the safe display location.
-        assert set(item.keys()) <= {
-            "proof_type",
-            "title",
-            "safe_summary",
-            "safe_location",
-            "corroborates",
-            "limitation",
+    assert body["unlinked_supporting_evidence"] == {
+        "items": [],
+        "count": 0,
+        "more_count": 0,
+    }
+
+
+def _set_disclosure_mode(client: TestClient, mode: str) -> None:
+    res = client.put(
+        "/api/v1/student/vbr/passport/disclosure/mode", json={"mode": mode}
+    )
+    assert res.status_code == 200, res.text
+
+
+def test_public_skill_report_never_names_unpublished_projects(
+    client: TestClient, mem_store: dict
+) -> None:
+    """G1 regression: ``collect_skill_report`` scans the student's ENTIRE
+    vault, so a chain anchored to a project whose report was never published
+    must be dropped by the passport-membership gate — in the default
+    recruiter-safe mode AND in custom mode (full access is covered by the
+    disclosure suite). The never-published project's title must not appear
+    anywhere in the public payload."""
+    from tests.test_passport_disclosure import _make_project
+
+    slug, _ = _published_passport_with_skill(client, mem_store)
+    _make_project(
+        client,
+        mem_store,
+        title="Stealth Draft Rewrite",
+        repo_owner="ghostorg",
+        repo_name="ghost-draft-repo",
+        claimed_skills=["Python"],
+    )
+
+    for mode in ("recruiter_safe", "custom"):
+        _set_disclosure_mode(client, mode)
+        res = _get_public_skill_report(client, slug, "python")
+        assert res.status_code == 200, mode
+        assert "Stealth Draft Rewrite" not in res.text, mode
+        assert "ghost-draft-repo" not in res.text, mode
+
+
+def test_public_skill_report_never_shows_unattached_vault_evidence(
+    client: TestClient, mem_store: dict
+) -> None:
+    """G1 regression: vault evidence the student never attached to ANY project
+    (no project_id → no disclosure node governs it) must never surface on the
+    public skill report — neither as a project-less chain nor as an unlinked
+    supporting-evidence card."""
+    slug, _ = _published_passport_with_skill(client, mem_store)
+    _seed_github_proof(
+        mem_store,
+        repo_url="https://github.com/ghostorg/vault-only-repo",
+        repo_owner="ghostorg",
+        repo_name="vault-only-repo",
+        detected_skills=["Python"],
+        submitted_skill_claims=["Python"],
+        analysis_summary="Private vault-only repository analysis.",
+        public_safe_summary="GitHub proof for ghostorg/vault-only-repo.",
+    )
+
+    res = _get_public_skill_report(client, slug, "python")
+    assert res.status_code == 200
+    assert "vault-only-repo" not in res.text
+    assert "ghostorg" not in res.text
+    body = res.json()
+    assert body["unlinked_supporting_evidence"]["items"] == []
+    assert body["unlinked_supporting_evidence"]["count"] == 0
+    # Owner views are untouched: the private (authenticated) skill report
+    # still unions the whole vault, including the unattached proof.
+    private = client.get(
+        "/api/v1/student/vbr/passport/skill-report", params={"skill": "Python"}
+    )
+    assert private.status_code == 200, private.text
+    assert "vault-only-repo" in private.text
+
+
+def test_public_skill_report_drops_chains_without_a_project_anchor(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G1 regression for the chain path specifically: a linked proof chain with
+    NO ``project_id`` (built from unattached vault evidence) has no disclosure
+    node governing it and must be dropped from the PUBLIC projection, while a
+    chain anchored to the published project survives."""
+    from app.services import vbr_work_passport_service as svc
+
+    slug, _ = _published_passport_with_skill(client, mem_store)
+    published_project_id = next(
+        str(row["id"])
+        for row in mem_store.get("vbr_projects", {}).values()
+        if row.get("public_report_token")
+    )
+
+    def _chain(chain_id: str, project_id: str | None, title: str) -> dict:
+        return {
+            "chain_id": chain_id,
+            "project_id": project_id,
+            "project_title": title,
+            "canonical_skill_name": "Python",
+            "chain_label": title,
+            "linked_evidence_ids": ["ev_github_deadbeefcafe01"],
+            "source_types_present": ["github"],
+            "primary_source_type": "github",
+            "connection_reasons": [],
+            "proof_strength_summary": {},
+            "limitations": [],
+            "public_safe": True,
+            "evidence": [
+                {
+                    "evidence_id": "ev_github_deadbeefcafe01",
+                    "source_type": "github",
+                    "public_safe": True,
+                }
+            ],
         }
+
+    def _fake_synthesize(report: dict, *, use_llm: bool = True) -> dict:
+        return {
+            "synthesis_summary": "ok",
+            "source_coverage": {"GitHub": True},
+            "proof_chains": [],
+            "unlinked_supporting_evidence": {"items": [], "count": 0, "more_count": 0},
+            "linked_proof_chains": [
+                _chain("chain_deadbeefcafe01", published_project_id, "Anchored Chain"),
+                _chain("chain_cafebabe000002", None, "Vault Only Standalone Chain"),
+            ],
+            "llm_synthesis": [],
+        }
+
+    monkeypatch.setattr(svc, "synthesize_skill_report", _fake_synthesize)
+
+    res = _get_public_skill_report(client, slug, "python")
+    assert res.status_code == 200, res.text
+    assert "Vault Only Standalone Chain" not in res.text
+    titles = [c.get("project_title") for c in res.json()["linked_proof_chains"]]
+    assert titles == ["Anchored Chain"]
