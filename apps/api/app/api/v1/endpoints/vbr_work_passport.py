@@ -16,11 +16,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+import logging
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 
 from app.api.deps import (
     get_current_user_id,
     get_db,
+    get_optional_user_id,
     get_pipeline_db,
     get_provisioned_user_id,
 )
@@ -48,6 +60,8 @@ from app.schemas.vbr_student_report import SkillReportResponse
 from app.schemas.vbr_work_passport import (
     PassportPhotoResponse,
     PrivateWorkPassportResponse,
+    PublicPassportViewAck,
+    PublicPassportViewEvent,
     PublicSkillReportResponse,
     PublicWorkPassportResponse,
     PublishPassportRequest,
@@ -564,3 +578,49 @@ def get_public_skill_report_route(
     return PublicSkillReportResponse(
         **build_public_skill_report(db, pipeline_db, public_slug, skill)
     )
+
+
+@public_router.post(
+    "/p/{public_slug}/view",
+    response_model=PublicPassportViewAck,
+    summary="Record a privacy-conscious view event for a published passport (no auth required)",
+)
+def record_public_passport_view_route(
+    public_slug: str,
+    request: Request,
+    event: PublicPassportViewEvent | None = None,
+    viewer_user_id: str | None = Depends(get_optional_user_id),
+    db: Any = Depends(get_db),
+) -> PublicPassportViewAck:
+    """Best-effort view tracking; never an error surface.
+
+    Mirrors the public report tracker: any slug that does not resolve to an
+    actively published passport — and any persistence failure — returns the
+    same content-free ``recorded: false`` ack, so this route can't be used as
+    a slug oracle beyond what the public GET already reveals, and a broken
+    analytics table can never break the passport page load. Authenticated
+    viewers are attributed by user id; anonymous viewers stay anonymous.
+    """
+    from app.services.vbr_passport_view_service import (
+        record_public_passport_view,
+        resolve_published_passport_id,
+    )
+
+    logger = logging.getLogger(__name__)
+    try:
+        passport_id = resolve_published_passport_id(db, public_slug)
+        if passport_id is None:
+            return PublicPassportViewAck(recorded=False)
+        recorded = record_public_passport_view(
+            db,
+            passport_id,
+            source=event.source if event else None,
+            dedupe_key=event.dedupe_key if event else None,
+            referrer=request.headers.get("referer"),
+            user_agent=request.headers.get("user-agent"),
+            recruiter_user_id=viewer_user_id,
+        )
+        return PublicPassportViewAck(recorded=bool(recorded))
+    except Exception:
+        logger.warning("public passport view tracking failed", exc_info=True)
+        return PublicPassportViewAck(recorded=False)
