@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react"
 
+import { withQrSource } from "@/lib/app-url"
 import type { BeamCardModel } from "@/lib/beam-card"
 
 import { QrCode } from "./QrCode"
@@ -271,7 +272,7 @@ export function BeamCard({ model, shareUrl }: { model: BeamCardModel; shareUrl?:
           background: C.wash,
         }}
       >
-        <QrCode value={scanUrl} size={224} data-testid="beam-card-qr" />
+        <QrCode value={withQrSource(scanUrl)} size={224} data-testid="beam-card-qr" />
         <p
           data-testid="beam-card-qr-caption"
           style={{ fontSize: 13, fontWeight: 600, color: C.inkSoft, margin: 0, textAlign: "center" }}

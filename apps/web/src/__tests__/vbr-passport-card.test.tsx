@@ -1222,7 +1222,7 @@ describe("Public share URL (production-domain readiness)", () => {
 
     const { modal } = await openBeamModal(published)
     const encoded = within(modal).getByTestId("passport-beam-qr").getAttribute("data-qr-value") ?? ""
-    expect(encoded).toBe("https://veribridge-prod.example/p/slug123")
+    expect(encoded).toBe("https://veribridge-prod.example/p/slug123?src=qr")
     expect(encoded).not.toMatch(/localhost|127\.0\.0\.1/)
     expect(within(modal).getByTestId("passport-beam-url")).toHaveTextContent(
       "https://veribridge-prod.example/p/slug123",
@@ -1236,14 +1236,14 @@ describe("Public share URL (production-domain readiness)", () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridge-prod.example/")
     const { modal } = await openBeamModal(published)
     const encoded = within(modal).getByTestId("passport-beam-qr").getAttribute("data-qr-value") ?? ""
-    expect(encoded).toBe("https://veribridge-prod.example/p/slug123")
+    expect(encoded).toBe("https://veribridge-prod.example/p/slug123?src=qr")
   })
 
   it("falls back to the current browser origin when no production origin is configured", async () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "")
     const { modal } = await openBeamModal(published)
     const encoded = within(modal).getByTestId("passport-beam-qr").getAttribute("data-qr-value") ?? ""
-    expect(encoded).toBe(`${window.location.origin}/p/slug123`)
+    expect(encoded).toBe(`${window.location.origin}/p/slug123?src=qr`)
   })
 
   it("suppresses the localhost-only warning when a production origin is configured", async () => {

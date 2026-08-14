@@ -85,6 +85,22 @@ export default function RecruitersPage() {
         >
           Request a VBR from your candidates
         </a>
+        <a
+          data-testid="recruiters-workspace-link"
+          href="/recruiters/workspace"
+          style={{
+            padding: "10px 18px",
+            borderRadius: 8,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+            color: TOKEN.ink,
+            fontSize: 13,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}
+        >
+          My saved candidates
+        </a>
       </div>
 
       <p style={{ fontSize: 12, color: TOKEN.muted, textAlign: "center", margin: 0 }}>

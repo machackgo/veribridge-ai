@@ -43,6 +43,7 @@ import { PassportCard } from "../../../../../components/passport/PassportCard"
 import { PassportBeam } from "../../../../../components/passport/PassportBeam"
 import { PassportVisibilityControl } from "../../../../../components/passport/PassportVisibilityControl"
 import { QrModal } from "../../../../../components/passport/QrModal"
+import { withQrSource } from "@/lib/app-url"
 import {
   buildPrivateCardModel,
   cardRoleAreasStorageKey,
@@ -3029,7 +3030,12 @@ function VerifiedPassportCardPreview({
         </div>
       </div>
 
-      <QrModal value={model.publicPassportUrl} open={qrOpen} onClose={() => setQrOpen(false)} />
+      <QrModal
+        value={model.publicPassportUrl}
+        qrValue={withQrSource(model.publicPassportUrl)}
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+      />
       {/* Passport Beam — instant in-person sharing. It only ever receives the
           already-public Passport URL (null while Private → honest private-state
           explanation; never a private route or fabricated link). Publishing is

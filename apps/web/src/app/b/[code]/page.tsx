@@ -24,14 +24,20 @@ export const dynamic = "force-dynamic"
 
 export default async function BeamShortLinkPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ code: string }>
+  searchParams?: Promise<{ src?: string }>
 }) {
   const { code } = await params
   const resolution = await resolveBeamCode(code)
 
   if (resolution.kind === "active") {
-    redirect(resolution.publicPassportPath)
+    // Carry the QR scan marker through to the passport so the arrival keeps
+    // its honest `qr_scan` attribution across the short-link redirect.
+    const src = (await searchParams)?.src
+    const suffix = src === "qr" ? "?src=qr" : ""
+    redirect(`${resolution.publicPassportPath}${suffix}`)
   }
 
   return <BeamLinkNotice unavailable={resolution.kind === "unavailable"} />
