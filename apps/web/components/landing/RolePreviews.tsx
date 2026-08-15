@@ -15,7 +15,7 @@ const previews = [
     id: "recruiters",
     icon: SearchCheck,
     title: "Recruiter preview",
-    href: "/recruiter",
+    href: "/recruiters",
     metrics: ["240 matches", "Proof artifacts", "Student-controlled visa chips"],
     detail:
       "A proof-backed search console for finding candidates by verified evidence, not inflated profile keywords.",

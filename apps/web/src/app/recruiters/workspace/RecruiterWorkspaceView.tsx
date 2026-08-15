@@ -72,10 +72,10 @@ function CandidateCard({
   const savedOn = savedDateLabel(connection.created_at)
 
   return (
-    <Card style={{ padding: 18 }}>
+    <Card style={{ padding: 18, height: "100%", display: "flex", flexDirection: "column" }}>
       <div
         data-testid="workspace-candidate-card"
-        style={{ display: "flex", flexDirection: "column", gap: 10 }}
+        style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}
       >
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
           <div
@@ -143,6 +143,7 @@ function CandidateCard({
             gap: 10,
             borderTop: `1px solid ${TOKEN.line}`,
             paddingTop: 10,
+            marginTop: "auto",
           }}
         >
           <span data-testid="workspace-candidate-meta" style={{ fontSize: 11.5, color: TOKEN.muted }}>
@@ -240,19 +241,34 @@ export function RecruiterWorkspaceView() {
   return (
     <div
       data-testid="recruiter-workspace"
-      style={{ maxWidth: 860, margin: "0 auto", padding: "40px 20px", display: "flex", flexDirection: "column", gap: 18 }}
+      style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px", display: "flex", flexDirection: "column", gap: 18 }}
     >
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 10 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10 }}>
         <div style={{ minWidth: 0 }}>
           <p style={{ fontSize: 11.5, letterSpacing: "0.08em", textTransform: "uppercase", color: TOKEN.muted, margin: 0, fontWeight: 700 }}>
             Recruiter Workspace
           </p>
-          <h1 style={{ fontSize: 24, color: TOKEN.ink, margin: "4px 0 0", letterSpacing: "-0.4px" }}>
+          <h1 style={{ fontSize: 26, color: TOKEN.ink, margin: "4px 0 0", letterSpacing: "-0.5px" }}>
             Saved candidates
           </h1>
+          <p style={{ fontSize: 13, color: TOKEN.muted, margin: "6px 0 0", lineHeight: 1.5 }}>
+            Every candidate you saved from a VeriBridge Passport — QR scan or shared link.
+          </p>
         </div>
         {!loading && !error && connections.length > 0 && (
-          <span data-testid="workspace-count" style={{ marginLeft: "auto", fontSize: 12.5, color: TOKEN.muted }}>
+          <span
+            data-testid="workspace-count"
+            style={{
+              marginLeft: "auto",
+              fontSize: 12.5,
+              fontWeight: 600,
+              color: TOKEN.indigo,
+              background: TOKEN.indigoSoft,
+              borderRadius: 999,
+              padding: "5px 12px",
+              whiteSpace: "nowrap",
+            }}
+          >
             {connections.length} {connections.length === 1 ? "candidate" : "candidates"}
           </span>
         )}
@@ -277,7 +293,14 @@ export function RecruiterWorkspaceView() {
           </p>
         </div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))",
+            gap: 14,
+            alignItems: "stretch",
+          }}
+        >
           {connections.map((connection) => (
             <CandidateCard
               key={connection.id}

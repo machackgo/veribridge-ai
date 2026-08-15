@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -719,34 +719,22 @@ describe("SkillEvidenceDetailModal", () => {
   })
 })
 
-describe("Recruiter shortlist page — demo preview card", () => {
-  const src = readFileSync(
-    join(process.cwd(), "src/app/recruiter/passport/page.tsx"),
-    "utf8",
-  )
-
-  it("renders a link to /dev/recruiter-passport-preview", () => {
-    expect(src).toContain("/dev/recruiter-passport-preview")
+// Recruiter V1: the old /recruiter/* prototype console (including the
+// shortlist page that hosted the demo-preview card) was removed from the app
+// router and now redirects to the real recruiter workspace. The dev-only
+// preview surface lives on at /dev/recruiter-passport-preview and keeps its
+// own coverage below.
+describe("Recruiter prototype routes — removed from production", () => {
+  it("no /recruiter app-router prototype pages remain", () => {
+    expect(existsSync(join(process.cwd(), "src/app/recruiter"))).toBe(false)
   })
 
-  it("renders the 'Preview sample Work Passport' card title", () => {
-    expect(src).toContain("Preview sample Work Passport")
-  })
-
-  it("renders the 'Open preview' button label", () => {
-    expect(src).toContain("Open preview")
-  })
-
-  it("communicates demo/mock status", () => {
-    expect(src).toContain("Demo preview")
-    expect(src).toContain("mock recruiter-safe data")
-  })
-
-  it("does not remove existing tab functionality", () => {
-    expect(src).toContain("Saved Candidates")
-    expect(src).toContain("Compare Candidates")
-    expect(src).toContain("RecruiterSavedCandidatesPanel")
-    expect(src).toContain("CandidateComparisonPanel")
+  it("next.config redirects old /recruiter deep links to the real workspace", () => {
+    const config = readFileSync(join(process.cwd(), "next.config.ts"), "utf8")
+    expect(config).toContain('source: "/recruiter"')
+    expect(config).toContain('destination: "/recruiters"')
+    expect(config).toContain('source: "/recruiter/:path*"')
+    expect(config).toContain('destination: "/recruiters/workspace"')
   })
 })
 

@@ -1130,38 +1130,38 @@ test.describe("/dashboard/visa-fit", () => {
   });
 });
 
-/* ── Recruiter dashboard ── */
-test.describe("Recruiter dashboard — sidebar navigation", () => {
-  test.beforeEach(async ({ page }) => {
+/* ── Recruiter V1 — real entry + prototype removal ── */
+test.describe("Recruiter V1 — entry page and prototype redirects", () => {
+  test("/recruiters shows the signed-out entry experience (no fake console)", async ({ page }) => {
+    await page.goto("/recruiters");
+    await expect(page.getByTestId("recruiters-hero")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: /Recruiter Workspace/i }),
+    ).toBeVisible();
+    await expect(page.getByTestId("recruiters-signin-link")).toHaveAttribute(
+      "href",
+      "/login?next=%2Frecruiters%2Fworkspace",
+    );
+    // The removed prototype's fabricated content must never render here.
+    for (const banned of ["Maya Reyes", "Jordan Kim", "Arjun Singh", "Stripe Early Talent"]) {
+      await expect(page.getByText(banned)).toHaveCount(0);
+    }
+  });
+
+  test("old /recruiter root redirects to /recruiters", async ({ page }) => {
     await page.goto("/recruiter");
+    await expect(page).toHaveURL("/recruiters");
+    await expect(page.getByTestId("recruiters-hero")).toBeVisible();
   });
 
-  test("renders recruiter heading", async ({ page }) => {
-    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  });
-
-  test("sidebar /recruiter/search link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Pipeline/i }).click();
-    await expect(page).toHaveURL("/recruiter/search");
-  });
-
-  test("sidebar /recruiter/candidates link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Saved Lists/i }).click();
-    await expect(page).toHaveURL("/recruiter/candidates");
-  });
-
-  test("sidebar /recruiter/invites link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Messages/i }).click();
-    await expect(page).toHaveURL("/recruiter/invites");
-  });
-
-  test("sidebar /recruiter/company link works", async ({ page }) => {
-    await expect(page.getByRole("link", { name: /Job Posts/i })).toHaveAttribute("href", "/recruiter/company");
-  });
-
-  test("sidebar /recruiter/settings link works", async ({ page }) => {
-    await page.getByRole("link", { name: /Team/i }).click();
-    await expect(page).toHaveURL("/recruiter/settings");
+  test("old /recruiter deep links land on the real workspace (via auth gate when signed out)", async ({ page }) => {
+    await page.goto("/recruiter/candidates");
+    // Redirects to /recruiters/workspace; without a session the workspace's
+    // server-side gate forwards to the standard login round-trip.
+    await expect(page).toHaveURL(/\/recruiters\/workspace|\/login\?next=%2Frecruiters%2Fworkspace/);
+    for (const banned of ["Maya Reyes", "Jordan Kim", "Arjun Singh", "Stripe Early Talent"]) {
+      await expect(page.getByText(banned)).toHaveCount(0);
+    }
   });
 });
 

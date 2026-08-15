@@ -346,7 +346,7 @@ export function ClaudeLanding() {
           <div className="cp-nav-links">
             <a href="#platform">Platform</a>
             <Link href="/dashboard">Students</Link>
-            <Link href="/recruiter">Recruiters</Link>
+            <Link href="/recruiters">Recruiters</Link>
             <Link href="/university">Universities</Link>
             <a href="#roadmap">Roadmap</a>
           </div>
@@ -437,7 +437,7 @@ export function ClaudeLanding() {
               badge="Side B · B2B · Subscription"
               title="Recruiters"
               who="Talent teams hiring early-career engineers and analysts."
-              href="/recruiter"
+              href="/recruiters"
               trust="Trust anchor"
               trustValue="Verified company & recruiter identity"
               features={[
@@ -740,7 +740,7 @@ export function ClaudeLanding() {
           <div>
             <a href="#platform">Platform</a>
             <Link href="/dashboard">Students</Link>
-            <Link href="/recruiter">Recruiters</Link>
+            <Link href="/recruiters">Recruiters</Link>
             <Link href="/university">Universities</Link>
             <a href="#workflow">Roadmap</a>
             <Link href="/dashboard/privacy">Privacy</Link>

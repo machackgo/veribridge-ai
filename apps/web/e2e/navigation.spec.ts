@@ -26,9 +26,9 @@ test.describe("Landing page — navigation", () => {
     await expect(page).toHaveURL("/dashboard");
   });
 
-  test("navbar Recruiters link → /recruiter", async ({ page }) => {
+  test("navbar Recruiters link → /recruiters", async ({ page }) => {
     await page.getByRole("link", { name: "Recruiters" }).first().click();
-    await expect(page).toHaveURL("/recruiter");
+    await expect(page).toHaveURL("/recruiters");
   });
 
   test("navbar Universities link → /university", async ({ page }) => {
@@ -89,10 +89,10 @@ test.describe("Landing page — platform cards", () => {
     await expect(page).toHaveURL("/dashboard");
   });
 
-  test("Recruiters preview card links to /recruiter", async ({ page }) => {
+  test("Recruiters preview card links to /recruiters", async ({ page }) => {
     const link = page.getByRole("link", { name: /Preview the recruiters dashboard/i });
     await link.click();
-    await expect(page).toHaveURL("/recruiter");
+    await expect(page).toHaveURL("/recruiters");
   });
 
   test("Universities preview card links to /university", async ({ page }) => {
