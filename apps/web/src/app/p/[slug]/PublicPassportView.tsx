@@ -37,7 +37,9 @@ import {
   TOKEN,
   type BadgeTone,
 } from "../../../../components/passport/shared"
+import { recordPublicPassportView } from "@/lib/passport-view-beacon"
 import { EvidenceTraceList } from "../../../../components/passport/EvidenceTrace"
+import { SaveCandidateButton } from "../../../../components/recruiter/SaveCandidateButton"
 import { ProjectDefenseInspectionSection } from "../../../../components/passport/ProjectDefenseInspectionCard"
 import { RecruiterCta } from "../../../../components/passport/RecruiterCta"
 import {
@@ -754,6 +756,14 @@ export function PublicPassportView({ slug }: { slug: string }) {
           return
         }
         setPassport(data)
+        // Fire-and-forget privacy-conscious view event (deduped per session).
+        // window.location is read directly to avoid a useSearchParams Suspense
+        // requirement on the whole view.
+        const src =
+          typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("src")
+            : null
+        void recordPublicPassportView(slug, src === "qr" ? "qr_scan" : "shared_link")
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : "Failed to load passport."))
       .finally(() => setLoading(false))
@@ -804,6 +814,14 @@ export function PublicPassportView({ slug }: { slug: string }) {
         fallbackHeadline={passport.headline}
         publishedAt={passport.published_at}
       />
+
+      {/* 1b — Recruiter action: save this candidate into the workspace */}
+      <div
+        data-testid="public-passport-save-cta"
+        style={{ display: "flex", justifyContent: "center" }}
+      >
+        <SaveCandidateButton slug={slug} />
+      </div>
 
       {/* 2 — Candidate summary (short) */}
       {summaryText && (

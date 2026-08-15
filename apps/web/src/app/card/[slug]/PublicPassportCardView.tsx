@@ -7,6 +7,7 @@ import { buildPublicCardModel, type PassportCardCapability } from "@/lib/passpor
 import { ErrorState, LoadingState, TOKEN } from "../../../../components/passport/shared"
 import { PassportCard } from "../../../../components/passport/PassportCard"
 import { QrModal } from "../../../../components/passport/QrModal"
+import { withQrSource } from "@/lib/app-url"
 import { downloadPassportCardImage } from "@/lib/card-image"
 
 /**
@@ -187,7 +188,12 @@ export function PublicPassportCardView({ slug }: { slug: string }) {
         Recruiter-safe summaries only — no raw files, private evidence, or numeric scores.
       </p>
 
-      <QrModal value={model.publicPassportUrl} open={qrOpen} onClose={() => setQrOpen(false)} />
+      <QrModal
+        value={model.publicPassportUrl}
+        qrValue={withQrSource(model.publicPassportUrl)}
+        open={qrOpen}
+        onClose={() => setQrOpen(false)}
+      />
     </div>
   )
 }

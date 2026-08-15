@@ -44,3 +44,20 @@ export function beamShortUrl(code: string): string {
   const path = `/b/${encodeURIComponent(code)}`
   return base ? `${base}${path}` : path
 }
+
+/**
+ * Stamp a passport/beam URL as a QR scan surface (`?src=qr`).
+ *
+ * Applied ONLY to the value encoded into QR codes — copy/share buttons keep
+ * the clean URL — so the public passport can honestly attribute a visit as a
+ * QR scan (view analytics + Save Candidate acquisition source). The marker
+ * is a plain query param: stripping it changes nothing about where the link
+ * goes or what it shows.
+ */
+export function withQrSource(url: string): string
+export function withQrSource(url: string | null): string | null
+export function withQrSource(url: string | null | undefined): string | null | undefined
+export function withQrSource(url: string | null | undefined): string | null | undefined {
+  if (!url) return url
+  return url.includes("?") ? `${url}&src=qr` : `${url}?src=qr`
+}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type CSSProperties } from "react"
 
+import { withQrSource } from "@/lib/app-url"
 import { firstNameFrom, realDisplayName } from "@/lib/passport-card"
 
 import { QrCode } from "./QrCode"
@@ -214,7 +215,7 @@ export function PassportBeam({
                 border: "1px solid #eef0f6",
               }}
             >
-              <QrCode value={publicUrl} size={228} data-testid="passport-beam-qr" />
+              <QrCode value={withQrSource(publicUrl)} size={228} data-testid="passport-beam-qr" />
               <p
                 data-testid="passport-beam-instruction"
                 style={{ fontSize: 13, fontWeight: 600, color: "#1f2a44", margin: 0, textAlign: "center" }}
