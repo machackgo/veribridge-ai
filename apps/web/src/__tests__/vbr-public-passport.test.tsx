@@ -205,13 +205,17 @@ describe("PublicPassportView", () => {
     expect(screen.queryByTestId("publish-report-button")).not.toBeInTheDocument()
     expect(screen.queryByTestId("copy-passport-link-button")).not.toBeInTheDocument()
     // The only buttons allowed on the public passport are read-only
-    // expand/collapse disclosure toggles — never any mutating edit control.
+    // expand/collapse disclosure toggles and the recruiter Save Candidate
+    // CTA (which mutates recruiter-side state, never the passport itself) —
+    // never any owner edit control.
     const readOnlyToggles = new Set([
       "public-skill-expand-toggle",
       "public-project-detail-toggle",
       "public-passport-methodology-toggle",
       "public-projects-show-all",
       "public-projects-show-less",
+      "save-candidate-button",
+      "save-candidate-retry",
     ])
     for (const btn of screen.queryAllByRole("button")) {
       expect(readOnlyToggles.has(btn.getAttribute("data-testid") ?? "")).toBe(true)
