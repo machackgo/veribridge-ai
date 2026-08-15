@@ -686,7 +686,29 @@ class PublicSkillReportResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class PublicPassportViewEvent(BaseModel):
+    """Client-declared arrival context for the passport view tracker."""
+
+    # Closed vocabulary (direct | qr_scan | shared_link); anything else is
+    # normalized to 'unknown' server-side.
+    source: str | None = Field(default=None, max_length=32)
+    # Opaque client-generated per-session key so rerenders don't double-count.
+    dedupe_key: str | None = Field(default=None, max_length=128)
+
+    model_config = {"extra": "forbid"}
+
+
+class PublicPassportViewAck(BaseModel):
+    """Fire-and-forget acknowledgement; deliberately content-free."""
+
+    recorded: bool = False
+
+    model_config = {"extra": "forbid"}
+
+
 __all__ = [
+    "PublicPassportViewAck",
+    "PublicPassportViewEvent",
     "PublishPassportRequest",
     "WorkPassportStatusResponse",
     "PassportSkillEvidenceChip",
