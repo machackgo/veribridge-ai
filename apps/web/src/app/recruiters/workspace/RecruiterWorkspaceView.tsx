@@ -252,7 +252,8 @@ export function RecruiterWorkspaceView() {
             Saved candidates
           </h1>
           <p style={{ fontSize: 13, color: TOKEN.muted, margin: "6px 0 0", lineHeight: 1.5 }}>
-            Every candidate you saved from a VeriBridge Passport — QR scan or shared link.
+            Every candidate you saved from a VeriBridge Passport — QR scan, shared link,
+            or search.
           </p>
         </div>
         {!loading && !error && connections.length > 0 && (
@@ -274,6 +275,38 @@ export function RecruiterWorkspaceView() {
         )}
       </div>
 
+      <nav style={{ display: "flex", gap: 8 }} aria-label="Recruiter sections">
+        <span
+          aria-current="page"
+          style={{
+            padding: "7px 14px",
+            borderRadius: 999,
+            background: TOKEN.indigoSoft,
+            color: TOKEN.indigo,
+            fontSize: 12.5,
+            fontWeight: 700,
+          }}
+        >
+          Saved candidates
+        </span>
+        <a
+          data-testid="workspace-nav-search"
+          href="/recruiters/search"
+          style={{
+            padding: "7px 14px",
+            borderRadius: 999,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+            color: TOKEN.muted,
+            fontSize: 12.5,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}
+        >
+          Search
+        </a>
+      </nav>
+
       {loading ? (
         <LoadingState label="Loading saved candidates…" />
       ) : error ? (
@@ -286,7 +319,14 @@ export function RecruiterWorkspaceView() {
             description="Scan a candidate's Passport QR code or open their shared passport link, then press “Save Candidate” — they'll appear here for review any time."
           />
           <p style={{ textAlign: "center", fontSize: 12.5, color: TOKEN.muted, marginTop: 8 }}>
-            Have a report link instead?{" "}
+            <a
+              data-testid="workspace-empty-search-link"
+              href="/recruiters/search"
+              style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}
+            >
+              Search for candidates →
+            </a>{" "}
+            · Have a report link?{" "}
             <a href="/recruiters/open" style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}>
               Open a Verified Build Report →
             </a>

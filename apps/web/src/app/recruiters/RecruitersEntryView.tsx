@@ -16,13 +16,13 @@ const LOGIN_HREF = `/login?next=${encodeURIComponent("/recruiters/workspace")}`
 const steps = [
   {
     icon: "🪪",
-    title: "1. A candidate shares their Work Passport",
-    body: "Candidates hand you a QR code or a public link to their Verified Work Passport — an evidence-backed index of the projects they've actually built and defended. No login required to view it.",
+    title: "1. A candidate shares their Work Passport — or you find them",
+    body: "Candidates hand you a QR code or a public link to their Verified Work Passport — an evidence-backed index of the projects they've actually built and defended. You can also search every published passport by skill, technology, or project, with each result explained by real evidence.",
   },
   {
     icon: "📌",
     title: "2. You save the candidates worth keeping",
-    body: "Press “Save Candidate” on any passport — from a QR scan at a career fair or a shared link — and they land in your workspace with the date and source recorded. Saves are private to you.",
+    body: "Press “Save Candidate” on any passport or search result — from a QR scan at a career fair, a shared link, or search — and they land in your workspace with the date and source recorded. Saves are private to you.",
   },
   {
     icon: "🔍",
@@ -71,8 +71,9 @@ export function RecruitersEntryView() {
             lineHeight: 1.6,
           }}
         >
-          Access candidates you have saved from VeriBridge Passports — real people, real
-          evidence, saved by you from a QR scan or a shared link.
+          Search candidates who published a Verified Work Passport, and access
+          candidates you have saved from VeriBridge Passports — real people, real
+          evidence, saved by you from a QR scan, a shared link, or search.
         </p>
         <div
           style={{
