@@ -49,6 +49,7 @@ from app.schemas.vbr_project_defense import (
 from app.schemas.vbr_public_project_report import ProjectReportPublishStatusResponse
 from app.schemas.vbr_student_report import VBRStudentProjectReportResponse
 from app.services.project_defense_artifact_sync_service import ProjectDefenseArtifactSyncService
+from app.services.recruiter_search_service import refresh_search_projection
 from app.services.vbr_project_defense import (
     attach_proofs_to_project,
     build_project_defense_context,
@@ -368,8 +369,12 @@ def publish_project_report_route(
     project_id: str,
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
 ) -> ProjectReportPublishStatusResponse:
     result = publish_project_report(db, project_id, user_id)
+    # A newly published report changes what the public passport features —
+    # keep the recruiter search projection in step.
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return ProjectReportPublishStatusResponse(**result)
 
 
@@ -382,8 +387,11 @@ def unpublish_project_report_route(
     project_id: str,
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
 ) -> ProjectReportPublishStatusResponse:
     result = unpublish_project_report(db, project_id, user_id)
+    # A revoked report must disappear from recruiter search immediately.
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return ProjectReportPublishStatusResponse(**result)
 
 

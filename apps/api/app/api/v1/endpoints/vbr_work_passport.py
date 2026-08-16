@@ -106,6 +106,7 @@ from app.services.passport_disclosure_editor import (
     build_disclosure_context,
     preset_changes,
 )
+from app.services.recruiter_search_service import refresh_search_projection
 from app.services.vbr_work_passport_service import (
     build_private_passport,
     build_public_passport,
@@ -295,9 +296,11 @@ def publish_passport_route(
     # public.users(id), so the caller's row must exist before the insert.
     user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
 ) -> WorkPassportStatusResponse:
     payload = body or PublishPassportRequest()
     result = publish_passport(db, user_id, headline=payload.headline, summary=payload.summary)
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return WorkPassportStatusResponse(**result)
 
 
@@ -309,8 +312,12 @@ def publish_passport_route(
 def unpublish_passport_route(
     user_id: str = Depends(get_current_user_id),
     db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
 ) -> WorkPassportStatusResponse:
-    return WorkPassportStatusResponse(**unpublish_passport(db, user_id))
+    result = unpublish_passport(db, user_id)
+    # Unpublish must remove the candidate from recruiter discovery too.
+    refresh_search_projection(db, pipeline_db, str(user_id))
+    return WorkPassportStatusResponse(**result)
 
 
 # ── Granular disclosure (Privacy & Sharing center) ───────────────────────────
@@ -359,6 +366,7 @@ def set_disclosure_mode_route(
         set_disclosure_mode(db, str(user_id), body.mode)
     except DisclosureValidationError as exc:
         raise _disclosure_validation_http_error(exc) from exc
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
 
 
@@ -382,6 +390,7 @@ def apply_disclosure_overrides_route(
         )
     except DisclosureValidationError as exc:
         raise _disclosure_validation_http_error(exc) from exc
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
 
 
@@ -418,6 +427,7 @@ def apply_disclosure_preset_route(
         changes = preset_changes(context, preset)
         if changes:
             apply_disclosure_overrides(db, str(user_id), changes)
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
 
 
@@ -432,6 +442,7 @@ def reset_disclosure_route(
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> DisclosureContextResponse:
     clear_disclosure_overrides(db, str(user_id))
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
 
 
@@ -460,6 +471,7 @@ def update_passport_profile_route(
     # public.users(id), so the caller's row must exist before the insert.
     user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
+    pipeline_db: Any = Depends(get_pipeline_db),
 ) -> PassportProfileResponse:
     """PATCH-style upsert: only the provided fields change; explicit ``null``
     or empty clears a field. Field-level validation errors return 422."""
@@ -475,6 +487,9 @@ def update_passport_profile_route(
                 "message": exc.message,
             },
         ) from exc
+    # Identity edits (name, headline, visibility toggles) feed recruiter
+    # search — keep the projection in step with the live profile.
+    refresh_search_projection(db, pipeline_db, str(user_id))
     return PassportProfileResponse(**get_editor_context(db, str(user_id)))
 
 
