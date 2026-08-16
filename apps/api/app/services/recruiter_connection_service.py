@@ -35,6 +35,7 @@ from uuid import uuid4
 
 from app.core.serialization import make_json_safe
 from app.services.passport_profile_service import public_passport_profile
+from app.services.recruiter_search_service import _read_with_transient_retry
 
 logger = logging.getLogger(__name__)
 
@@ -91,12 +92,13 @@ def _published_passport_by_slug(db: Any, slug: str) -> dict[str, Any] | None:
             None,
         )
     else:
-        result = (
-            db.table(_PASSPORTS_TABLE)
+        result = _read_with_transient_retry(
+            db,
+            lambda client: client.table(_PASSPORTS_TABLE)
             .select("*")
             .eq("public_slug", slug)
             .limit(1)
-            .execute()
+            .execute(),
         )
         rows = getattr(result, "data", []) or []
         row = rows[0] if rows else None
@@ -115,12 +117,13 @@ def _passport_by_user(db: Any, user_id: str) -> dict[str, Any] | None:
             ),
             None,
         )
-    result = (
-        db.table(_PASSPORTS_TABLE)
+    result = _read_with_transient_retry(
+        db,
+        lambda client: client.table(_PASSPORTS_TABLE)
         .select("*")
         .eq("user_id", user_id)
         .limit(1)
-        .execute()
+        .execute(),
     )
     rows = getattr(result, "data", []) or []
     return rows[0] if rows else None
@@ -139,13 +142,14 @@ def _connection_for_pair(
             ),
             None,
         )
-    result = (
-        db.table(_CONNECTIONS_TABLE)
+    result = _read_with_transient_retry(
+        db,
+        lambda client: client.table(_CONNECTIONS_TABLE)
         .select("*")
         .eq("recruiter_user_id", recruiter_user_id)
         .eq("student_user_id", student_user_id)
         .limit(1)
-        .execute()
+        .execute(),
     )
     rows = getattr(result, "data", []) or []
     return rows[0] if rows else None
@@ -155,7 +159,16 @@ def _insert_connection(db: Any, row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(db, dict):
         db.setdefault(_CONNECTIONS_TABLE, {})[row["id"]] = row
         return row
-    db.table(_CONNECTIONS_TABLE).insert(make_json_safe(row)).execute()
+    # Transient-race retry is safe on this write: the unique
+    # (recruiter_user_id, student_user_id) constraint makes a double insert
+    # impossible, and save_candidate() already recovers from the resulting
+    # unique-violation by re-reading the winner.
+    _read_with_transient_retry(
+        db,
+        lambda client: client.table(_CONNECTIONS_TABLE)
+        .insert(make_json_safe(row))
+        .execute(),
+    )
     return row
 
 
@@ -169,8 +182,6 @@ def _list_connection_rows(db: Any, recruiter_user_id: str) -> list[dict[str, Any
     else:
         # Same transient-transport-race retry as search reads: the workspace
         # listing races other page-load requests through the shared client.
-        from app.services.recruiter_search_service import _read_with_transient_retry
-
         result = _read_with_transient_retry(
             db,
             lambda client: client.table(_CONNECTIONS_TABLE)
