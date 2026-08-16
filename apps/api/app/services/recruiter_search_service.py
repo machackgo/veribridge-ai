@@ -160,6 +160,42 @@ def tokenize_query(q: Any) -> list[str]:
 # ── Storage helpers (dual-mode) ──────────────────────────────────────────────
 
 
+def _is_transient_transport_error(exc: Exception) -> bool:
+    """The process-wide Supabase client shares ONE sync httpx transport;
+    concurrent requests racing it surface ``httpx.ReadError: [Errno 11/35]
+    Resource temporarily unavailable`` (see db/supabase.py). Those are safe
+    to retry once on a fresh client."""
+    text = f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
+    return any(
+        marker in text
+        for marker in (
+            "httpx.", "httpcore.", "ReadError", "WriteError",
+            "Resource temporarily unavailable", "ConnectionTerminated",
+            "RemoteProtocolError", "ConnectError",
+        )
+    )
+
+
+def _read_with_transient_retry(db: Any, fn: Any) -> Any:
+    """Run a read against ``db``; on a transient transport race, retry ONCE
+    on a fresh service-role client. Search is a pure read surface, so the
+    retry is always safe."""
+    if isinstance(db, dict):
+        return fn(db)
+    try:
+        return fn(db)
+    except Exception as exc:
+        if not _is_transient_transport_error(exc):
+            raise
+        logger.warning(
+            "search read hit a transient transport error; retrying on a "
+            "fresh client: %s", exc,
+        )
+        from app.db.supabase import create_service_role_client
+
+        return fn(create_service_role_client())
+
+
 def _index_rows(db: Any) -> dict[str, dict[str, Any]]:
     return db.setdefault(_INDEX_TABLE, {})
 
@@ -237,11 +273,12 @@ def _live_publication_map(db: Any, user_ids: list[str]) -> dict[str, bool]:
             if uid in user_ids or uid in set(user_ids):
                 out[uid] = bool(row.get("is_published"))
         return out
-    result = (
-        db.table(_PASSPORTS_TABLE)
+    result = _read_with_transient_retry(
+        db,
+        lambda client: client.table(_PASSPORTS_TABLE)
         .select("user_id, is_published")
         .in_("user_id", user_ids)
-        .execute()
+        .execute(),
     )
     return {
         str(r.get("user_id")): bool(r.get("is_published"))
@@ -260,11 +297,12 @@ def _live_disclosure_versions(db: Any, user_ids: list[str]) -> dict[str, int]:
             if uid in set(user_ids):
                 out[uid] = int(row.get("disclosure_version") or 1)
         return out
-    result = (
-        db.table(_POLICIES_TABLE)
+    result = _read_with_transient_retry(
+        db,
+        lambda client: client.table(_POLICIES_TABLE)
         .select("user_id, disclosure_version")
         .in_("user_id", user_ids)
-        .execute()
+        .execute(),
     )
     return {
         str(r.get("user_id")): int(r.get("disclosure_version") or 1)
@@ -777,17 +815,22 @@ def _fetch_candidate_pool(db: Any, terms: list[str]) -> list[dict[str, Any]]:
             ]
         return rows[:_MAX_CANDIDATE_POOL]
 
-    query = db.table(_INDEX_TABLE).select("*")
-    if terms:
-        # PostgREST or= filter: any term appearing anywhere in the document.
-        # Terms are sanitized to [a-z0-9+#.] by tokenize_query; strip the
-        # PostgREST reserved chars that could break the filter string.
-        ors = ",".join(
-            "search_text.ilike.*{}*".format(term.replace(",", "").replace("(", "").replace(")", ""))
-            for term in terms
-        )
-        query = query.or_(ors)
-    result = query.limit(_MAX_CANDIDATE_POOL).execute()
+    def _run(client: Any) -> Any:
+        query = client.table(_INDEX_TABLE).select("*")
+        if terms:
+            # PostgREST or= filter: any term appearing anywhere in the document.
+            # Terms are sanitized to [a-z0-9+#.] by tokenize_query; strip the
+            # PostgREST reserved chars that could break the filter string.
+            ors = ",".join(
+                "search_text.ilike.*{}*".format(
+                    term.replace(",", "").replace("(", "").replace(")", "")
+                )
+                for term in terms
+            )
+            query = query.or_(ors)
+        return query.limit(_MAX_CANDIDATE_POOL).execute()
+
+    result = _read_with_transient_retry(db, _run)
     return list(getattr(result, "data", []) or [])
 
 

@@ -661,6 +661,47 @@ def test_search_result_saves_through_existing_connections(
     assert len(rows) == 1 and rows[0]["source"] == "search"
 
 
+# ── Unit: transient transport-race retry ─────────────────────────────────────
+
+
+def test_transient_transport_error_retries_on_fresh_client(monkeypatch) -> None:
+    """The shared Supabase client's httpx transport races under concurrent
+    requests (ReadError Errno 11). Search reads retry ONCE on a fresh
+    client; non-transient errors propagate untouched."""
+    from app.services import recruiter_search_service as svc
+
+    class FakeReadError(Exception):
+        pass
+
+    FakeReadError.__module__ = "httpx"
+    FakeReadError.__name__ = "ReadError"
+
+    fresh = object()
+    monkeypatch.setattr(
+        "app.db.supabase.create_service_role_client", lambda: fresh
+    )
+
+    calls: list[Any] = []
+
+    def flaky(client: Any) -> str:
+        calls.append(client)
+        if len(calls) == 1:
+            raise FakeReadError("[Errno 11] Resource temporarily unavailable")
+        return "ok"
+
+    class NotADict:  # non-dict db → the retry path is active
+        pass
+
+    assert svc._read_with_transient_retry(NotADict(), flaky) == "ok"
+    assert calls[1] is fresh
+
+    def hard_failure(client: Any) -> str:
+        raise ValueError("real bug — must not be retried/swallowed")
+
+    with pytest.raises(ValueError):
+        svc._read_with_transient_retry(NotADict(), hard_failure)
+
+
 # ── Unit: tokenization ───────────────────────────────────────────────────────
 
 
