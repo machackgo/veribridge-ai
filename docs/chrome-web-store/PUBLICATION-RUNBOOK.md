@@ -13,7 +13,8 @@ State going in (all verified 2026-08-04):
   (deterministic; re-verify with `shasum -a 256 -c release/…​.sha256`)
 - Listing copy + disclosures + reviewer instructions: `LISTING.md` (this dir)
 - Assets: `apps/extension/store-assets/` (icon, promo, 3 screenshots)
-- Privacy/support URLs live: https://veribridgeai.com/extension/privacy · /extension/support
+- Privacy/support URLs live: https://veribridgeai.com/privacy (canonical, use in
+  dashboard) · /extension/privacy (extension-specific) · /extension/support
 - Support inbox verified end-to-end: support@veribridgeai.com
 
 ## Steps (publisher at the dashboard, assistant guiding)
@@ -35,7 +36,10 @@ State going in (all verified 2026-08-04):
 **D. Privacy tab (~10 min)** — paste from `LISTING.md` §2:
 8. Single-purpose statement; permission justifications (storage + host).
 9. Data-use checkboxes exactly as listed; certify the three attestations.
-10. Privacy policy URL: `https://veribridgeai.com/extension/privacy`.
+10. Privacy policy URL: `https://veribridgeai.com/privacy` — must be exactly
+    this (a dedicated policy page; the homepage, /extension install-help page,
+    or any login-walled URL will be rejected as "not a valid privacy policy",
+    per the 2026-08 "Purple Nickel" rejection).
 
 **E. Distribution + review info (~5 min)**
 11. Visibility Public (or Unlisted for soft launch — publisher's call),

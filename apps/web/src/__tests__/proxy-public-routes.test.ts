@@ -100,6 +100,32 @@ describe("proxy public-route allowlist — anonymous", () => {
     expect(locationOf(res)).toBeNull()
   })
 
+  it("lets an anonymous visitor (e.g. a Chrome Web Store reviewer) open the privacy policy", async () => {
+    // /privacy is the Chrome Web Store listing's privacy-policy URL — it must
+    // never redirect to /login (that caused the "Purple Nickel" rejection).
+    const res = await proxy(req("/privacy"))
+    expect(res.status).not.toBe(307)
+    expect(locationOf(res)).toBeNull()
+  })
+
+  it("keeps the extension privacy policy public", async () => {
+    const res = await proxy(req("/extension/privacy"))
+    expect(res.status).not.toBe(307)
+    expect(locationOf(res)).toBeNull()
+  })
+
+  it("serves robots.txt without an auth redirect", async () => {
+    const res = await proxy(req("/robots.txt"))
+    expect(res.status).not.toBe(307)
+    expect(locationOf(res)).toBeNull()
+  })
+
+  it("does not open sibling paths via the /privacy exact match", async () => {
+    const res = await proxy(req("/privacy-center"))
+    expect(res.status).toBe(307)
+    expect(locationOf(res)).toContain("/login")
+  })
+
   it("does NOT expose the private dashboard to an anonymous user", async () => {
     const res = await proxy(req("/dashboard"))
     expect(res.status).toBe(307)

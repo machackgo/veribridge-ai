@@ -743,7 +743,7 @@ export function ClaudeLanding() {
             <Link href="/recruiters">Recruiters</Link>
             <Link href="/university">Universities</Link>
             <a href="#workflow">Roadmap</a>
-            <Link href="/dashboard/privacy">Privacy</Link>
+            <Link href="/privacy">Privacy</Link>
           </div>
           <p className="cp-mono">© 2026 VeriBridge AI · Built at WPI</p>
         </div>

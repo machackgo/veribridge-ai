@@ -81,7 +81,8 @@ Chrome's schedule.
 - No audio or camera capture
 - Uploads go only to allowlisted VeriBridge API origins
   (`isAllowedRecorderApiBase`)
-- Public policy: https://veribridgeai.com/extension/privacy
+- Public policy: https://veribridgeai.com/privacy (canonical; extension-specific
+  page: https://veribridgeai.com/extension/privacy)
 
 ## File structure
 
