@@ -213,7 +213,10 @@ function ResultCard({
           >
             {initialsOf(candidate.display_name)}
           </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
+          {/* Basis keeps the identity block a readable width — when the
+              actions don't fit beside it, THEY wrap below instead of
+              crushing the name to a letter per line. */}
+          <div style={{ minWidth: 0, flex: "1 1 200px" }}>
             <h3
               data-testid="search-result-name"
               style={{ fontSize: 16, color: TOKEN.ink, margin: 0, fontWeight: 700, overflowWrap: "anywhere" }}
@@ -290,7 +293,13 @@ function ResultCard({
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
               {candidate.matched_reasons.map((reason, index) => (
-                <Badge key={`${reason.type}-${reason.label}-${index}`} tone={reasonTone(reason)}>
+                <Badge
+                  key={`${reason.type}-${reason.label}-${index}`}
+                  tone={reasonTone(reason)}
+                  // Reason chips carry real prose (headlines, education) —
+                  // they must wrap on narrow screens, never overflow.
+                  style={{ whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" }}
+                >
                   {reason.type === "skill" ? "✓ " : ""}
                   {reasonText(reason)}
                 </Badge>
@@ -314,7 +323,11 @@ function ResultCard({
               </p>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                 {skillsToShow.map((skill) => (
-                  <Badge key={skill.skill} tone="emerald">
+                  <Badge
+                    key={skill.skill}
+                    tone="emerald"
+                    style={{ whiteSpace: "normal", overflowWrap: "anywhere", textAlign: "left" }}
+                  >
                     ✓ {skill.skill} — {skill.status}
                   </Badge>
                 ))}
@@ -503,8 +516,8 @@ export function RecruiterSearchView() {
           style={{
             padding: "7px 14px",
             borderRadius: 999,
-            background: TOKEN.indigoSoft,
-            color: TOKEN.indigo,
+            background: TOKEN.indigo,
+            color: "#fff",
             fontSize: 12.5,
             fontWeight: 700,
           }}

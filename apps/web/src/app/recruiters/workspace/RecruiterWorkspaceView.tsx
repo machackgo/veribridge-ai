@@ -281,8 +281,8 @@ export function RecruiterWorkspaceView() {
           style={{
             padding: "7px 14px",
             borderRadius: 999,
-            background: TOKEN.indigoSoft,
-            color: TOKEN.indigo,
+            background: TOKEN.indigo,
+            color: "#fff",
             fontSize: 12.5,
             fontWeight: 700,
           }}
