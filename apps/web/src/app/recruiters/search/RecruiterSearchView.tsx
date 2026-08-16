@@ -402,8 +402,10 @@ export function RecruiterSearchView() {
   // Initial load: the honest discoverable population (no fake density).
   useEffect(() => {
     void runSearch({ q: "", evidence: [], availability: "", page: 1 }, false)
-    // Saved state for “Saved ✓” marks — one listing call, not per-result probes.
+    // Saved state for “Saved ✓” marks — one listing call, not per-result
+    // probes; one retry rides out a transient page-load network race.
     listConnections()
+      .catch(() => listConnections())
       .then((connections) => {
         setSavedSlugs(
           new Set(

@@ -167,12 +167,17 @@ def _list_connection_rows(db: Any, recruiter_user_id: str) -> list[dict[str, Any
             if str(r.get("recruiter_user_id")) == str(recruiter_user_id)
         ]
     else:
-        result = (
-            db.table(_CONNECTIONS_TABLE)
+        # Same transient-transport-race retry as search reads: the workspace
+        # listing races other page-load requests through the shared client.
+        from app.services.recruiter_search_service import _read_with_transient_retry
+
+        result = _read_with_transient_retry(
+            db,
+            lambda client: client.table(_CONNECTIONS_TABLE)
             .select("*")
             .eq("recruiter_user_id", recruiter_user_id)
             .order("created_at", desc=True)
-            .execute()
+            .execute(),
         )
         rows = list(getattr(result, "data", []) or [])
     return sorted(rows, key=lambda r: str(r.get("created_at") or ""), reverse=True)
