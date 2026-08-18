@@ -24,13 +24,17 @@ from app.schemas.recruiter_connections import (
     RecruiterConnectionListResponse,
     SaveCandidateRequest,
     SaveCandidateResponse,
+    UpdateConnectionRequest,
 )
 from app.services.recruiter_connection_service import (
+    ConnectionNotFound,
+    InvalidConnectionStatus,
     PassportNotFound,
     connection_status,
     delete_connection,
     list_connections,
     save_candidate,
+    update_connection,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +109,52 @@ def connection_status_route(
     return ConnectionStatusResponse(
         **connection_status(db, str(user_id), passport_slug)
     )
+
+
+@router.patch(
+    "/{connection_id}",
+    response_model=RecruiterConnection,
+    summary="Update the review status / private note of a saved candidate",
+)
+def update_connection_route(
+    connection_id: str,
+    payload: UpdateConnectionRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> RecruiterConnection:
+    """Shortlist / archive / restore a saved candidate, or edit the
+    recruiter-private note. 404 for missing and foreign rows alike."""
+    sent = payload.model_fields_set
+    note: Any = ...
+    if payload.clear_note:
+        note = None
+    elif "recruiter_note" in sent:
+        note = payload.recruiter_note
+    try:
+        view = update_connection(
+            db,
+            str(user_id),
+            connection_id,
+            status=payload.status if payload.status is not None else ...,
+            recruiter_note=note,
+        )
+    except InvalidConnectionStatus:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "invalid_status",
+                "message": "Status must be saved, shortlisted, or archived.",
+            },
+        )
+    except ConnectionNotFound:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "connection_not_found",
+                "message": "This saved candidate was not found.",
+            },
+        )
+    return RecruiterConnection(**view)
 
 
 @router.delete(
