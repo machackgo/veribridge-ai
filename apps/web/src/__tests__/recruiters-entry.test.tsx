@@ -72,10 +72,10 @@ describe("/recruiters page — auth-aware entry (source contract)", () => {
 describe("main navigation — no path into the removed prototype", () => {
   it("landing page links point at /recruiters, never the old /recruiter console", () => {
     const landing = readFileSync(
-      join(process.cwd(), "components/prototype/ClaudeLanding.tsx"),
+      join(process.cwd(), "components/landing-v2/LandingV2.tsx"),
       "utf8",
     )
     expect(landing).not.toContain('href="/recruiter"')
-    expect(landing).toContain('href="/recruiters"')
+    expect(landing).toContain('"/recruiters"')
   })
 })

@@ -1,134 +1,117 @@
 import { expect, test } from "@playwright/test";
 
-/* ── Landing page navigation ── */
+/* ── Landing page v2 (Keystone brand) — navigation ── */
 test.describe("Landing page — navigation", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
   });
 
   test("page has correct title", async ({ page }) => {
-    await expect(page).toHaveTitle(/VeriBridge AI/i);
+    await expect(page).toHaveTitle(/VeriBridge/i);
   });
 
   test("hero heading is visible", async ({ page }) => {
-    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { level: 1 })).toContainText(
+      /Prove them/i,
+    );
   });
 
   test("navbar logo links to /", async ({ page }) => {
-    await page.goto("/dashboard");
-    const logo = page.getByRole("link", { name: /VeriBridge/i }).first();
-    await logo.click();
-    await expect(page).toHaveURL("/");
+    const logo = page.getByRole("link", { name: /VeriBridge home/i });
+    await expect(logo).toHaveAttribute("href", "/");
   });
 
-  test("navbar Students link → /dashboard", async ({ page }) => {
-    await page.getByRole("link", { name: "Students" }).first().click();
-    await expect(page).toHaveURL("/dashboard");
-  });
-
-  test("navbar Recruiters link → /recruiters", async ({ page }) => {
-    await page.getByRole("link", { name: "Recruiters" }).first().click();
-    await expect(page).toHaveURL("/recruiters");
-  });
-
-  test("navbar Universities link → /university", async ({ page }) => {
-    await page.getByRole("link", { name: "Universities" }).first().click();
-    await expect(page).toHaveURL("/university");
+  test("navbar For Recruiters → #recruiters section", async ({ page }) => {
+    const link = page
+      .getByRole("navigation", { name: "Main" })
+      .getByRole("link", { name: "For Recruiters" });
+    if (!(await link.isVisible())) {
+      test.skip(true, "nav links are collapsed on small viewports");
+    }
+    await link.click();
+    await expect(page).toHaveURL("/#recruiters");
   });
 
   test("navbar Sign in → /login", async ({ page }) => {
-    await page.getByRole("link", { name: /Sign in/i }).click();
+    const signIn = page.getByRole("link", { name: /^Sign in$/i });
+    if (!(await signIn.isVisible())) {
+      test.skip(true, "Sign in is collapsed on small viewports (CTA covers login)");
+    }
+    await signIn.click();
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test("hero Start Building Profile → /login", async ({ page }) => {
-    const heroCta = page
-      .locator(".cp-hero-ctas")
-      .getByRole("link", { name: /Start Building Profile/i });
-    await heroCta.click();
+  test("navbar Create Work Passport → /login", async ({ page }) => {
+    await page
+      .getByRole("banner")
+      .getByRole("link", { name: /Create Work Passport/i })
+      .click();
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test("hero View Platform → #platform (stays on /)", async ({ page }) => {
-    const viewPlatform = page.getByRole("link", { name: /View Platform/i });
-    await viewPlatform.click();
-    await expect(page).toHaveURL("/#platform");
-  });
-
-  test("CTA card Start Building Profile → /login", async ({ page }) => {
-    const ctaLink = page
-      .locator(".cp-cta-card")
-      .getByRole("link", { name: /Start Building Profile/i });
-    await ctaLink.click();
+  test("hero candidate CTA → /login", async ({ page }) => {
+    await page
+      .getByRole("link", { name: /Create your Work Passport/i })
+      .click();
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test("no black button has zero-contrast text", async ({ page }) => {
-    // Check that primary buttons have visible (non-zero-width) text
-    const primaryBtns = page.locator(".cp-btn-primary");
+  test("hero recruiter CTA → /recruiters", async ({ page }) => {
+    await page
+      .getByRole("link", { name: /Explore recruiter search/i })
+      .first()
+      .click();
+    await expect(page).toHaveURL("/recruiters");
+  });
+
+  test("footer links are the live routes only", async ({ page }) => {
+    const footer = page.getByRole("contentinfo");
+    await expect(
+      footer.getByRole("link", { name: "For Recruiters" }),
+    ).toHaveAttribute("href", "/recruiters");
+    await expect(
+      footer.getByRole("link", { name: "Website Proof Recorder" }),
+    ).toHaveAttribute("href", "/extension");
+    await expect(
+      footer.getByRole("link", { name: "Privacy" }),
+    ).toHaveAttribute("href", "/privacy");
+  });
+
+  test("no links into removed prototype or unshipped surfaces", async ({
+    page,
+  }) => {
+    const hrefs = await page
+      .locator("a[href]")
+      .evaluateAll((els) => els.map((el) => el.getAttribute("href")));
+    for (const href of hrefs) {
+      expect(href, `unexpected link ${href}`).not.toMatch(
+        /^\/(recruiter\/|university|dashboard\/(jobs|visa-fit|mock-interview))/,
+      );
+    }
+  });
+
+  test("primary buttons have visible text", async ({ page }) => {
+    const primaryBtns = page.locator(".lv-btn-primary");
     const count = await primaryBtns.count();
     expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {
-      const btn = primaryBtns.nth(i);
-      await expect(btn).toBeVisible();
-      const text = await btn.textContent();
+      const text = await primaryBtns.nth(i).textContent();
       expect(text?.trim().length).toBeGreaterThan(0);
     }
   });
 });
 
-/* ── Three-sided platform cards ── */
-test.describe("Landing page — platform cards", () => {
-  test.beforeEach(async ({ page }) => {
+/* ── Honest-claims guardrails ── */
+test.describe("Landing page — claim honesty", () => {
+  test("never promises scores, rankings, or guaranteed verification", async ({
+    page,
+  }) => {
     await page.goto("/");
-  });
-
-  test("Students preview card links to /dashboard", async ({ page }) => {
-    const link = page.getByRole("link", { name: /Preview the students dashboard/i });
-    await link.click();
-    await expect(page).toHaveURL("/dashboard");
-  });
-
-  test("Recruiters preview card links to /recruiters", async ({ page }) => {
-    const link = page.getByRole("link", { name: /Preview the recruiters dashboard/i });
-    await link.click();
-    await expect(page).toHaveURL("/recruiters");
-  });
-
-  test("Universities preview card links to /university", async ({ page }) => {
-    const link = page.getByRole("link", { name: /Preview the universities dashboard/i });
-    await link.click();
-    await expect(page).toHaveURL("/university");
-  });
-});
-
-/* ── Visa intelligence section ── */
-test.describe("Landing page — visa section", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto("/");
-  });
-
-  test("Check Visa Fit → /dashboard/visa-fit", async ({ page }) => {
-    const btn = page.getByRole("link", { name: /Check Visa Fit/i });
-    await btn.click();
-    await expect(page).toHaveURL("/dashboard/visa-fit");
-  });
-
-  test("View compatible jobs → /dashboard/jobs", async ({ page }) => {
-    const btn = page.getByRole("link", { name: /View compatible jobs/i });
-    await btn.click();
-    await expect(page).toHaveURL("/dashboard/jobs");
-  });
-
-  test("Learn privacy controls → /dashboard/privacy", async ({ page }) => {
-    const btn = page.getByRole("link", { name: /Learn privacy controls/i });
-    await btn.click();
-    await expect(page).toHaveURL("/dashboard/privacy");
-  });
-
-  test("Visa job rows link to /dashboard/jobs", async ({ page }) => {
-    const row = page.locator(".cp-visa-job-row").first();
-    await row.click();
-    await expect(page).toHaveURL("/dashboard/jobs");
+    const body = (await page.locator("body").innerText()).toLowerCase();
+    expect(body).not.toContain("100% verified");
+    expect(body).not.toContain("fraud-proof");
+    expect(body).not.toContain("guaranteed skills");
+    expect(body).not.toContain("match score");
+    expect(body).not.toMatch(/\d+% (match|fit)/);
   });
 });
