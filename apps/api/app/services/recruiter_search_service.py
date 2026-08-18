@@ -1328,6 +1328,7 @@ def _plan_interpretation(plan: dict[str, Any]) -> dict[str, Any]:
         "role": (plan.get("role") or {}).get("display"),
         "seniority": (plan.get("seniority") or {}).get("display"),
         "location": plan.get("location"),
+        "remote": bool(plan.get("remote")),
         "residual_terms": list(plan.get("residual_terms") or []),
     }
 
@@ -1370,6 +1371,7 @@ def search_candidates(
     availability: str | None = None,
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
+    plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Recruiter search over the public candidate projection.
 
@@ -1382,8 +1384,17 @@ def search_candidates(
     intent fall back to V1 lexical matching unchanged. Privacy: pool rows
     are re-validated against LIVE publication state, LIVE disclosure
     version, and the discovery-exclusions table — fail closed.
+
+    V3: ``plan`` lets a Hiring Brief drive the search with its stored
+    requirement plan instead of free text. The caller MUST pass a
+    sanitize_plan() output; a brief plan always has candidate_search
+    intent, so the evidence-discovery branch never triggers for it.
     """
-    plan = parse_recruiter_query(q)
+    if plan is None:
+        plan = parse_recruiter_query(q)
+    else:
+        # Defensive copy: this function mutates the plan (filter chips).
+        plan = {**plan, "required_groups": [list(g) for g in plan.get("required_groups") or []]}
 
     # ── Evidence Discovery (V1.6): "show me proof of X" is NOT a candidate
     # search. The intent classifier separates finding people from opening
