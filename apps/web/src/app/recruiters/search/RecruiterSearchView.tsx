@@ -1,14 +1,21 @@
 "use client"
 
 /**
- * Recruiter Search & Discovery — the second candidate-acquisition path.
+ * Recruiter Search & Discovery V1.5 — natural-language, requirement-verified
+ * candidate search.
  *
- * Every result comes from the candidate's PUBLIC Work Passport projection
- * (the same data as `/p/{slug}`), matched deterministically and explained
- * with real evidence — never scores, never fabricated candidates. Saving a
- * result reuses the EXISTING idempotent connection system with
- * `source: "search"`, so search converges into the same workspace as QR
- * scans and shared links.
+ * The recruiter describes who they need (typed or spoken); the API parses
+ * that into explicit requirements (shown back as "Understood as" chips —
+ * interpretation is never a silent guess), verifies every requirement
+ * against PUBLISHED Work Passport evidence, and returns EXACT matches
+ * (every requirement evidenced) separated from CLOSE matches (missing
+ * requirements stated explicitly). Explanations trace to real published
+ * data — never scores, never fabricated qualifications.
+ *
+ * Voice search is a progressive enhancement over the browser's native
+ * speech recognition: mic starts only on click, one utterance, transcript
+ * lands visibly in the search box (editable) — no audio ever reaches a
+ * VeriBridge server.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
@@ -30,9 +37,12 @@ import {
   type AvailabilityFilter,
   type EvidenceFilter,
   type MatchedReason,
+  type QueryInterpretation,
   type RecruiterSearchResponse,
+  type RequirementMatch,
   type SearchResultCandidate,
 } from "@/lib/recruiter-search-api"
+import { useSpeechRecognition } from "@/lib/use-speech-recognition"
 
 const EVIDENCE_OPTIONS: { key: EvidenceFilter; label: string }[] = [
   { key: "github", label: "GitHub code" },
@@ -48,6 +58,12 @@ const AVAILABILITY_OPTIONS: { key: AvailabilityFilter; label: string }[] = [
   { key: "open_to_opportunities", label: "Open to opportunities" },
 ]
 
+const EXAMPLE_QUERIES = [
+  "AI engineer with Python and NLP who has deployed a project",
+  "Backend intern with FastAPI and PostgreSQL",
+  "Machine learning with GitHub evidence",
+]
+
 function initialsOf(name: string | null): string {
   if (!name) return "✓"
   return (
@@ -60,7 +76,7 @@ function initialsOf(name: string | null): string {
   )
 }
 
-/** Human sentence for one structured match reason. */
+/** Human sentence for one structured match reason (lexical-mode results). */
 function reasonText(reason: MatchedReason): string {
   switch (reason.type) {
     case "skill": {
@@ -90,6 +106,67 @@ function reasonTone(reason: MatchedReason): "emerald" | "indigo" | "slate" {
   if (reason.type === "skill") return "emerald"
   if (reason.type === "technology") return "indigo"
   return "slate"
+}
+
+/** Evidence citation line under one verified requirement. */
+function requirementDetail(req: RequirementMatch): string {
+  if (!req.satisfied) return req.note ?? `No published ${req.display} evidence`
+  const parts: string[] = []
+  if (req.matched_label && req.matched_label !== req.display) {
+    parts.push(`via ${req.matched_label}`)
+  }
+  if (req.skill_status) parts.push(req.skill_status)
+  if (req.evidence_sources.length > 0) {
+    parts.push(req.evidence_sources.slice(0, 3).join(" · "))
+  }
+  if (req.project_titles.length > 0) {
+    parts.push(`in ${req.project_titles.slice(0, 2).join(", ")}`)
+  }
+  if (req.note && parts.length === 0) parts.push(req.note)
+  return parts.join(" · ")
+}
+
+function RequirementRow({ req }: { req: RequirementMatch }) {
+  const satisfied = req.satisfied
+  const detail = requirementDetail(req)
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 8,
+        alignItems: "baseline",
+        fontSize: 12.5,
+        lineHeight: 1.5,
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          color: satisfied ? TOKEN.emerald : TOKEN.rose,
+          fontWeight: 700,
+          flexShrink: 0,
+        }}
+      >
+        {satisfied ? "✓" : "✕"}
+      </span>
+      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+        <span
+          style={{
+            color: satisfied ? TOKEN.ink : TOKEN.rose,
+            fontWeight: 600,
+          }}
+        >
+          {req.display}
+          {!req.required && (
+            <span style={{ color: TOKEN.muted, fontWeight: 500 }}> (preferred)</span>
+          )}
+        </span>
+        {detail && (
+          <span style={{ color: TOKEN.muted }}> — {detail}</span>
+        )}
+      </span>
+    </div>
+  )
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error"
@@ -185,13 +262,22 @@ function ResultCard({
   const educationLine = [candidate.degree, candidate.institution]
     .filter(Boolean)
     .join(" · ")
-  const hasReasons = candidate.matched_reasons.length > 0
+  const requirements = candidate.requirements ?? []
+  const hasRequirements = requirements.length > 0
+  const hasReasons = (candidate.matched_reasons ?? []).length > 0
   const skillsToShow = candidate.skills.slice(0, 6)
+  const isClose = candidate.match_type === "close"
 
   return (
-    <Card style={{ padding: 18 }}>
+    <Card
+      style={{
+        padding: 18,
+        ...(isClose ? { borderColor: TOKEN.line, opacity: 0.96 } : {}),
+      }}
+    >
       <div
         data-testid="search-result-card"
+        data-match-type={candidate.match_type ?? "match"}
         style={{ display: "flex", flexDirection: "column", gap: 12 }}
       >
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
@@ -277,7 +363,30 @@ function ResultCard({
           </Badge>
         </div>
 
-        {hasReasons ? (
+        {hasRequirements ? (
+          <div
+            data-testid="search-result-requirements"
+            style={{ display: "flex", flexDirection: "column", gap: 6 }}
+          >
+            <p
+              style={{
+                fontSize: 11,
+                letterSpacing: "0.07em",
+                textTransform: "uppercase",
+                color: TOKEN.muted,
+                margin: 0,
+                fontWeight: 700,
+              }}
+            >
+              Why this candidate matched
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {requirements.map((req, index) => (
+                <RequirementRow key={`${req.kind}-${req.requirement}-${index}`} req={req} />
+              ))}
+            </div>
+          </div>
+        ) : hasReasons ? (
           <div data-testid="search-result-reasons" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <p
               style={{
@@ -292,7 +401,7 @@ function ResultCard({
               Match evidence
             </p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {candidate.matched_reasons.map((reason, index) => (
+              {(candidate.matched_reasons ?? []).map((reason, index) => (
                 <Badge
                   key={`${reason.type}-${reason.label}-${index}`}
                   tone={reasonTone(reason)}
@@ -343,6 +452,112 @@ function ResultCard({
         )}
       </div>
     </Card>
+  )
+}
+
+/** "Understood as …" — the executed interpretation, shown transparently. */
+function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
+  const hasChips =
+    interp.required.length > 0 ||
+    interp.preferred.length > 0 ||
+    interp.excluded.length > 0 ||
+    interp.evidence.length > 0 ||
+    interp.preferred_evidence.length > 0 ||
+    Boolean(interp.role) ||
+    Boolean(interp.seniority) ||
+    Boolean(interp.location)
+  if (!hasChips) return null
+  return (
+    <div
+      data-testid="search-interpretation"
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 6,
+        alignItems: "center",
+        padding: "10px 12px",
+        borderRadius: 10,
+        background: TOKEN.indigoSoft,
+      }}
+    >
+      <span style={{ fontSize: 11.5, color: TOKEN.indigo, fontWeight: 700 }}>
+        Understood as:
+      </span>
+      {interp.role && <Badge tone="purple">Role: {interp.role}</Badge>}
+      {interp.seniority && <Badge tone="purple">{interp.seniority}</Badge>}
+      {interp.location && <Badge tone="slate">Near: {interp.location}</Badge>}
+      {interp.required.map((chip) => (
+        <Badge key={`req-${chip.display}`} tone="indigo">
+          {chip.display}
+        </Badge>
+      ))}
+      {interp.evidence.map((chip) => (
+        <Badge key={`ev-${chip.key}`} tone="emerald">
+          {chip.display}
+        </Badge>
+      ))}
+      {interp.preferred.map((chip) => (
+        <Badge key={`pref-${chip.display}`} tone="slate">
+          Preferred: {chip.display}
+        </Badge>
+      ))}
+      {interp.preferred_evidence.map((chip) => (
+        <Badge key={`prefev-${chip.key}`} tone="slate">
+          Preferred: {chip.display}
+        </Badge>
+      ))}
+      {interp.excluded.map((chip) => (
+        <Badge key={`not-${chip.display}`} tone="rose">
+          Not: {chip.display}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
+function SectionHeader({
+  title,
+  count,
+  hint,
+  testid,
+}: {
+  title: string
+  count: number
+  hint?: string
+  testid: string
+}) {
+  return (
+    <div data-testid={testid} style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+      <p style={{ fontSize: 13, color: TOKEN.ink, margin: 0, fontWeight: 700 }}>
+        {title}{" "}
+        <span style={{ color: TOKEN.muted, fontWeight: 600 }}>({count})</span>
+      </p>
+      {hint && (
+        <p style={{ fontSize: 11.5, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+          {hint}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function MicIcon({ active }: { active: boolean }) {
+  return (
+    <svg
+      aria-hidden
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={active ? "#fff" : TOKEN.muted}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+      <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+      <line x1="12" y1="18" x2="12" y2="22" />
+    </svg>
   )
 }
 
@@ -399,8 +614,26 @@ export function RecruiterSearchView() {
     [],
   )
 
+  // Voice search: transcript mirrors live into the (editable) input; a
+  // completed utterance searches exactly that visible transcript.
+  const { status: speechStatus, supported: speechSupported, start: startListening, stop: stopListening } =
+    useSpeechRecognition({
+      onTranscript: (text) => setInput(text),
+      onFinal: (text) => {
+        setInput(text)
+        void runSearch(
+          { q: text, evidence, availability, page: 1 },
+          false,
+        )
+      },
+    })
+  const listening = speechStatus === "listening"
+
   // Initial load: the honest discoverable population (no fake density).
+  // runSearch sets the (already-true-on-mount) loading flag before its async
+  // fetch; the kick-off on mount is intentional and single-shot.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void runSearch({ q: "", evidence: [], availability: "", page: 1 }, false)
     // Saved state for “Saved ✓” marks — one listing call, not per-result
     // probes; one retry rides out a transient page-load network race.
@@ -421,12 +654,13 @@ export function RecruiterSearchView() {
   }, [runSearch])
 
   const submit = (overrides?: {
+    q?: string
     evidence?: EvidenceFilter[]
     availability?: AvailabilityFilter | ""
   }) => {
     void runSearch(
       {
-        q: input,
+        q: overrides?.q ?? input,
         evidence: overrides?.evidence ?? evidence,
         availability: overrides?.availability ?? availability,
         page: 1,
@@ -471,6 +705,21 @@ export function RecruiterSearchView() {
   const hasActiveRefinement =
     activeQuery.trim().length > 0 || evidence.length > 0 || availability !== ""
 
+  const interpretation = response?.interpretation
+  const structured = interpretation?.mode === "structured"
+  const exactResults = results.filter((r) => (r.match_type ?? "match") !== "close")
+  const closeResults = results.filter((r) => r.match_type === "close")
+  const showSections = structured && closeResults.length > 0
+
+  const renderCard = (candidate: SearchResultCandidate) => (
+    <ResultCard
+      key={candidate.public_slug}
+      candidate={candidate}
+      query={activeQuery}
+      initiallySaved={savedSlugs.has(candidate.public_slug)}
+    />
+  )
+
   return (
     <div
       data-testid="recruiter-search"
@@ -491,8 +740,8 @@ export function RecruiterSearchView() {
           Discover candidates
         </h1>
         <p style={{ fontSize: 13, color: TOKEN.muted, margin: "2px 0 0", lineHeight: 1.5 }}>
-          Search every candidate with a published Verified Work Passport. Matches are
-          explained with real evidence — never scores.
+          Describe who you need in plain language. Every requirement is verified
+          against published Work Passport evidence — matches are explained, never scored.
         </p>
       </div>
 
@@ -535,24 +784,57 @@ export function RecruiterSearchView() {
         }}
         style={{ display: "flex", gap: 8, flexWrap: "wrap" }}
       >
-        <input
-          data-testid="search-input"
-          type="search"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="Search by skill, technology, project, name…"
-          maxLength={200}
-          style={{
-            flex: "1 1 260px",
-            padding: "11px 14px",
-            borderRadius: 10,
-            border: `1px solid ${TOKEN.line}`,
-            fontSize: 13.5,
-            color: TOKEN.ink,
-            background: "#fff",
-            outline: "none",
-          }}
-        />
+        <div style={{ position: "relative", flex: "1 1 260px", display: "flex" }}>
+          <input
+            data-testid="search-input"
+            type="search"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder={
+              listening
+                ? "Listening…"
+                : "Describe the candidate you're looking for…"
+            }
+            maxLength={320}
+            aria-label="Describe the candidate you're looking for"
+            style={{
+              flex: 1,
+              padding: "11px 44px 11px 14px",
+              borderRadius: 10,
+              border: `1px solid ${listening ? TOKEN.indigo : TOKEN.line}`,
+              fontSize: 13.5,
+              color: TOKEN.ink,
+              background: "#fff",
+              outline: "none",
+            }}
+          />
+          {speechSupported && (
+            <button
+              type="button"
+              data-testid="search-mic"
+              aria-label={listening ? "Stop listening" : "Search by voice"}
+              aria-pressed={listening}
+              onClick={() => (listening ? stopListening() : startListening())}
+              style={{
+                position: "absolute",
+                right: 6,
+                top: "50%",
+                transform: "translateY(-50%)",
+                width: 32,
+                height: 32,
+                borderRadius: 8,
+                border: "none",
+                background: listening ? TOKEN.rose : "transparent",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+              }}
+            >
+              <MicIcon active={listening} />
+            </button>
+          )}
+        </div>
         <button
           type="submit"
           data-testid="search-submit"
@@ -589,6 +871,71 @@ export function RecruiterSearchView() {
           </button>
         )}
       </form>
+
+      {listening && (
+        <p
+          data-testid="search-listening"
+          role="status"
+          style={{ fontSize: 12, color: TOKEN.indigo, margin: "-8px 0 0", fontWeight: 600 }}
+        >
+          <span
+            aria-hidden
+            style={{
+              display: "inline-block",
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: TOKEN.rose,
+              marginRight: 6,
+              animation: "pulse 1.2s ease-in-out infinite",
+            }}
+          />
+          Listening — speak naturally, then pause. Your words appear above and
+          stay editable.
+          <style>{`@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.35 } }`}</style>
+        </p>
+      )}
+      {speechStatus === "denied" && (
+        <p role="alert" style={{ fontSize: 12, color: TOKEN.rose, margin: "-8px 0 0" }}>
+          Microphone access was blocked. Allow it in your browser&apos;s site
+          settings, or keep typing — search works the same either way.
+        </p>
+      )}
+      {speechStatus === "error" && (
+        <p role="alert" style={{ fontSize: 12, color: TOKEN.muted, margin: "-8px 0 0" }}>
+          Voice input hit a snag — typed search still works normally.
+        </p>
+      )}
+
+      {!hasActiveRefinement && !listening && (
+        <div
+          data-testid="search-examples"
+          style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: -8 }}
+        >
+          <span style={{ fontSize: 11.5, color: TOKEN.muted, fontWeight: 600 }}>Try:</span>
+          {EXAMPLE_QUERIES.map((example) => (
+            <button
+              key={example}
+              type="button"
+              onClick={() => {
+                setInput(example)
+                submit({ q: example })
+              }}
+              style={{
+                padding: "5px 10px",
+                borderRadius: 999,
+                border: `1px solid ${TOKEN.line}`,
+                background: "#fff",
+                color: TOKEN.inkSoft,
+                fontSize: 11.5,
+                cursor: "pointer",
+              }}
+            >
+              “{example}”
+            </button>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
         <span style={{ fontSize: 11.5, color: TOKEN.muted, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>
@@ -649,12 +996,17 @@ export function RecruiterSearchView() {
         <ErrorState message={error} onRetry={() => submit()} />
       ) : results.length === 0 ? (
         <div data-testid="search-empty">
+          {structured && interpretation && (
+            <div style={{ marginBottom: 12 }}>
+              <InterpretationPanel interp={interpretation} />
+            </div>
+          )}
           <EmptyState
             icon="🔍"
             title={hasActiveRefinement ? "No candidates match this search" : "No discoverable candidates yet"}
             description={
               hasActiveRefinement
-                ? "Try fewer terms or clear the filters — search only covers candidates who have published a public Work Passport."
+                ? "No published Work Passport satisfies these requirements yet. Try removing a requirement — close matches show exactly what's missing."
                 : "Candidates appear here as soon as they publish a Verified Work Passport."
             }
           />
@@ -672,25 +1024,66 @@ export function RecruiterSearchView() {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {structured && interpretation && <InterpretationPanel interp={interpretation} />}
           <p data-testid="search-result-count" style={{ fontSize: 12.5, color: TOKEN.muted, margin: 0 }}>
-            {response?.total ?? results.length}{" "}
-            {(response?.total ?? results.length) === 1 ? "candidate" : "candidates"}
-            {activeQuery ? (
+            {structured && showSections ? (
               <>
-                {" "}matching <strong style={{ color: TOKEN.ink }}>“{activeQuery}”</strong>
+                <strong style={{ color: TOKEN.ink }}>{response?.exact_total ?? exactResults.length}</strong>{" "}
+                exact {(response?.exact_total ?? exactResults.length) === 1 ? "match" : "matches"} ·{" "}
+                {response?.close_total ?? closeResults.length} close{" "}
+                {(response?.close_total ?? closeResults.length) === 1 ? "match" : "matches"}
+                {activeQuery && (
+                  <>
+                    {" "}for <strong style={{ color: TOKEN.ink }}>“{activeQuery}”</strong>
+                  </>
+                )}
               </>
             ) : (
-              " with a published Work Passport"
+              <>
+                {response?.total ?? results.length}{" "}
+                {(response?.total ?? results.length) === 1 ? "candidate" : "candidates"}
+                {activeQuery ? (
+                  <>
+                    {" "}matching <strong style={{ color: TOKEN.ink }}>“{activeQuery}”</strong>
+                  </>
+                ) : (
+                  " with a published Work Passport"
+                )}
+              </>
             )}
           </p>
-          {results.map((candidate) => (
-            <ResultCard
-              key={candidate.public_slug}
-              candidate={candidate}
-              query={activeQuery}
-              initiallySaved={savedSlugs.has(candidate.public_slug)}
-            />
-          ))}
+
+          {showSections ? (
+            <>
+              {exactResults.length > 0 && (
+                <>
+                  <SectionHeader
+                    testid="search-section-exact"
+                    title="Exact matches"
+                    count={response?.exact_total ?? exactResults.length}
+                    hint="Every requirement is backed by published evidence."
+                  />
+                  {exactResults.map(renderCard)}
+                </>
+              )}
+              {exactResults.length === 0 && (
+                <p style={{ fontSize: 12.5, color: TOKEN.muted, margin: 0 }}>
+                  No candidate satisfies every requirement yet — the closest
+                  candidates and exactly what they&apos;re missing:
+                </p>
+              )}
+              <SectionHeader
+                testid="search-section-close"
+                title="Close matches"
+                count={response?.close_total ?? closeResults.length}
+                hint="Missing at least one requirement — each card states exactly which."
+              />
+              {closeResults.map(renderCard)}
+            </>
+          ) : (
+            results.map(renderCard)
+          )}
+
           {response?.has_more && (
             <button
               type="button"
@@ -717,8 +1110,9 @@ export function RecruiterSearchView() {
 
       <p style={{ fontSize: 11.5, color: TOKEN.muted, margin: 0, lineHeight: 1.6 }}>
         Search covers only what candidates have chosen to publish on their public Work
-        Passport. Evidence is described qualitatively — VeriBridge never reduces a person
-        to a number or ranking.
+        Passport. Voice input stays in your browser — audio is never uploaded or stored.
+        Evidence is described qualitatively — VeriBridge never reduces a person to a
+        number or ranking.
       </p>
     </div>
   )

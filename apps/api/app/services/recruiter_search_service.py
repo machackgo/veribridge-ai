@@ -45,6 +45,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.serialization import make_json_safe
+from app.services.recruiter_query_understanding import (
+    EVIDENCE_REQUIREMENT_DISPLAY,
+    describe_group,
+    parse_recruiter_query,
+)
+from app.services.recruiter_search_taxonomy import (
+    concept_display,
+    expansion_terms,
+    satisfies,
+)
 from app.services.skill_normalization import skill_slug
 
 logger = logging.getLogger(__name__)
@@ -53,10 +63,11 @@ _INDEX_TABLE = "recruiter_search_index"
 _EVENTS_TABLE = "recruiter_search_events"
 _PASSPORTS_TABLE = "vbr_work_passports"
 _POLICIES_TABLE = "passport_disclosure_policies"
+_EXCLUSIONS_TABLE = "recruiter_discovery_exclusions"
 
 # ── Query / pagination limits ────────────────────────────────────────────────
 
-MAX_QUERY_LENGTH = 200
+MAX_QUERY_LENGTH = 320
 MAX_PAGE_SIZE = 20
 DEFAULT_PAGE_SIZE = 10
 MAX_PAGE = 50
@@ -223,6 +234,43 @@ def _upsert_index_row(db: Any, row: dict[str, Any]) -> None:
     db.table(_INDEX_TABLE).upsert(
         make_json_safe(row), on_conflict="user_id"
     ).execute()
+
+
+def _excluded_user_ids(db: Any, user_ids: list[str]) -> set[str]:
+    """Subset of ``user_ids`` present in the discovery-exclusions table.
+
+    Exclusions (migration 067) are the durable guard that keeps positively
+    identified QA / demo / fixture accounts out of recruiter discovery even
+    if their passports are ever re-published. Empty on any environment where
+    the table has no rows — a no-op for every genuine candidate.
+    """
+    if not user_ids:
+        return set()
+    if isinstance(db, dict):
+        table = db.setdefault(_EXCLUSIONS_TABLE, {})
+        wanted = {str(u) for u in user_ids}
+        return {
+            str(r.get("user_id"))
+            for r in table.values()
+            if str(r.get("user_id")) in wanted
+        }
+    try:
+        result = _read_with_transient_retry(
+            db,
+            lambda client: client.table(_EXCLUSIONS_TABLE)
+            .select("user_id")
+            .in_("user_id", user_ids)
+            .execute(),
+        )
+    except Exception as exc:
+        # An absent table means the environment simply has no exclusions
+        # provisioned (migration 067 not applied) — that is a valid state,
+        # not an error; anything else propagates.
+        if "PGRST205" in str(exc) or "Could not find the table" in str(exc):
+            logger.warning("discovery-exclusions table missing — treating as empty")
+            return set()
+        raise
+    return {str(r.get("user_id")) for r in (getattr(result, "data", []) or [])}
 
 
 def _passport_by_user(db: Any, user_id: str) -> dict[str, Any] | None:
@@ -474,6 +522,9 @@ def refresh_search_projection(db: Any, pipeline_db: Any, user_id: str) -> bool:
     """
     uid = str(user_id or "")
     try:
+        if uid in _excluded_user_ids(db, [uid]):
+            _delete_index_row(db, uid)
+            return False
         passport = _passport_by_user(db, uid)
         if (
             passport is None
@@ -714,32 +765,6 @@ def _match_candidate(
     return score, reasons[:_MAX_MATCHED_REASONS], matched_skill_count
 
 
-def _passes_filters(
-    row: dict[str, Any],
-    *,
-    skills: list[str],
-    evidence: list[str],
-    availability: str | None,
-) -> bool:
-    if availability and str(row.get("availability") or "") != availability:
-        return False
-    flags = row.get("evidence_flags") or {}
-    for key in evidence:
-        if not flags.get(key):
-            return False
-    if skills:
-        have = {_skill_key(s.get("skill")) for s in (row.get("skills") or [])}
-        have |= {
-            _skill_key(t)
-            for p in (row.get("projects") or [])
-            for t in (p.get("technologies") or [])
-        }
-        for wanted in skills:
-            if _skill_key(wanted) not in have:
-                return False
-    return True
-
-
 def _sort_result_skills(
     row: dict[str, Any], reasons: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -767,9 +792,13 @@ def _sort_result_skills(
 
 
 def _result_card(
-    row: dict[str, Any], reasons: list[dict[str, Any]]
+    row: dict[str, Any], evaluation: dict[str, Any]
 ) -> dict[str, Any]:
+    reasons = list(evaluation.get("reasons") or [])
     return {
+        "match_type": str(evaluation.get("match_type") or "match"),
+        "requirements": list(evaluation.get("requirements") or []),
+        "missing_requirements": list(evaluation.get("missing_requirements") or []),
         "public_slug": row.get("public_slug"),
         "display_name": row.get("display_name"),
         "headline": row.get("headline"),
@@ -834,6 +863,463 @@ def _fetch_candidate_pool(db: Any, terms: list[str]) -> list[dict[str, Any]]:
     return list(getattr(result, "data", []) or [])
 
 
+# ── Requirement verification (evidence-grounded, never generative) ──────────
+#
+# The anti-hallucination contract lives here: a requirement is "satisfied"
+# ONLY by an entry that exists in the candidate's indexed PUBLIC projection —
+# a passport skill (evidence-backed) or a project technology (claimed on a
+# published project). Taxonomy relationships may let a MORE SPECIFIC skill
+# satisfy a MORE GENERAL requirement (FastAPI → "API development"), never the
+# reverse, and "related" concepts satisfy nothing.
+
+_TIER_SKILL = "skill"
+_TIER_TECHNOLOGY = "technology"
+# Generic evidence requirement key: "has at least one published project".
+_EVIDENCE_REQ_PROJECT = "project"
+
+
+def _candidate_evidence_map(row: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Concept slug → strongest public evidence record for this candidate."""
+    out: dict[str, dict[str, Any]] = {}
+
+    def better(new: dict[str, Any], old: dict[str, Any] | None) -> bool:
+        if old is None:
+            return True
+        tier_rank = {_TIER_SKILL: 0, _TIER_TECHNOLOGY: 1}
+        new_key = (
+            tier_rank.get(new["tier"], 9),
+            _STATUS_ORDER.get(str(new.get("skill_status")), 9),
+        )
+        old_key = (
+            tier_rank.get(old["tier"], 9),
+            _STATUS_ORDER.get(str(old.get("skill_status")), 9),
+        )
+        return new_key < old_key
+
+    for entry in row.get("skills") or []:
+        name = str(entry.get("skill") or "").strip()
+        if not name:
+            continue
+        slug = str(entry.get("skill_slug") or "") or skill_slug(name)
+        record = {
+            "tier": _TIER_SKILL,
+            "label": name,
+            "skill_status": str(entry.get("status") or "Not assessed"),
+            "evidence_sources": [str(s) for s in (entry.get("evidence_sources") or [])],
+            "project_titles": [],
+        }
+        if better(record, out.get(slug)):
+            out[slug] = record
+
+    for proj in row.get("projects") or []:
+        title = str(proj.get("title") or "").strip()
+        for tech in proj.get("technologies") or []:
+            name = str(tech or "").strip()
+            if not name:
+                continue
+            slug = skill_slug(name)
+            existing = out.get(slug)
+            if existing is not None:
+                if title and title not in existing["project_titles"]:
+                    existing["project_titles"].append(title)
+                continue
+            out[slug] = {
+                "tier": _TIER_TECHNOLOGY,
+                "label": name,
+                "skill_status": None,
+                "evidence_sources": [str(s) for s in (proj.get("evidence_sources") or [])],
+                "project_titles": [title] if title else [],
+            }
+    return out
+
+
+def _verify_concept(
+    evidence_map: dict[str, dict[str, Any]], group: list[str]
+) -> dict[str, Any] | None:
+    """Best satisfaction of one requirement group (OR of concept slugs).
+
+    Preference order: evidence-backed skill over claimed technology, direct
+    concept over a more-specific descendant, then strongest status.
+    """
+    best: dict[str, Any] | None = None
+    best_key: tuple[int, int, int] | None = None
+    tier_rank = {_TIER_SKILL: 0, _TIER_TECHNOLOGY: 1}
+    for req in group:
+        for ev_slug, record in evidence_map.items():
+            if not satisfies(ev_slug, req):
+                continue
+            direct = ev_slug == req
+            key = (
+                tier_rank.get(record["tier"], 9),
+                0 if direct else 1,
+                _STATUS_ORDER.get(str(record.get("skill_status")), 9),
+            )
+            if best_key is None or key < best_key:
+                best_key = key
+                best = {**record, "direct": direct, "requirement": req}
+    return best
+
+
+_REQ_WEIGHT = {
+    (_TIER_SKILL, True): 5.0,
+    (_TIER_SKILL, False): 4.5,
+    (_TIER_TECHNOLOGY, True): 2.5,
+    (_TIER_TECHNOLOGY, False): 2.2,
+}
+
+_SENIORITY_KEYWORDS = {
+    "intern": ("intern",),
+    "entry_level": ("entry", "junior", "new grad", "recent grad", "graduate"),
+}
+
+
+def _evidence_requirement_met(row: dict[str, Any], key: str) -> bool:
+    if key == _EVIDENCE_REQ_PROJECT:
+        return int(row.get("project_count") or 0) > 0
+    flags = row.get("evidence_flags") or {}
+    return bool(flags.get(key))
+
+
+def _context_rows(
+    row: dict[str, Any],
+    plan: dict[str, Any],
+    evidence_map: dict[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], float]:
+    """Soft signals (role / seniority / location): explanation + rank boost,
+    never hard gates — they live in profile prose, not verified evidence."""
+    rows: list[dict[str, Any]] = []
+    boost = 0.0
+    headline = str(row.get("headline") or "").lower()
+    role_areas = [str(a).lower() for a in (row.get("role_areas") or [])]
+
+    role = plan.get("role")
+    if role:
+        display = str(role.get("display") or "")
+        text_hit = display.lower() in headline or any(
+            display.lower() in area or area in display.lower() for area in role_areas
+        )
+        hint_hit = any(
+            _verify_concept(evidence_map, [hint]) is not None
+            for hint in (role.get("hint_concepts") or [])
+        )
+        if text_hit or hint_hit:
+            boost += 2.0
+            rows.append(
+                {
+                    "kind": "context",
+                    "requirement": "role",
+                    "display": f"Role: {display}",
+                    "required": False,
+                    "satisfied": True,
+                    "via": None,
+                    "matched_label": str(row.get("headline") or "") if text_hit else None,
+                    "skill_status": None,
+                    "evidence_sources": [],
+                    "project_titles": [],
+                    "note": "Public Work Passport headline"
+                    if text_hit
+                    else "Related published evidence",
+                }
+            )
+
+    seniority = plan.get("seniority")
+    if seniority:
+        key = str(seniority.get("key") or "")
+        availability_label = str(row.get("availability_label") or "").lower()
+        hit = False
+        if key == "intern" and str(row.get("availability") or "") == "seeking_internship":
+            hit = True
+        for kw in _SENIORITY_KEYWORDS.get(key, ()):
+            if kw in headline or kw in availability_label:
+                hit = True
+        if hit:
+            boost += 1.0
+            rows.append(
+                {
+                    "kind": "context",
+                    "requirement": "seniority",
+                    "display": f"Seniority: {seniority.get('display')}",
+                    "required": False,
+                    "satisfied": True,
+                    "via": None,
+                    "matched_label": row.get("availability_label"),
+                    "skill_status": None,
+                    "evidence_sources": [],
+                    "project_titles": [],
+                    "note": None,
+                }
+            )
+
+    location = plan.get("location")
+    if location and _term_in(str(location), row.get("location")):
+        boost += 1.0
+        rows.append(
+            {
+                "kind": "context",
+                "requirement": "location",
+                "display": f"Location: {str(row.get('location') or '')}",
+                "required": False,
+                "satisfied": True,
+                "via": None,
+                "matched_label": row.get("location"),
+                "skill_status": None,
+                "evidence_sources": [],
+                "project_titles": [],
+                "note": None,
+            }
+        )
+    return rows, boost
+
+
+def _evaluate_candidate(
+    row: dict[str, Any], plan: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Verify every parsed requirement against this candidate's published
+    evidence. Returns the structured evaluation, or None when the candidate
+    matches nothing in the plan (or hits an exclusion)."""
+    evidence_map = _candidate_evidence_map(row)
+
+    # NOT-constraints: any public evidence for an excluded concept drops the
+    # candidate entirely ("machine learning but not computer vision").
+    for slug in plan.get("excluded") or []:
+        if _verify_concept(evidence_map, [slug]) is not None:
+            return None
+
+    requirement_rows: list[dict[str, Any]] = []
+    reasons: list[dict[str, Any]] = []
+    score = 0.0
+    matched_skill_count = 0
+    satisfied_required = 0
+    missing_required: list[str] = []
+
+    def concept_row(
+        group: list[str], required: bool
+    ) -> None:
+        nonlocal score, matched_skill_count, satisfied_required
+        display = describe_group(group)
+        hit = _verify_concept(evidence_map, group)
+        if hit is None:
+            requirement_rows.append(
+                {
+                    "kind": "concept",
+                    "requirement": group[0],
+                    "display": display,
+                    "required": required,
+                    "satisfied": False,
+                    "via": None,
+                    "matched_label": None,
+                    "skill_status": None,
+                    "evidence_sources": [],
+                    "project_titles": [],
+                    "note": f"No published {display} evidence",
+                }
+            )
+            if required:
+                missing_required.append(display)
+            return
+        weight = _REQ_WEIGHT[(hit["tier"], bool(hit["direct"]))]
+        if hit["tier"] == _TIER_SKILL:
+            weight += _STATUS_BONUS.get(str(hit.get("skill_status")), 0.0)
+            bonus = 0.0
+            for src in hit.get("evidence_sources") or []:
+                bonus += _EVIDENCE_BONUS.get(str(src), 0.0)
+            weight += min(bonus, _EVIDENCE_BONUS_CAP)
+            matched_skill_count += 1
+        if not required:
+            weight *= 0.5
+        score += weight
+        if required:
+            satisfied_required += 1
+        note = None
+        if not hit["direct"]:
+            note = f"Satisfied by {hit['label']} evidence"
+        elif hit["tier"] == _TIER_TECHNOLOGY:
+            titles = hit.get("project_titles") or []
+            note = f"Claimed in {titles[0]}" if titles else "Claimed on a public project"
+        requirement_rows.append(
+            {
+                "kind": "concept",
+                "requirement": hit["requirement"],
+                "display": display,
+                "required": required,
+                "satisfied": True,
+                "via": hit["tier"],
+                "matched_label": hit["label"],
+                "skill_status": hit.get("skill_status"),
+                "evidence_sources": list(hit.get("evidence_sources") or []),
+                "project_titles": list(hit.get("project_titles") or []),
+                "note": note,
+            }
+        )
+        reasons.append(
+            {
+                "type": "skill" if hit["tier"] == _TIER_SKILL else "technology",
+                "label": str(hit["label"]),
+                "term": display.lower(),
+                **(
+                    {"skill_status": hit.get("skill_status")}
+                    if hit["tier"] == _TIER_SKILL
+                    else {
+                        "project_title": (hit.get("project_titles") or [""])[0]
+                    }
+                ),
+                **(
+                    {"evidence_sources": list(hit.get("evidence_sources") or [])}
+                    if hit["tier"] == _TIER_SKILL
+                    else {}
+                ),
+            }
+        )
+
+    for group in plan.get("required_groups") or []:
+        concept_row(group, required=True)
+    for slug in plan.get("preferred") or []:
+        concept_row([slug], required=False)
+
+    for key in plan.get("evidence") or []:
+        met = _evidence_requirement_met(row, key)
+        display = EVIDENCE_REQUIREMENT_DISPLAY.get(key, key)
+        requirement_rows.append(
+            {
+                "kind": "evidence",
+                "requirement": key,
+                "display": display,
+                "required": True,
+                "satisfied": met,
+                "via": None,
+                "matched_label": None,
+                "skill_status": None,
+                "evidence_sources": [],
+                "project_titles": [],
+                "note": None if met else f"No published {display.lower()}",
+            }
+        )
+        if met:
+            satisfied_required += 1
+            score += 1.5
+        else:
+            missing_required.append(display)
+
+    for key in plan.get("preferred_evidence") or []:
+        met = _evidence_requirement_met(row, key)
+        display = EVIDENCE_REQUIREMENT_DISPLAY.get(key, key)
+        requirement_rows.append(
+            {
+                "kind": "evidence",
+                "requirement": key,
+                "display": display,
+                "required": False,
+                "satisfied": met,
+                "via": None,
+                "matched_label": None,
+                "skill_status": None,
+                "evidence_sources": [],
+                "project_titles": [],
+                "note": None if met else f"Preferred — no published {display.lower()}",
+            }
+        )
+        if met:
+            score += 0.75
+
+    context_rows, boost = _context_rows(row, plan, evidence_map)
+    requirement_rows.extend(context_rows)
+    score += boost
+
+    # Residual free-text terms keep V1 lexical behavior (name, headline,
+    # project prose …) — ranking signal only, never a hard requirement.
+    residual = [t for t in (plan.get("residual_terms") or []) if t]
+    if residual:
+        lex = _match_candidate(row, residual, "")
+        if lex is not None:
+            lex_score, lex_reasons, lex_skills = lex
+            score += lex_score
+            matched_skill_count += lex_skills
+            reasons.extend(lex_reasons)
+
+    hard_total = len(plan.get("required_groups") or []) + len(plan.get("evidence") or [])
+    if hard_total > 0:
+        if satisfied_required == 0:
+            return None  # matches no requirement — noise, not a close match
+        match_type = "exact" if not missing_required else "close"
+    else:
+        # No hard requirements (role/seniority/location/preferred/lexical
+        # only): anything that matched a soft signal is simply a match.
+        if score <= 0.0:
+            return None
+        match_type = "match"
+
+    return {
+        "match_type": match_type,
+        "requirements": requirement_rows,
+        "missing_requirements": missing_required,
+        "satisfied_required": satisfied_required,
+        "score": score,
+        "matched_skill_count": matched_skill_count,
+        "reasons": reasons[:_MAX_MATCHED_REASONS],
+    }
+
+
+def _plan_interpretation(plan: dict[str, Any]) -> dict[str, Any]:
+    """The 'Understood as …' payload shown to the recruiter — exactly what
+    the engine executed, so ambiguity is exposed instead of silently guessed."""
+    return {
+        "mode": str(plan.get("mode") or "lexical"),
+        "required": [
+            {"display": describe_group(g), "concepts": list(g)}
+            for g in (plan.get("required_groups") or [])
+        ],
+        "preferred": [
+            {"display": concept_display(s), "concepts": [s]}
+            for s in (plan.get("preferred") or [])
+        ],
+        "excluded": [
+            {"display": concept_display(s), "concepts": [s]}
+            for s in (plan.get("excluded") or [])
+        ],
+        "evidence": [
+            {"key": k, "display": EVIDENCE_REQUIREMENT_DISPLAY.get(k, k)}
+            for k in (plan.get("evidence") or [])
+        ],
+        "preferred_evidence": [
+            {"key": k, "display": EVIDENCE_REQUIREMENT_DISPLAY.get(k, k)}
+            for k in (plan.get("preferred_evidence") or [])
+        ],
+        "role": (plan.get("role") or {}).get("display"),
+        "seniority": (plan.get("seniority") or {}).get("display"),
+        "location": plan.get("location"),
+        "residual_terms": list(plan.get("residual_terms") or []),
+    }
+
+
+def _retrieval_terms(plan: dict[str, Any]) -> list[str]:
+    """Prefilter terms for the candidate pool: every requirement concept's
+    expansion (aliases + descendants + related — recall only; verification
+    happens after), role hints, and residual lexical terms."""
+    terms: list[str] = []
+
+    def add(term: str) -> None:
+        t = str(term or "").strip().lower()
+        if t and t not in terms:
+            terms.append(t)
+
+    for group in plan.get("required_groups") or []:
+        for slug in group:
+            for t in expansion_terms(slug):
+                add(t)
+    for slug in plan.get("preferred") or []:
+        for t in expansion_terms(slug):
+            add(t)
+    role = plan.get("role")
+    if role:
+        add(str(role.get("display") or ""))
+        for hint in role.get("hint_concepts") or []:
+            for t in expansion_terms(hint):
+                add(t)
+    for t in plan.get("residual_terms") or []:
+        add(t)
+    return terms[:60]
+
+
 def search_candidates(
     db: Any,
     *,
@@ -844,31 +1330,63 @@ def search_candidates(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
 ) -> dict[str, Any]:
-    """Deterministic recruiter search over the public candidate projection.
+    """Recruiter search over the public candidate projection.
 
-    Free text + structured filters; explainable weighted ranking; stable
-    pagination. Privacy: pool rows are re-validated against LIVE publication
-    state and LIVE disclosure_version in batch — stale rows are excluded.
+    V1.5: the free-text query runs through deterministic recruiter-intent
+    understanding (required / preferred / excluded concepts, evidence
+    expectations, role/seniority/location signals), every requirement is
+    verified against published evidence via the concept taxonomy, and
+    results are classified EXACT (all requirements evidenced) vs CLOSE
+    (missing at least one, said explicitly). Queries with no recognizable
+    intent fall back to V1 lexical matching unchanged. Privacy: pool rows
+    are re-validated against LIVE publication state, LIVE disclosure
+    version, and the discovery-exclusions table — fail closed.
     """
-    terms = tokenize_query(q)
-    phrase = _skill_key(str(q or "").strip()) if q else ""
-    skills_filter = [s for s in (skills or []) if str(s or "").strip()][:10]
-    evidence_filter = [e for e in (evidence or []) if e in EVIDENCE_FILTERS]
+    plan = parse_recruiter_query(q)
+    # Explicit structured params keep their V1 HARD-FILTER contract: a
+    # filter chip excludes, full stop. Only natural-language expectations
+    # participate in exact-vs-close classification. skills entries become
+    # requirement groups whose absence DROPS the candidate (never "close");
+    # evidence flags gate directly.
+    hard_filter_displays: set[str] = set()
+    for raw_skill in (skills or [])[:10]:
+        slug = _skill_key(raw_skill)
+        if slug and not any(slug in g for g in plan["required_groups"]):
+            plan["required_groups"].append([slug])
+            hard_filter_displays.add(describe_group([slug]))
+    evidence_gate = [e for e in (evidence or []) if e in EVIDENCE_FILTERS]
+    if plan["required_groups"]:
+        if plan["mode"] in ("browse", "lexical"):
+            plan["mode"] = "structured"
+
     availability_filter = (
         availability if availability in AVAILABILITY_VALUES else None
     )
     page = max(1, min(int(page or 1), MAX_PAGE))
     page_size = max(1, min(int(page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
 
-    pool = _fetch_candidate_pool(db, terms)
+    structured = plan["mode"] == "structured"
+    # Lexical fallback matches on the parser's residual terms — recruiter
+    # phrasing ("show", "me", "ignore") is already stripped, so it can never
+    # substring-match candidate prose the way raw tokens could.
+    lexical_terms = (
+        [t for t in (plan.get("residual_terms") or []) if t]
+        if plan["mode"] != "browse"
+        else []
+    )
+    pool_terms = _retrieval_terms(plan) if structured else lexical_terms
+    pool = _fetch_candidate_pool(db, pool_terms)
 
     # ── Live privacy re-validation (fail closed) ─────────────────────────────
     user_ids = [str(r.get("user_id")) for r in pool]
     published = _live_publication_map(db, user_ids)
     live_versions = _live_disclosure_versions(db, user_ids)
+    discovery_excluded = _excluded_user_ids(db, user_ids)
     validated: list[dict[str, Any]] = []
     for row in pool:
         uid = str(row.get("user_id"))
+        if uid in discovery_excluded:
+            continue  # positively identified QA/demo account — never served
         if not published.get(uid):
             continue  # unpublished (or deleted) since projection — excluded
         if live_versions.get(uid, 1) > int(row.get("disclosure_version") or 1):
@@ -877,46 +1395,101 @@ def search_candidates(
             continue
         validated.append(row)
 
-    # ── Filter + rank ────────────────────────────────────────────────────────
-    scored: list[tuple[float, int, str, str, dict[str, Any], list[dict[str, Any]]]] = []
+    # ── Verify + classify + rank ─────────────────────────────────────────────
+    phrase = _skill_key(str(q or "").strip()) if q else ""
+    scored: list[
+        tuple[int, float, int, int, str, str, dict[str, Any], dict[str, Any]]
+    ] = []
     for row in validated:
-        if not _passes_filters(
-            row,
-            skills=skills_filter,
-            evidence=evidence_filter,
-            availability=availability_filter,
-        ):
+        if availability_filter and str(row.get("availability") or "") != availability_filter:
             continue
-        if terms:
-            match = _match_candidate(row, terms, phrase)
-            if match is None:
+        flags = row.get("evidence_flags") or {}
+        if any(not flags.get(k) for k in evidence_gate):
+            continue
+        if structured:
+            evaluation = _evaluate_candidate(row, plan)
+            if evaluation is None:
                 continue
-            score, reasons, matched_skills = match
+            if hard_filter_displays and any(
+                m in hard_filter_displays
+                for m in evaluation["missing_requirements"]
+            ):
+                continue  # explicit skills filter — absence excludes, never "close"
+        elif lexical_terms:
+            lex = _match_candidate(row, lexical_terms, phrase)
+            if lex is None:
+                continue
+            lex_score, lex_reasons, lex_skills = lex
+            evaluation = {
+                "match_type": "match",
+                "requirements": [],
+                "missing_requirements": [],
+                "satisfied_required": 0,
+                "score": lex_score,
+                "matched_skill_count": lex_skills,
+                "reasons": lex_reasons,
+            }
         else:
-            score, reasons, matched_skills = 0.0, [], 0
+            evaluation = {
+                "match_type": "match",
+                "requirements": [],
+                "missing_requirements": [],
+                "satisfied_required": 0,
+                "score": 0.0,
+                "matched_skill_count": 0,
+                "reasons": [],
+            }
+        type_rank = 0 if evaluation["match_type"] in ("exact", "match") else 1
         published_at = str(row.get("passport_published_at") or "")
         slug = str(row.get("public_slug") or "")
-        scored.append((score, matched_skills, published_at, slug, row, reasons))
+        scored.append(
+            (
+                type_rank,
+                evaluation["score"],
+                evaluation["satisfied_required"],
+                evaluation["matched_skill_count"],
+                published_at,
+                slug,
+                row,
+                evaluation,
+            )
+        )
 
-    # Deterministic order: score desc, matched skills desc, newest first,
-    # slug asc as the total-order tiebreak.
-    scored.sort(key=lambda item: (-item[0], -item[1], _desc_str(item[2]), item[3]))
+    # Deterministic total order: exact before close, then score desc,
+    # satisfied requirements desc, matched skills desc, newest first, slug.
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            -item[1],
+            -item[2],
+            -item[3],
+            _desc_str(item[4]),
+            item[5],
+        )
+    )
 
+    exact_total = sum(1 for item in scored if item[0] == 0)
+    close_total = len(scored) - exact_total
     total = len(scored)
     start = (page - 1) * page_size
     page_items = scored[start : start + page_size]
 
     return {
-        "results": [_result_card(row, reasons) for _, _, _, _, row, reasons in page_items],
+        "results": [
+            _result_card(row, evaluation) for *_, row, evaluation in page_items
+        ],
         "total": total,
+        "exact_total": exact_total,
+        "close_total": close_total,
         "page": page,
         "page_size": page_size,
         "has_more": start + page_size < total,
+        "interpretation": _plan_interpretation(plan),
         "query": {
             "q": str(q or "")[:MAX_QUERY_LENGTH],
-            "terms": terms,
-            "skills": skills_filter,
-            "evidence": evidence_filter,
+            "terms": lexical_terms,
+            "skills": [s for s in (skills or []) if str(s or "").strip()][:10],
+            "evidence": [e for e in (evidence or []) if e in EVIDENCE_FILTERS],
             "availability": availability_filter,
         },
     }
@@ -966,6 +1539,7 @@ def record_search_event(
 
 __all__ = [
     "AVAILABILITY_VALUES",
+    "parse_recruiter_query",
     "DEFAULT_PAGE_SIZE",
     "EVIDENCE_FILTERS",
     "MAX_PAGE",

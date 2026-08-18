@@ -55,7 +55,49 @@ export interface MatchedReason {
   project_title?: string | null
 }
 
+export type MatchType = "exact" | "close" | "match"
+
+export interface RequirementMatch {
+  kind: "concept" | "evidence" | "context"
+  requirement: string
+  display: string
+  required: boolean
+  satisfied: boolean
+  via: "skill" | "technology" | null
+  matched_label: string | null
+  skill_status: string | null
+  evidence_sources: string[]
+  project_titles: string[]
+  note: string | null
+}
+
+export interface InterpretationChip {
+  display: string
+  concepts: string[]
+}
+
+export interface EvidenceExpectation {
+  key: string
+  display: string
+}
+
+export interface QueryInterpretation {
+  mode: "browse" | "lexical" | "structured"
+  required: InterpretationChip[]
+  preferred: InterpretationChip[]
+  excluded: InterpretationChip[]
+  evidence: EvidenceExpectation[]
+  preferred_evidence: EvidenceExpectation[]
+  role: string | null
+  seniority: string | null
+  location: string | null
+  residual_terms: string[]
+}
+
 export interface SearchResultCandidate {
+  match_type: MatchType
+  requirements: RequirementMatch[]
+  missing_requirements: string[]
   public_slug: string
   display_name: string | null
   headline: string | null
@@ -85,9 +127,12 @@ export interface SearchQueryEcho {
 export interface RecruiterSearchResponse {
   results: SearchResultCandidate[]
   total: number
+  exact_total: number
+  close_total: number
   page: number
   page_size: number
   has_more: boolean
+  interpretation: QueryInterpretation
   query: SearchQueryEcho
 }
 
