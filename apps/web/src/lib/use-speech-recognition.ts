@@ -67,9 +67,17 @@ export function useSpeechRecognition({
   onTranscript,
   onFinal,
 }: UseSpeechRecognitionOptions) {
-  const [status, setStatus] = useState<SpeechStatus>(() =>
-    getSpeechRecognitionCtor() ? "idle" : "unsupported",
-  )
+  // Support detection runs POST-hydration: the server always renders the
+  // no-mic markup, and the first client render must match that HTML exactly
+  // (computing support during render caused a hydration mismatch on every
+  // speech-capable browser). The mic appears right after mount.
+  const [status, setStatus] = useState<SpeechStatus>("unsupported")
+  useEffect(() => {
+    if (getSpeechRecognitionCtor()) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- post-hydration capability detection
+      setStatus("idle")
+    }
+  }, [])
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
   const finalRef = useRef("")
   // Keep latest callbacks without re-creating the recognition session.

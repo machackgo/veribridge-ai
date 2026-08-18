@@ -448,7 +448,7 @@ def build_evidence_results(
             continue
         if labels:
             note = (
-                f"No published {' / '.join(type_displays).lower()} for "
+                f"No published {' / '.join(type_displays)} for "
                 f"{display} — no other evidence type was substituted."
             )
         else:
