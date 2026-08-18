@@ -70,6 +70,8 @@ const CANDIDATE: SearchResultCandidate = {
   evidence_flags: { github: true, live_site: true },
   matched_reasons: [],
   passport_published_at: "2026-06-01T00:00:00+00:00",
+  in_brief: false,
+  brief_status: null,
 }
 
 function response(
@@ -95,6 +97,7 @@ function response(
       role: null,
       seniority: null,
       location: null,
+      remote: false,
       residual_terms: [],
     },
     query: { q: "", terms: [], skills: [], evidence: [], availability: null },
@@ -393,7 +396,8 @@ describe("RecruiterSearchView", () => {
           role: "AI Engineer",
           seniority: null,
           location: null,
-          residual_terms: [],
+          remote: false,
+      residual_terms: [],
         },
       }),
     )

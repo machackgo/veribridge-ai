@@ -19,6 +19,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import Link from "next/link"
 
 import {
   Badge,
@@ -1190,6 +1191,22 @@ export function RecruiterSearchView() {
         >
           Search
         </span>
+        <Link
+          data-testid="search-nav-briefs"
+          href="/recruiters/briefs"
+          style={{
+            padding: "7px 14px",
+            borderRadius: 999,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+            color: TOKEN.muted,
+            fontSize: 12.5,
+            fontWeight: 600,
+            textDecoration: "none",
+          }}
+        >
+          Hiring Briefs
+        </Link>
       </nav>
 
       <form
