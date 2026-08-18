@@ -26,6 +26,20 @@ HARD SEMANTICS (the product contract):
     because they live in profile prose, not verifiable evidence;
   * evidence expectations ("deployed", "GitHub evidence", "real projects")
     become hard evidence requirements checked against evidence flags.
+
+INTENT (Evidence Discovery, V1.6): the SAME parse also classifies WHAT the
+recruiter is asking for — finding people vs seeing the proof behind a claim:
+
+  * candidate_search  — "find me someone with FastAPI" (the default);
+  * evidence_search   — "show me proof of FastAPI", "what evidence is there
+                         for Python", "how do I know they know backend";
+  * project_search    — "which project proves machine learning".
+
+Skill extraction is intentionally SEPARATE from intent: "show me proof of
+Data Engineering" yields intent=evidence_search + concept=data-engineering,
+never a candidate requirement. In an evidence-intent query the parsed
+evidence expectations ("GitHub proof", "deployed") act as EVIDENCE-TYPE
+FILTERS on the proof itself, not as candidate gates.
 """
 
 from __future__ import annotations
@@ -64,6 +78,14 @@ _INTENT_WORDS = {
     "i'm", "im", "we're", "i've", "we've", "who's", "it's", "that's",
     "what's", "they're", "you're", "he's", "she's", "let's", "dont",
     "don't", "doesn't", "isn't", "aren't",
+    # Evidence-discovery phrasing (V1.6) — request words, never meaning.
+    "proof", "proofs", "evidence", "evidences", "artifact", "artifacts",
+    "specific", "actual", "behind", "verify", "verifies",
+    "verified", "verifying", "verification", "backs", "backing", "see",
+    "view", "open", "let", "lets", "veribridge", "say", "says", "why",
+    "how", "there", "whats", "everything", "anything", "any", "vbr", "vbrs",
+    "what", "you", "your", "prove", "proves", "proved", "proving", "was",
+    "were", "all",
 }
 
 # Tokens that read as role nouns when a role phrase did not match; dropped
@@ -160,7 +182,13 @@ _EVIDENCE_PHRASES: dict[str, str] = {
     "deployed site": "live_site",
     "deployed app": "live_site",
     "deployment evidence": "live_site",
+    "deployment proof": "live_site",
+    "deployment proofs": "live_site",
     "live": "live_site",
+    "code proof": "github",
+    "code evidence": "github",
+    "source code": "github",
+    "the code": "github",
     "project defense": "project_defense",
     "project defenses": "project_defense",
     "defended a project": "project_defense",
@@ -207,6 +235,69 @@ _TOKEN_RE = re.compile(r"[a-z0-9+#.']+|,")
 
 _MAX_PHRASE_WORDS = 4
 
+# ── Intent classification (Evidence Discovery, V1.6) ─────────────────────────
+#
+# Deterministic frames, evaluated on the raw lowered query. The contract:
+# an evidence intent needs an evidence NOUN inside an ASKING/SHOWING frame —
+# the noun alone is not enough ("machine learning with GitHub evidence" is a
+# candidate search whose requirement is GitHub evidence), and an explicit
+# person-frame ("candidates with…", "someone who has…") always wins, because
+# the recruiter is asking for people, not artifacts.
+
+INTENT_CANDIDATE_SEARCH = "candidate_search"
+INTENT_EVIDENCE_SEARCH = "evidence_search"
+INTENT_PROJECT_SEARCH = "project_search"
+
+_EVIDENCE_NOUN = r"(?:proofs?|evidence|artifacts?|vbrs?)"
+
+_EVIDENCE_INTENT_RES: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p)
+    for p in (
+        # "proof of X" / "evidence for X" / "proof that …" / "artifacts behind X"
+        rf"\b{_EVIDENCE_NOUN}\s+(?:of|for|that|behind)\b",
+        # "show/see/view/open/where is … the (specific/actual) proof"
+        rf"\b(?:show|see|view|give|display|open|want|get|find|pull\s+up)\b"
+        rf"[^,]{{0,60}}?\b{_EVIDENCE_NOUN}\b",
+        rf"\bwhere(?:'s|\s+is|\s+are)?\b[^,]{{0,40}}?\b{_EVIDENCE_NOUN}\b",
+        r"\bwhat\s+(?:evidence|proofs?)\b",
+        r"\bwhat\s+verifies\b",
+        r"\bwhat\s+backs\b",
+        r"\bhow\s+do\s+(?:i|we)\s+know\b",
+        r"\bhow\s+do\s+you\s+know\b",
+        r"\bwhy\s+does\b[^,]{0,50}?\b(?:say|know|claim|think|list)\b",
+        rf"\bis\s+there\s+(?:any\s+)?{_EVIDENCE_NOUN}\b",
+        # "show me the code" — the artifact itself as the object.
+        r"\b(?:show|see|view|open)\b[^,]{0,40}?\bthe\s+(?:source\s+)?code\b",
+    )
+)
+
+# Person-frame veto: the recruiter is explicitly asking for PEOPLE.
+_CANDIDATE_FRAME_RE = re.compile(
+    r"\b(?:candidates?|someone|somebody|people|person|students?|profiles?|"
+    r"engineers?|developers?|interns?|folks|anyone|anybody)\b"
+    r"[^,]{0,40}?\b(?:with|who|whose|having|that\s+(?:has|have|knows?))\b"
+)
+
+_PROJECT_INTENT_RE = re.compile(
+    r"\b(?:which|what)\s+projects?\b"
+    r"|\bshow\s+(?:me\s+)?the\s+projects?\b"
+    r"|\bprojects?\s+(?:that\s+)?(?:proves?|demonstrates?|shows?|where|using)\b"
+)
+
+
+def classify_intent(raw_lowered: str) -> str:
+    """Classify the recruiter's intent for one lowered query string."""
+    text = str(raw_lowered or "")
+    if not text.strip():
+        return INTENT_CANDIDATE_SEARCH
+    if _PROJECT_INTENT_RE.search(text):
+        return INTENT_PROJECT_SEARCH
+    if _CANDIDATE_FRAME_RE.search(text):
+        return INTENT_CANDIDATE_SEARCH
+    if any(p.search(text) for p in _EVIDENCE_INTENT_RES):
+        return INTENT_EVIDENCE_SEARCH
+    return INTENT_CANDIDATE_SEARCH
+
 
 def _split_plus(token: str) -> list[str]:
     """"python+fastapi" → ["python", "fastapi"]; "c++" stays intact."""
@@ -226,6 +317,10 @@ def _tokenize(text: str) -> list[str]:
             out.append(",")
             continue
         token = raw.strip("'.")
+        # Possessive candidate references ("Mohammed's Python proof") — the
+        # bare name is the meaningful token.
+        if token.endswith("'s") and len(token) > 2:
+            token = token[:-2]
         for part in _split_plus(token):
             if part:
                 out.append(part)
@@ -253,6 +348,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
 
     Returns a plain dict (dual-mode friendly):
       raw, mode ("browse" | "lexical" | "structured"),
+      intent ("candidate_search" | "evidence_search" | "project_search"),
       required_groups: [[concept, ...], ...]   # AND of OR-groups
       preferred: [concept, ...]
       excluded: [concept, ...]
@@ -263,6 +359,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
       residual_terms: [str, ...]
     """
     raw = str(q or "").strip()[:MAX_QUERY_LENGTH]
+    intent = classify_intent(raw.lower())
     tokens = _tokenize(raw)
 
     required_groups: list[list[str]] = []
@@ -400,6 +497,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
     return {
         "raw": raw,
         "mode": mode,
+        "intent": intent,
         "required_groups": required_groups,
         "preferred": preferred,
         "excluded": excluded,
@@ -419,7 +517,11 @@ def describe_group(group: list[str]) -> str:
 
 __all__ = [
     "EVIDENCE_REQUIREMENT_DISPLAY",
+    "INTENT_CANDIDATE_SEARCH",
+    "INTENT_EVIDENCE_SEARCH",
+    "INTENT_PROJECT_SEARCH",
     "MAX_QUERY_LENGTH",
+    "classify_intent",
     "describe_group",
     "parse_recruiter_query",
 ]

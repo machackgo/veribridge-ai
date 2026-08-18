@@ -34,8 +34,11 @@ import {
 } from "@/lib/recruiter-connections-api"
 import {
   searchCandidates,
+  viewEvidence,
   type AvailabilityFilter,
   type EvidenceFilter,
+  type EvidenceItem,
+  type EvidenceResults,
   type MatchedReason,
   type QueryInterpretation,
   type RecruiterSearchResponse,
@@ -60,8 +63,8 @@ const AVAILABILITY_OPTIONS: { key: AvailabilityFilter; label: string }[] = [
 
 const EXAMPLE_QUERIES = [
   "AI engineer with Python and NLP who has deployed a project",
-  "Backend intern with FastAPI and PostgreSQL",
-  "Machine learning with GitHub evidence",
+  "Show me proof of machine learning",
+  "Which project proves FastAPI",
 ]
 
 function initialsOf(name: string | null): string {
@@ -126,45 +129,262 @@ function requirementDetail(req: RequirementMatch): string {
   return parts.join(" · ")
 }
 
-function RequirementRow({ req }: { req: RequirementMatch }) {
-  const satisfied = req.satisfied
-  const detail = requirementDetail(req)
+/** Qualitative status → badge tone (labels only — never numeric). */
+function statusTone(status: string): "emerald" | "indigo" | "slate" {
+  if (status === "Demonstrated") return "emerald"
+  if (status === "Partially demonstrated" || status === "Evidence observed") {
+    return "indigo"
+  }
+  return "slate"
+}
+
+/**
+ * One proof unit: a skill's published evidence (or an explicitly-labeled
+ * project technology claim), with the projects and sanitized trace previews
+ * behind it, linking through to the real public artifacts.
+ */
+function EvidenceItemBlock({ item }: { item: EvidenceItem }) {
+  const claimed = item.tier === "claimed"
   return (
     <div
+      data-testid="evidence-item"
       style={{
         display: "flex",
+        flexDirection: "column",
         gap: 8,
-        alignItems: "baseline",
-        fontSize: 12.5,
-        lineHeight: 1.5,
+        padding: "10px 12px",
+        borderRadius: 10,
+        border: `1px solid ${TOKEN.line}`,
+        background: claimed ? "#fffdf5" : "#fafbff",
       }}
     >
-      <span
-        aria-hidden
-        style={{
-          color: satisfied ? TOKEN.emerald : TOKEN.rose,
-          fontWeight: 700,
-          flexShrink: 0,
-        }}
-      >
-        {satisfied ? "✓" : "✕"}
-      </span>
-      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
-        <span
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+        {item.requirement_display && item.requirement_display !== item.skill && (
+          <span style={{ fontSize: 12, color: TOKEN.muted, fontWeight: 600 }}>
+            {item.requirement_display} ·
+          </span>
+        )}
+        <span style={{ fontSize: 13.5, color: TOKEN.ink, fontWeight: 700, overflowWrap: "anywhere" }}>
+          {item.skill}
+        </span>
+        <Badge tone={claimed ? "slate" : statusTone(item.status)}>
+          {claimed ? "Claimed — not verified evidence" : item.status}
+        </Badge>
+        {item.evidence_sources.slice(0, 4).map((source) => (
+          <Badge key={source} tone="purple">
+            {source}
+          </Badge>
+        ))}
+      </div>
+      {item.note && (
+        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+          {item.note}
+        </p>
+      )}
+      {item.projects.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {item.projects.map((project, index) => (
+            <div
+              key={`${project.title}-${index}`}
+              style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", fontSize: 12.5 }}
+            >
+              <span style={{ color: TOKEN.inkSoft, fontWeight: 600, overflowWrap: "anywhere" }}>
+                {project.title || "Published project"}
+              </span>
+              {project.proof_types.slice(0, 4).map((type) => (
+                <span key={type} style={{ fontSize: 11, color: TOKEN.muted }}>
+                  {type}
+                </span>
+              ))}
+              {project.public_report_path && (
+                <a
+                  data-testid="evidence-open-project"
+                  href={project.public_report_path}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}
+                >
+                  Open project report →
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {item.traces.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {item.traces.map((trace, index) => (
+            <p
+              key={`${trace.source_title}-${index}`}
+              style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5, overflowWrap: "anywhere" }}
+            >
+              <span style={{ fontWeight: 600, color: TOKEN.inkSoft }}>
+                {trace.source_type}
+                {trace.source_title ? ` · ${trace.source_title}` : ""}
+              </span>
+              {trace.summary ? ` — ${trace.summary}` : ""}
+              {trace.public_url && (
+                <>
+                  {" "}
+                  <a
+                    href={trace.public_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}
+                  >
+                    Open source ↗
+                  </a>
+                </>
+              )}
+            </p>
+          ))}
+        </div>
+      )}
+      {item.proof_path && (
+        <a
+          data-testid="evidence-view-full"
+          href={item.proof_path}
+          target="_blank"
+          rel="noopener noreferrer"
           style={{
-            color: satisfied ? TOKEN.ink : TOKEN.rose,
-            fontWeight: 600,
+            alignSelf: "flex-start",
+            fontSize: 12.5,
+            color: TOKEN.indigo,
+            fontWeight: 700,
+            textDecoration: "none",
           }}
         >
-          {req.display}
-          {!req.required && (
-            <span style={{ color: TOKEN.muted, fontWeight: 500 }}> (preferred)</span>
+          View full evidence →
+        </a>
+      )}
+    </div>
+  )
+}
+
+function RequirementRow({
+  req,
+  candidateSlug,
+}: {
+  req: RequirementMatch
+  candidateSlug?: string
+}) {
+  const satisfied = req.satisfied
+  const detail = requirementDetail(req)
+  // View proof: expand the actual published evidence behind a verified
+  // requirement without a second search. Concept requirements only —
+  // evidence expectations and soft context rows have no per-skill artifact.
+  const canViewProof = Boolean(candidateSlug) && req.kind === "concept" && satisfied
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<EvidenceItem[] | null>(null)
+  const [drawerError, setDrawerError] = useState<string | null>(null)
+  const [drawerLoading, setDrawerLoading] = useState(false)
+
+  const toggleProof = async () => {
+    if (open) {
+      setOpen(false)
+      return
+    }
+    setOpen(true)
+    if (items !== null || drawerLoading) return
+    setDrawerLoading(true)
+    setDrawerError(null)
+    try {
+      const res = await viewEvidence({
+        skill: req.requirement,
+        candidate: candidateSlug,
+      })
+      setItems(res.evidence.groups.flatMap((group) => group.items))
+    } catch (err) {
+      setDrawerError(
+        err instanceof Error ? err.message : "Could not load proof.",
+      )
+    } finally {
+      setDrawerLoading(false)
+    }
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "baseline",
+          fontSize: 12.5,
+          lineHeight: 1.5,
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            color: satisfied ? TOKEN.emerald : TOKEN.rose,
+            fontWeight: 700,
+            flexShrink: 0,
+          }}
+        >
+          {satisfied ? "✓" : "✕"}
+        </span>
+        <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+          <span
+            style={{
+              color: satisfied ? TOKEN.ink : TOKEN.rose,
+              fontWeight: 600,
+            }}
+          >
+            {req.display}
+            {!req.required && (
+              <span style={{ color: TOKEN.muted, fontWeight: 500 }}> (preferred)</span>
+            )}
+          </span>
+          {detail && (
+            <span style={{ color: TOKEN.muted }}> — {detail}</span>
+          )}
+          {canViewProof && (
+            <>
+              {" "}
+              <button
+                type="button"
+                data-testid="requirement-view-proof"
+                aria-expanded={open}
+                onClick={() => void toggleProof()}
+                style={{
+                  background: "none",
+                  border: "none",
+                  padding: 0,
+                  color: TOKEN.indigo,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                {open ? "Hide proof" : "View proof"}
+              </button>
+            </>
           )}
         </span>
-        {detail && (
-          <span style={{ color: TOKEN.muted }}> — {detail}</span>
-        )}
-      </span>
+      </div>
+      {open && (
+        <div
+          data-testid="requirement-proof-drawer"
+          style={{ display: "flex", flexDirection: "column", gap: 8, marginLeft: 18 }}
+        >
+          {drawerLoading ? (
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>Loading proof…</p>
+          ) : drawerError ? (
+            <p role="alert" style={{ fontSize: 12, color: TOKEN.rose, margin: 0 }}>
+              {drawerError}
+            </p>
+          ) : items && items.length > 0 ? (
+            items.map((item, index) => (
+              <EvidenceItemBlock key={`${item.skill_slug}-${index}`} item={item} />
+            ))
+          ) : items ? (
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+              No published evidence artifacts for this requirement.
+            </p>
+          ) : null}
+        </div>
+      )}
     </div>
   )
 }
@@ -382,7 +602,11 @@ function ResultCard({
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {requirements.map((req, index) => (
-                <RequirementRow key={`${req.kind}-${req.requirement}-${index}`} req={req} />
+                <RequirementRow
+                  key={`${req.kind}-${req.requirement}-${index}`}
+                  req={req}
+                  candidateSlug={candidate.public_slug}
+                />
               ))}
             </div>
           </div>
@@ -455,9 +679,193 @@ function ResultCard({
   )
 }
 
+/**
+ * Evidence Discovery results: one card per candidate holding EVERY proof
+ * item found for them (many proofs, one identity), plus explicit no-proof
+ * statements and clearly-labeled related-evidence hints.
+ */
+function EvidenceResultsSection({
+  evidence,
+  query,
+  savedSlugs,
+}: {
+  evidence: EvidenceResults
+  query: string
+  savedSlugs: Set<string>
+}) {
+  const hasProof = evidence.groups.length > 0
+  return (
+    <div data-testid="evidence-results" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <p data-testid="evidence-result-count" style={{ fontSize: 12.5, color: TOKEN.muted, margin: 0 }}>
+        {hasProof ? (
+          <>
+            <strong style={{ color: TOKEN.ink }}>
+              {evidence.total_items} proof {evidence.total_items === 1 ? "item" : "items"}
+            </strong>{" "}
+            across {evidence.groups.length}{" "}
+            {evidence.groups.length === 1 ? "candidate" : "candidates"}
+            {query && (
+              <>
+                {" "}for <strong style={{ color: TOKEN.ink }}>“{query}”</strong>
+              </>
+            )}
+          </>
+        ) : (
+          <>No published proof matches this request.</>
+        )}
+      </p>
+
+      {evidence.notes.map((note) => (
+        <p
+          key={note}
+          data-testid="evidence-note"
+          style={{
+            fontSize: 12.5,
+            color: TOKEN.inkSoft,
+            margin: 0,
+            lineHeight: 1.6,
+            padding: "10px 12px",
+            borderRadius: 10,
+            background: TOKEN.indigoSoft,
+          }}
+        >
+          {note}
+        </p>
+      ))}
+
+      {evidence.groups.map((group) => {
+        const initiallySaved = savedSlugs.has(group.public_slug)
+        return (
+          <Card key={group.public_slug} style={{ padding: 18 }}>
+            <div
+              data-testid="evidence-group-card"
+              style={{ display: "flex", flexDirection: "column", gap: 12 }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                <div
+                  aria-hidden
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: "50%",
+                    background: TOKEN.emeraldSoft,
+                    color: TOKEN.emerald,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontWeight: 700,
+                    fontSize: 16,
+                    flexShrink: 0,
+                  }}
+                >
+                  {initialsOf(group.display_name)}
+                </div>
+                <div style={{ minWidth: 0, flex: "1 1 200px" }}>
+                  <p style={{ fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase", color: TOKEN.emerald, margin: 0, fontWeight: 700 }}>
+                    Proof found
+                  </p>
+                  <h3
+                    data-testid="evidence-group-name"
+                    style={{ fontSize: 16, color: TOKEN.ink, margin: 0, fontWeight: 700, overflowWrap: "anywhere" }}
+                  >
+                    {group.display_name ?? "Verified candidate"}
+                  </h3>
+                  {group.headline && (
+                    <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: "2px 0 0", lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                      {group.headline}
+                    </p>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <a
+                    data-testid="evidence-open-passport"
+                    href={group.passport_path}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      padding: "8px 14px",
+                      borderRadius: 8,
+                      border: `1px solid ${TOKEN.line}`,
+                      background: "#fff",
+                      color: TOKEN.ink,
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      textDecoration: "none",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    Open Passport →
+                  </a>
+                  <ResultSaveButton
+                    key={`${group.public_slug}:${initiallySaved ? "saved" : "idle"}`}
+                    slug={group.public_slug}
+                    query={query}
+                    initiallySaved={initiallySaved}
+                  />
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {group.items.map((item, index) => (
+                  <EvidenceItemBlock key={`${item.skill_slug}-${item.requirement}-${index}`} item={item} />
+                ))}
+              </div>
+            </div>
+          </Card>
+        )
+      })}
+
+      {evidence.unmatched.map((entry) => (
+        <div
+          key={entry.requirement}
+          data-testid="evidence-unmatched"
+          style={{
+            padding: "12px 14px",
+            borderRadius: 10,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+          }}
+        >
+          <p style={{ fontSize: 13, color: TOKEN.ink, margin: 0, fontWeight: 700 }}>
+            {entry.display}: no published proof
+          </p>
+          <p style={{ fontSize: 12.5, color: TOKEN.muted, margin: "4px 0 0", lineHeight: 1.5 }}>
+            {entry.note}
+          </p>
+        </div>
+      ))}
+
+      {evidence.related.map((hint) => (
+        <div
+          key={`${hint.requirement_display}-${hint.related_display}`}
+          data-testid="evidence-related"
+          style={{
+            padding: "12px 14px",
+            borderRadius: 10,
+            border: `1px dashed ${TOKEN.line}`,
+            background: "#fafafa",
+          }}
+        >
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Related evidence — not {hint.requirement_display} proof
+          </p>
+          <p style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: "4px 0 0", lineHeight: 1.5 }}>
+            {hint.note}
+            {hint.candidate_names.length > 0 && (
+              <> Published by: {hint.candidate_names.join(", ")}.</>
+            )}
+          </p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** "Understood as …" — the executed interpretation, shown transparently. */
 function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
+  const evidenceIntent =
+    interp.intent === "evidence_search" || interp.intent === "project_search"
   const hasChips =
+    evidenceIntent ||
     interp.required.length > 0 ||
     interp.preferred.length > 0 ||
     interp.excluded.length > 0 ||
@@ -483,6 +891,13 @@ function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
       <span style={{ fontSize: 11.5, color: TOKEN.indigo, fontWeight: 700 }}>
         Understood as:
       </span>
+      {evidenceIntent && (
+        <span data-testid="interpretation-intent" style={{ display: "inline-flex" }}>
+          <Badge tone="emerald">
+            {interp.intent === "project_search" ? "Project proof search" : "Evidence search"}
+          </Badge>
+        </span>
+      )}
       {interp.role && <Badge tone="purple">Role: {interp.role}</Badge>}
       {interp.seniority && <Badge tone="purple">{interp.seniority}</Badge>}
       {interp.location && <Badge tone="slate">Near: {interp.location}</Badge>}
@@ -994,6 +1409,15 @@ export function RecruiterSearchView() {
         <LoadingState label="Searching candidates…" />
       ) : error ? (
         <ErrorState message={error} onRetry={() => submit()} />
+      ) : response?.evidence ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {interpretation && <InterpretationPanel interp={interpretation} />}
+          <EvidenceResultsSection
+            evidence={response.evidence}
+            query={activeQuery}
+            savedSlugs={savedSlugs}
+          />
+        </div>
       ) : results.length === 0 ? (
         <div data-testid="search-empty">
           {structured && interpretation && (

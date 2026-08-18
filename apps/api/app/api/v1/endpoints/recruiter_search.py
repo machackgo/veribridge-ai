@@ -18,7 +18,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 
 from app.api.deps import get_current_user_id, get_db
-from app.schemas.recruiter_search import RecruiterSearchResponse
+from app.schemas.recruiter_search import (
+    RecruiterEvidenceResponse,
+    RecruiterSearchResponse,
+)
+from app.services.recruiter_evidence_service import search_evidence
 from app.services.recruiter_search_service import (
     AVAILABILITY_VALUES,
     DEFAULT_PAGE_SIZE,
@@ -93,3 +97,57 @@ def search_candidates_route(
         result_count=int(result.get("total") or 0),
     )
     return RecruiterSearchResponse(**result)
+
+
+@router.get(
+    "/evidence",
+    response_model=RecruiterEvidenceResponse,
+    summary="Open the published proof behind a skill / candidate (View proof)",
+)
+def view_evidence_route(
+    skill: str | None = Query(
+        default=None,
+        max_length=120,
+        description="Skill name or slug whose published proof to open.",
+    ),
+    candidate: str | None = Query(
+        default=None,
+        max_length=120,
+        description="Public passport slug restricting proof to one candidate.",
+    ),
+    evidence: str | None = Query(
+        default=None,
+        max_length=120,
+        description=f"Comma-separated evidence-type filters from {EVIDENCE_FILTERS}.",
+    ),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> RecruiterEvidenceResponse:
+    """Structured evidence drilldown — no natural-language parsing. Every
+    proof item is a projection of the candidate's PUBLIC Work Passport,
+    re-validated live (publication state, disclosure version, discovery
+    exclusions) exactly like candidate search."""
+    evidence_filter = [e for e in _csv(evidence) if e in EVIDENCE_FILTERS]
+    payload = search_evidence(
+        db,
+        skill=skill,
+        candidate_slug=candidate,
+        evidence=evidence_filter,
+    )
+    record_search_event(
+        db,
+        recruiter_user_id=str(user_id),
+        q=None,
+        filters={
+            "view_proof": True,
+            "skill": str(skill or "") or None,
+            "candidate": str(candidate or "") or None,
+            "evidence": evidence_filter,
+        },
+        result_count=int(payload.get("total_items") or 0),
+    )
+    return RecruiterEvidenceResponse(
+        evidence=payload,
+        skill=str(skill or "") or None,
+        candidate=str(candidate or "") or None,
+    )

@@ -86,6 +86,7 @@ function response(
     has_more: false,
     interpretation: {
       mode: "browse",
+      intent: "candidate_search",
       required: [],
       preferred: [],
       excluded: [],
@@ -377,6 +378,7 @@ describe("RecruiterSearchView", () => {
         close_total: 1,
         interpretation: {
           mode: "structured",
+          intent: "candidate_search",
           required: [
             { display: "Python", concepts: ["python"] },
             {

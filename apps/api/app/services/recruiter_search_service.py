@@ -47,6 +47,9 @@ from typing import Any
 from app.core.serialization import make_json_safe
 from app.services.recruiter_query_understanding import (
     EVIDENCE_REQUIREMENT_DISPLAY,
+    INTENT_CANDIDATE_SEARCH,
+    INTENT_EVIDENCE_SEARCH,
+    INTENT_PROJECT_SEARCH,
     describe_group,
     parse_recruiter_query,
 )
@@ -78,6 +81,10 @@ _MAX_MATCHED_REASONS = 8
 _MAX_RESULT_SKILLS = 6
 _MAX_RESULT_PROJECTS = 3
 _MAX_PROJECT_SUMMARY_CHARS = 280
+# Evidence Discovery: per-skill proof refs / trace previews kept in the index
+# row (compact — titles, paths, closed labels, sanitized summaries only).
+_MAX_SKILL_PROOF_PROJECTS = 4
+_MAX_SKILL_PROOF_TRACES = 3
 
 # ── Evidence vocabulary (must mirror vbr_work_passport_service labels) ───────
 
@@ -400,6 +407,37 @@ def build_index_row(
         name = str(entry.get("skill") or "").strip()
         if not name:
             continue
+        # Per-skill proof refs + safe trace previews (Evidence Discovery).
+        # Everything here comes from the SAME public projection — project
+        # titles, published report paths, closed proof-type labels, and the
+        # already-sanitized public trace summaries served at /p/{slug}.
+        proof_projects = [
+            {
+                "title": _truncate(ref.get("project_title"), 160),
+                "public_report_path": str(ref.get("public_report_path") or ""),
+                "skill_status": str(ref.get("skill_status") or "Not assessed"),
+                "proof_types": [
+                    str(t) for t in (ref.get("supporting_proof_types") or [])
+                ][:6],
+            }
+            for ref in (entry.get("projects") or [])[:_MAX_SKILL_PROOF_PROJECTS]
+            if ref.get("public_report_path")
+        ]
+        traces = []
+        for trace in (entry.get("evidence_traces") or [])[:_MAX_SKILL_PROOF_TRACES]:
+            public_url = trace.get("public_url")
+            traces.append(
+                {
+                    "source_type": _truncate(trace.get("source_type"), 40),
+                    "source_title": _truncate(trace.get("source_title"), 120),
+                    "summary": _truncate(trace.get("safe_summary"), 220),
+                    # Already gated upstream by is_safe_public_url + the
+                    # public-safety scrub; index only openable public links.
+                    "public_url": str(public_url)
+                    if public_url and trace.get("is_publicly_openable")
+                    else None,
+                }
+            )
         skills_compact.append(
             {
                 "skill": name,
@@ -410,6 +448,8 @@ def build_index_row(
                     str(s) for s in (entry.get("evidence_sources") or [])
                 ],
                 "aliases": [str(a) for a in (entry.get("aliases") or [])][:6],
+                "projects": proof_projects,
+                "traces": traces,
             }
         )
 
@@ -1264,6 +1304,7 @@ def _plan_interpretation(plan: dict[str, Any]) -> dict[str, Any]:
     the engine executed, so ambiguity is exposed instead of silently guessed."""
     return {
         "mode": str(plan.get("mode") or "lexical"),
+        "intent": str(plan.get("intent") or INTENT_CANDIDATE_SEARCH),
         "required": [
             {"display": describe_group(g), "concepts": list(g)}
             for g in (plan.get("required_groups") or [])
@@ -1343,6 +1384,39 @@ def search_candidates(
     version, and the discovery-exclusions table — fail closed.
     """
     plan = parse_recruiter_query(q)
+
+    # ── Evidence Discovery (V1.6): "show me proof of X" is NOT a candidate
+    # search. The intent classifier separates finding people from opening
+    # the proof behind a claim; evidence-type filter chips participate as
+    # evidence-type gates on the proof itself. ──────────────────────────────
+    if str(plan.get("intent")) in (INTENT_EVIDENCE_SEARCH, INTENT_PROJECT_SEARCH):
+        from app.services.recruiter_evidence_service import build_evidence_results
+
+        evidence_gate = [e for e in (evidence or []) if e in EVIDENCE_FILTERS]
+        payload = build_evidence_results(
+            db, plan=plan, extra_evidence_types=evidence_gate
+        )
+        return {
+            "results": [],
+            "total": int(payload.get("total_items") or 0),
+            "exact_total": 0,
+            "close_total": 0,
+            "page": 1,
+            "page_size": max(
+                1, min(int(page_size or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE)
+            ),
+            "has_more": False,
+            "interpretation": _plan_interpretation(plan),
+            "evidence": payload,
+            "query": {
+                "q": str(q or "")[:MAX_QUERY_LENGTH],
+                "terms": [],
+                "skills": [],
+                "evidence": evidence_gate,
+                "availability": None,
+            },
+        }
+
     # Explicit structured params keep their V1 HARD-FILTER contract: a
     # filter chip excludes, full stop. Only natural-language expectations
     # participate in exact-vs-close classification. skills entries become
