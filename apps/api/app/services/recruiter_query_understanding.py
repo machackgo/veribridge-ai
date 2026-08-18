@@ -196,7 +196,10 @@ _EVIDENCE_PHRASES: dict[str, str] = {
     "video evidence": "video",
     "video proof": "video",
     "document proof": "documents",
+    "document proofs": "documents",
     "document evidence": "documents",
+    "documents": "documents",
+    "docs": "documents",
     "real projects": "project",
     "real project": "project",
     "project evidence": "project",
@@ -248,7 +251,7 @@ INTENT_CANDIDATE_SEARCH = "candidate_search"
 INTENT_EVIDENCE_SEARCH = "evidence_search"
 INTENT_PROJECT_SEARCH = "project_search"
 
-_EVIDENCE_NOUN = r"(?:proofs?|evidence|artifacts?|vbrs?)"
+_EVIDENCE_NOUN = r"(?:proofs?|evidence|artifacts?|vbrs?|documents?|docs)"
 
 _EVIDENCE_INTENT_RES: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p)

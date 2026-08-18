@@ -250,6 +250,7 @@ def _items(payload: dict) -> list[dict]:
         "where is the proof for machine learning",
         "show me the code for machine learning",
         "show me the VBR for machine learning",
+        "show me hidden documents",
     ],
 )
 def test_evidence_intent_queries(query: str) -> None:
