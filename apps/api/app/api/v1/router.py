@@ -33,6 +33,8 @@ from app.api.v1.endpoints import (
     video_proofs,
     admin_user_roles,
     recruiter_candidate_comparisons,
+    recruiter_comparisons,
+    recruiter_talent_pools,
     public_work_passport,
     recruiter_candidates,
     recruiter_connections,
@@ -247,6 +249,16 @@ api_router.include_router(
     recruiter_search.router,
     prefix="/recruiter/search",
     tags=["recruiter-search"],
+)
+api_router.include_router(
+    recruiter_comparisons.router,
+    prefix="/recruiter/comparisons",
+    tags=["recruiter-comparisons"],
+)
+api_router.include_router(
+    recruiter_talent_pools.router,
+    prefix="/recruiter/pools",
+    tags=["recruiter-talent-pools"],
 )
 api_router.include_router(
     extension_proof.router,

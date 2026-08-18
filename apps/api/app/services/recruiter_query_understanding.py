@@ -346,6 +346,47 @@ def _phrase_at(
     return None
 
 
+# Trailing requirement markers — "NLP and deployment are preferred",
+# "Python required", "Docker is a plus". The token walk only understands
+# LEADING markers ("preferably NLP"), so these clauses are deterministically
+# rewritten into that form before tokenization. Clause boundaries are
+# periods/semicolons/commas; only a clause that ENDS with the marker is
+# rewritten, so leading-marker phrasing is untouched.
+_TRAILING_REQUIRED_RE = re.compile(
+    r"\s+(?:(?:is|are)\s+)?(?:required|mandatory|a\s+must)\s*$", re.IGNORECASE
+)
+_TRAILING_PREFERRED_RE = re.compile(
+    r"\s+(?:(?:is|are|would\s+be)\s+)?"
+    r"(?:preferred|a\s+plus|a\s+bonus|nice\s+to\s+have)\s*$",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"([.;,])")
+
+
+def _rewrite_trailing_markers(text: str) -> str:
+    """Normalize trailing-marker clauses into leading-marker form."""
+    parts = _CLAUSE_SPLIT_RE.split(text)
+    out: list[str] = []
+    for part in parts:
+        if part in {".", ";", ","}:
+            out.append(part)
+            continue
+        stripped = part.strip()
+        if not stripped:
+            out.append(part)
+            continue
+        required_match = _TRAILING_REQUIRED_RE.search(stripped)
+        if required_match is not None and stripped[: required_match.start()].strip():
+            out.append(" must have " + stripped[: required_match.start()].strip())
+            continue
+        preferred_match = _TRAILING_PREFERRED_RE.search(stripped)
+        if preferred_match is not None and stripped[: preferred_match.start()].strip():
+            out.append(" preferably " + stripped[: preferred_match.start()].strip())
+            continue
+        out.append(part)
+    return "".join(out)
+
+
 def parse_recruiter_query(q: Any) -> dict[str, Any]:
     """Parse a recruiter's free-text request into a structured search plan.
 
@@ -363,7 +404,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
     """
     raw = str(q or "").strip()[:MAX_QUERY_LENGTH]
     intent = classify_intent(raw.lower())
-    tokens = _tokenize(raw)
+    tokens = _tokenize(_rewrite_trailing_markers(raw))
 
     required_groups: list[list[str]] = []
     preferred: list[str] = []

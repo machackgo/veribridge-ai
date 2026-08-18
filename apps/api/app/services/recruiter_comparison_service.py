@@ -138,6 +138,11 @@ def normalize_requirement_term(term: Any) -> tuple[str, str] | None:
     concept = PHRASE_TO_CONCEPT.get(phrase)
     if concept:
         return ("concept", concept)
+    # "Fast API" → "fastapi": collapsed spelling often IS the known concept.
+    collapsed = phrase.replace(" ", "")
+    concept = PHRASE_TO_CONCEPT.get(collapsed)
+    if concept:
+        return ("concept", concept)
     return ("concept", skill_slug(phrase))
 
 
@@ -1051,6 +1056,9 @@ def get_comparison(
         candidate_user_ids=[str(u) for u in (row.get("candidate_user_ids") or [])],
         plan=row.get("plan") or {},
     )
+    # The sanitized plan is engine-internal; the API contract exposes the
+    # editable requirements_view instead.
+    matrix.pop("plan", None)
     return {"comparison": _comparison_view(row), "matrix": matrix}
 
 
