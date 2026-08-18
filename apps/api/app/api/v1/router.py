@@ -36,6 +36,7 @@ from app.api.v1.endpoints import (
     public_work_passport,
     recruiter_candidates,
     recruiter_connections,
+    recruiter_hiring_briefs,
     recruiter_search,
     skill_evidence,
     skill_evidence_timeline,
@@ -247,6 +248,11 @@ api_router.include_router(
     recruiter_search.router,
     prefix="/recruiter/search",
     tags=["recruiter-search"],
+)
+api_router.include_router(
+    recruiter_hiring_briefs.router,
+    prefix="/recruiter/briefs",
+    tags=["recruiter-hiring-briefs"],
 )
 api_router.include_router(
     extension_proof.router,

@@ -630,16 +630,14 @@ def evaluate_matrix(
 
     # Attach the recruiter's own connection id so the matrix can save /
     # deep-link in place. Never another recruiter's data by construction.
+    # Role-scoped review status is annotated by the hiring-brief service —
+    # workspace membership itself carries no status.
     for column in columns:
         conn = connection_by_student.get(column["user_id"])
         column["connection"] = (
-            {
-                "id": str(conn.get("id")),
-                "status": "saved",
-            }
-            if conn is not None
-            else None
+            {"id": str(conn.get("id"))} if conn is not None else None
         )
+        column["brief_status"] = None
 
     coverage = []
     available_columns = [c for c in columns if c.get("available")]

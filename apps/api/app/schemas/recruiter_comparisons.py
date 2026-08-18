@@ -1,4 +1,9 @@
-"""Typed contracts for recruiter candidate comparison (v2, migration 068).
+"""Typed contracts for the recruiter evidence-comparison matrix.
+
+Comparison is a LIVE VIEW scoped to a Hiring Brief (migration 068): the
+brief owns the requirement plan and the candidate pool; these models only
+describe the requirement chips and the evaluated matrix. There is no
+persisted comparison session.
 
 Every payload is derived from public-projection evidence plus the caller's
 own recruiter-private workflow rows. Cell states are a closed vocabulary
@@ -6,8 +11,6 @@ own recruiter-private workflow rows. Cell states are a closed vocabulary
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -25,37 +28,7 @@ class ComparisonRequirementsInput(BaseModel):
     role: str | None = Field(default=None, max_length=80)
     seniority: str | None = Field(default=None, max_length=40)
     location: str | None = Field(default=None, max_length=60)
-
-    model_config = {"extra": "forbid"}
-
-
-class CreateComparisonRequest(BaseModel):
-    """Create a persisted comparison session and evaluate it.
-
-    Candidates come from the recruiter's own workspace (``connection_ids``)
-    and/or published passports (``candidate_slugs``); duplicates collapse by
-    stable candidate identity. ``requirements`` (edited chips) wins over
-    ``role_text`` (natural language) when both are present.
-    """
-
-    title: str | None = Field(default=None, max_length=120)
-    role_text: str | None = Field(default=None, max_length=320)
-    requirements: ComparisonRequirementsInput | None = None
-    connection_ids: list[str] = Field(default_factory=list, max_length=10)
-    candidate_slugs: list[str] = Field(default_factory=list, max_length=10)
-
-    model_config = {"extra": "forbid"}
-
-
-class UpdateComparisonRequest(BaseModel):
-    """Partial update; omitted fields stay unchanged. Sending ``role_text``
-    re-parses the brief; sending ``requirements`` applies edited chips."""
-
-    title: str | None = Field(default=None, max_length=120)
-    role_text: str | None = Field(default=None, max_length=320)
-    requirements: ComparisonRequirementsInput | None = None
-    connection_ids: list[str] | None = Field(default=None, max_length=10)
-    candidate_slugs: list[str] | None = Field(default=None, max_length=10)
+    remote: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -85,6 +58,7 @@ class ComparisonRequirementsView(BaseModel):
     role: str | None = None
     seniority: str | None = None
     location: str | None = None
+    remote: bool = False
     unrecognized_terms: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -153,8 +127,11 @@ class ColumnCounts(BaseModel):
 
 
 class ColumnConnection(BaseModel):
+    """The caller's OWN workspace connection to this candidate, for save /
+    deep-link in place. Workspace membership carries no status — role-scoped
+    review status lives on ``MatrixColumn.brief_status``."""
+
     id: str
-    status: str = "saved"
 
     model_config = {"extra": "forbid"}
 
@@ -174,6 +151,9 @@ class MatrixColumn(BaseModel):
     excluded_hits: list[str] = Field(default_factory=list)
     unavailable_note: str | None = None
     connection: ColumnConnection | None = None
+    # ROLE-SCOPED review status from the brief's candidate pool
+    # (saved | reviewing | shortlisted | archived); None outside a brief.
+    brief_status: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -202,60 +182,17 @@ class ComparisonMatrix(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class ComparisonSession(BaseModel):
-    id: str
-    title: str | None = None
-    role_text: str | None = None
-    candidate_user_ids: list[str] = Field(default_factory=list)
-    created_at: Any = None
-    updated_at: Any = None
-
-    model_config = {"extra": "forbid"}
-
-
-class ComparisonResponse(BaseModel):
-    comparison: ComparisonSession
-    matrix: ComparisonMatrix
-
-    model_config = {"extra": "forbid"}
-
-
-class ComparisonListItem(BaseModel):
-    id: str
-    title: str | None = None
-    role_text: str | None = None
-    candidate_count: int = 0
-    created_at: Any = None
-    updated_at: Any = None
-
-    model_config = {"extra": "forbid"}
-
-
-class ComparisonListResponse(BaseModel):
-    comparisons: list[ComparisonListItem] = Field(default_factory=list)
-    total: int = 0
-
-    model_config = {"extra": "forbid"}
-
-
-class ComparisonDeleteResponse(BaseModel):
-    deleted: bool = False
-
-    model_config = {"extra": "forbid"}
-
-
 __all__ = [
-    "ComparisonDeleteResponse",
-    "ComparisonListItem",
-    "ComparisonListResponse",
+    "CellProjectRef",
+    "CellTracePreview",
+    "ColumnConnection",
+    "ColumnCounts",
     "ComparisonMatrix",
     "ComparisonRequirementsInput",
     "ComparisonRequirementsView",
-    "ComparisonResponse",
-    "ComparisonSession",
-    "CreateComparisonRequest",
+    "EvidenceChip",
     "MatrixCell",
     "MatrixColumn",
     "MatrixRequirement",
-    "UpdateComparisonRequest",
+    "RequirementChip",
 ]
