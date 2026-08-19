@@ -39,32 +39,12 @@ class ConnectionCandidate(BaseModel):
 
 
 class RecruiterConnection(BaseModel):
-    """One saved recruiter ↔ candidate relationship.
-
-    ``status`` / ``recruiter_note`` are recruiter-PRIVATE workflow fields
-    (migration 068) — they never appear on any public or candidate-facing
-    surface.
-    """
+    """One saved recruiter ↔ candidate relationship."""
 
     id: str
     source: str
-    status: str = "saved"
-    recruiter_note: str | None = None
-    status_updated_at: str | None = None
     created_at: str | None = None
     candidate: ConnectionCandidate
-
-    model_config = {"extra": "forbid"}
-
-
-class UpdateConnectionRequest(BaseModel):
-    """Partial update: omitted fields stay unchanged; an explicit empty
-    note clears it. Status is the closed saved/shortlisted/archived enum
-    (validated in the service)."""
-
-    status: str | None = Field(default=None, max_length=32)
-    recruiter_note: str | None = Field(default=None, max_length=2000)
-    clear_note: bool = False
 
     model_config = {"extra": "forbid"}
 
@@ -104,5 +84,4 @@ __all__ = [
     "RecruiterConnectionListResponse",
     "SaveCandidateRequest",
     "SaveCandidateResponse",
-    "UpdateConnectionRequest",
 ]

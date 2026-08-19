@@ -47,26 +47,9 @@ CONNECTION_SOURCES = {"qr_scan", "shared_link", "search", "role_match", "direct"
 _DEFAULT_SOURCE = "direct"
 _MAX_SOURCE_CONTEXT_BYTES = 2048
 
-# Review workflow states — must stay in sync with the CHECK constraint added
-# in migration 068. Deliberately minimal: a full ATS pipeline (reviewing /
-# contacted / interview) is out of scope for V2.
-CONNECTION_STATUSES = ("saved", "shortlisted", "archived")
-_DEFAULT_STATUS = "saved"
-# Recruiter-PRIVATE note (e.g. shortlist reason). Never exposed on any public
-# surface, never indexed, never embedded.
-MAX_RECRUITER_NOTE_LENGTH = 2000
-
 
 class PassportNotFound(Exception):
     """Slug does not resolve to an actively published passport."""
-
-
-class InvalidConnectionStatus(Exception):
-    """Status outside the closed saved/shortlisted/archived vocabulary."""
-
-
-class ConnectionNotFound(Exception):
-    """Missing OR another recruiter's connection — indistinguishable."""
 
 
 def normalize_connection_source(source: Any) -> str:
@@ -268,10 +251,6 @@ def _connection_view(db: Any, row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(row.get("id")),
         "source": str(row.get("source") or _DEFAULT_SOURCE),
-        # Pre-068 rows have no status column yet — they are simply "saved".
-        "status": str(row.get("status") or _DEFAULT_STATUS),
-        "recruiter_note": row.get("recruiter_note"),
-        "status_updated_at": row.get("status_updated_at"),
         "created_at": row.get("created_at"),
         "candidate": _candidate_summary(db, str(row.get("student_user_id"))),
     }
@@ -367,79 +346,8 @@ def delete_connection(db: Any, recruiter_user_id: str, connection_id: str) -> bo
     return _delete_connection_row(db, recruiter_user_id, str(connection_id or ""))
 
 
-def update_connection(
-    db: Any,
-    recruiter_user_id: str,
-    connection_id: str,
-    *,
-    status: Any = ...,
-    recruiter_note: Any = ...,
-) -> dict[str, Any]:
-    """Update the review status and/or private note of the caller's OWN
-    connection (shortlist / archive / back to saved).
-
-    ``...`` (unset) leaves a field untouched; an explicit empty note clears
-    it. Raises :class:`InvalidConnectionStatus` outside the closed enum and
-    :class:`ConnectionNotFound` for missing/foreign rows (indistinguishable).
-    """
-    updates: dict[str, Any] = {}
-
-    if status is not ...:
-        normalized = str(status or "").strip().lower()
-        if normalized not in CONNECTION_STATUSES:
-            raise InvalidConnectionStatus(status)
-        updates["status"] = normalized
-        updates["status_updated_at"] = _now_iso()
-
-    if recruiter_note is not ...:
-        if recruiter_note is None:
-            updates["recruiter_note"] = None
-        else:
-            text = str(recruiter_note).strip()[:MAX_RECRUITER_NOTE_LENGTH]
-            updates["recruiter_note"] = text or None
-
-    # Ownership check first so a no-op update still 404s on foreign rows.
-    existing = None
-    if isinstance(db, dict):
-        row = db.setdefault(_CONNECTIONS_TABLE, {}).get(str(connection_id or ""))
-        if row is not None and str(row.get("recruiter_user_id")) == str(
-            recruiter_user_id
-        ):
-            existing = row
-    else:
-        result = _read_with_transient_retry(
-            db,
-            lambda client: client.table(_CONNECTIONS_TABLE)
-            .select("*")
-            .eq("id", connection_id)
-            .eq("recruiter_user_id", recruiter_user_id)
-            .limit(1)
-            .execute(),
-        )
-        rows = getattr(result, "data", []) or []
-        existing = rows[0] if rows else None
-    if existing is None:
-        raise ConnectionNotFound(connection_id)
-
-    if updates:
-        updates["updated_at"] = _now_iso()
-        if isinstance(db, dict):
-            existing.update(updates)
-        else:
-            db.table(_CONNECTIONS_TABLE).update(make_json_safe(updates)).eq(
-                "id", connection_id
-            ).eq("recruiter_user_id", recruiter_user_id).execute()
-            existing = {**existing, **updates}
-
-    return _connection_view(db, existing)
-
-
 __all__ = [
     "CONNECTION_SOURCES",
-    "CONNECTION_STATUSES",
-    "ConnectionNotFound",
-    "InvalidConnectionStatus",
-    "MAX_RECRUITER_NOTE_LENGTH",
     "PassportNotFound",
     "connection_status",
     "delete_connection",
@@ -447,5 +355,4 @@ __all__ = [
     "normalize_connection_source",
     "normalize_source_context",
     "save_candidate",
-    "update_connection",
 ]
