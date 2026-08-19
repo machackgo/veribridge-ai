@@ -257,6 +257,65 @@ _KNOWN_PLACES = {
 }
 _MAX_PLACE_WORDS = 2
 
+# Location aliases → canonical _KNOWN_PLACES entry. USPS state abbreviations
+# plus the informal spellings recruiters actually type. Deliberately NOT
+# honored as bare tokens: two-letter codes collide with the OR operator
+# ("or" = Oregon), the preposition "in" (= Indiana), and skills/stopwords
+# ("ai", "ok", "me", "hi", "id", "co", "de", "la", "pa", "ga"…). An alias is
+# resolved ONLY in an explicit location context:
+#   (i)  immediately after a _LOCATION_STARTERS phrase or the "in <place>"
+#        preposition branch ("based in MA", "engineer in GA"), or
+#   (ii) comma-adjacent after a token that already resolved to a known place
+#        ("Boston, MA" — the state suffix is consumed, the CITY stays the
+#        location, and "ma" never leaks into residual_terms).
+# Everywhere else a two-letter code stays an ordinary token (usually residual
+# — honestly surfaced, never silently guessed). "sf" is intentionally absent:
+# San Francisco is not in the closed place vocabulary, so the alias would
+# have nothing canonical to resolve to.
+_PLACE_ALIASES: dict[str, str] = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
+    "ca": "california", "co": "colorado", "ct": "connecticut",
+    "de": "delaware", "fl": "florida", "ga": "georgia", "hi": "hawaii",
+    "id": "idaho", "il": "illinois", "in": "indiana", "ia": "iowa",
+    "ks": "kansas", "ky": "kentucky", "la": "louisiana", "me": "maine",
+    "md": "maryland", "ma": "massachusetts", "mi": "michigan",
+    "mn": "minnesota", "ms": "mississippi", "mo": "missouri",
+    "mt": "montana", "ne": "nebraska", "nv": "nevada",
+    "nh": "new hampshire", "nj": "new jersey", "nm": "new mexico",
+    "ny": "new york", "nc": "north carolina", "nd": "north dakota",
+    "oh": "ohio", "ok": "oklahoma", "or": "oregon", "pa": "pennsylvania",
+    "ri": "rhode island", "sc": "south carolina", "sd": "south dakota",
+    "tn": "tennessee", "tx": "texas", "ut": "utah", "vt": "vermont",
+    "va": "virginia", "wa": "washington", "wv": "west virginia",
+    "wi": "wisconsin", "wy": "wyoming",
+    # Informal long-form aliases (no two-letter collision risk).
+    "mass": "massachusetts",
+    "nyc": "new york",
+}
+
+# Public name for the matcher side (recruiter_search_service canonicalizes
+# stored profile location strings through the SAME table so "massachusetts"
+# matches a stored "Boston, MA").
+PLACE_ALIASES = _PLACE_ALIASES
+
+# The 50 full state names (alias targets that are states — used to decide
+# whether a comma-suffix token is a "City, ST" state suffix).
+_STATE_NAMES = frozenset(
+    v for k, v in _PLACE_ALIASES.items() if len(k) == 2
+)
+
+# Aliases long enough to be honored WITHOUT a location context ("mass",
+# "nyc") — but only if the taxonomy does not claim the term as a concept:
+# a skill phrase always wins; the alias table must never shadow one.
+_BARE_SAFE_ALIASES = frozenset(
+    a for a in _PLACE_ALIASES if len(a) > 2 and a not in PHRASE_TO_CONCEPT
+)
+
+# Tokens NEVER honored as a state alias even in a location context:
+# "or" is unconditionally the OR-group operator ("based in or near Boston"
+# is real English; Oregon must be spelled out or comma-suffixed elsewhere).
+_ALIAS_NEVER = frozenset({"or"})
+
 _MODE_MARKERS: dict[str, str] = (
     {p: "excluded" for p in _NEGATION_STARTERS}
     | {p: "preferred" for p in _PREFER_STARTERS}
@@ -438,6 +497,46 @@ def _place_at(tokens: list[str], i: int) -> tuple[str, int] | None:
     return None
 
 
+def _alias_state_at(
+    tokens: list[str], i: int, exclude: frozenset[str] = frozenset()
+) -> str | None:
+    """Resolve ``tokens[i]`` through _PLACE_ALIASES *in a location context*.
+
+    Only call sites that already establish location intent (after a
+    _LOCATION_STARTERS phrase, after the "in" preposition, or in a
+    "City, ST" comma suffix) may use this. A term the taxonomy claims as a
+    concept is never resolved (concept wins — "in AI" stays the skill, never
+    Indiana), and _ALIAS_NEVER tokens are always refused.
+    """
+    if i >= len(tokens):
+        return None
+    token = tokens[i]
+    if token in _ALIAS_NEVER or token in exclude:
+        return None
+    if token in PHRASE_TO_CONCEPT:
+        return None
+    return _PLACE_ALIASES.get(token)
+
+
+def _consume_state_suffix(tokens: list[str], k: int) -> int:
+    """Consume a ``, <state>`` suffix after a just-resolved place.
+
+    "Boston, MA" / "Worcester, Massachusetts": the state token is understood
+    (so it never leaks into residual_terms) but the more specific CITY stays
+    the location. Returns the index past the suffix, or ``k`` unchanged when
+    no state suffix follows.
+    """
+    if k < len(tokens) and tokens[k] == ",":
+        j = k + 1
+        place = _place_at(tokens, j)
+        if place is not None and place[0] in _STATE_NAMES:
+            return j + place[1]
+        alias = _alias_state_at(tokens, j)
+        if alias is not None and alias in _STATE_NAMES:
+            return j + 1
+    return k
+
+
 def parse_recruiter_query(q: Any, max_length: int = MAX_QUERY_LENGTH) -> dict[str, Any]:
     """Parse a recruiter's free-text request into a structured search plan.
 
@@ -519,9 +618,22 @@ def parse_recruiter_query(q: Any, max_length: int = MAX_QUERY_LENGTH) -> dict[st
             place = _place_at(tokens, j)
             if place is not None:
                 location, place_len = place
-                i = j + place_len
+                i = _consume_state_suffix(tokens, j + place_len)
                 continue
-            if j < n and tokens[j] != "," and tokens[j] not in PHRASE_TO_CONCEPT:
+            # State abbreviation directly after the starter ("based in MA").
+            alias = _alias_state_at(tokens, j)
+            if alias is not None:
+                location = alias
+                i = j + 1
+                continue
+            if (
+                j < n
+                and tokens[j] != ","
+                and tokens[j] not in PHRASE_TO_CONCEPT
+                # Operator/flag tokens are never a location ("based in or
+                # near Boston" must not make "or" the location).
+                and tokens[j] not in ("or", "either", "remote")
+            ):
                 location = tokens[j]
                 i = j + 1
                 continue
@@ -533,7 +645,15 @@ def parse_recruiter_query(q: Any, max_length: int = MAX_QUERY_LENGTH) -> dict[st
             place = _place_at(tokens, i + 1)
             if place is not None:
                 location, place_len = place
-                i = i + 1 + place_len
+                i = _consume_state_suffix(tokens, i + 1 + place_len)
+                continue
+            # "engineer in MA" — the preposition is the location context.
+            # "in" itself is excluded so a doubled "in in" (voice/typo
+            # repetition) never invents Indiana.
+            alias = _alias_state_at(tokens, i + 1, exclude=frozenset({"in"}))
+            if alias is not None:
+                location = alias
+                i = i + 2
                 continue
 
         # A known place mentioned bare ("Massachusetts or remote") — same
@@ -543,7 +663,15 @@ def parse_recruiter_query(q: Any, max_length: int = MAX_QUERY_LENGTH) -> dict[st
             if place is not None:
                 location, place_len = place
                 pending_or = False
-                i += place_len
+                i = _consume_state_suffix(tokens, i + place_len)
+                continue
+            # Long informal aliases ("mass", "nyc") are collision-free and
+            # may resolve bare; two-letter codes NEVER resolve here (bare
+            # "MA" stays an honestly-surfaced residual term).
+            if token in _BARE_SAFE_ALIASES:
+                location = _PLACE_ALIASES[token]
+                pending_or = False
+                i = _consume_state_suffix(tokens, i + 1)
                 continue
 
         # Role phrases (may be longer than an embedded concept — try first).
@@ -655,6 +783,7 @@ __all__ = [
     "INTENT_PROJECT_SEARCH",
     "MAX_BRIEF_LENGTH",
     "MAX_QUERY_LENGTH",
+    "PLACE_ALIASES",
     "classify_intent",
     "describe_group",
     "parse_recruiter_query",

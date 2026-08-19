@@ -582,6 +582,59 @@ def evaluate_candidate_summary(
     }
 
 
+def evaluate_candidate_checklist(
+    db: Any,
+    recruiter_user_id: str,
+    candidate_user_id: str,
+    plan: dict[str, Any],
+) -> dict[str, Any]:
+    """The deterministic single-candidate verification checklist: the
+    requirement axis plus this candidate's live evidence cells.
+
+    This is the interview workspace's backbone — the SAME axis / cell /
+    summary machinery as the comparison matrix, re-run against the live
+    fail-closed triple on every call. When the candidate is no longer
+    publicly comparable (unpublished / excluded / stale disclosure) the
+    checklist fails closed: no cells, ``available=False``, and identity
+    for the summary comes from the recruiter's OWN connection projection —
+    never a stale index row.
+    """
+    plan = sanitize_plan(plan)
+    axis = _requirement_axis(plan)
+    uid = str(candidate_user_id)
+
+    row = live_valid_index_rows(db, [uid]).get(uid)
+    if row is None:
+        identity = None
+        try:
+            from app.services.recruiter_connection_service import (
+                _candidate_summary,
+            )
+
+            identity = _candidate_summary(db, uid)
+        except Exception:
+            identity = None
+        column = _unavailable_column(uid, identity)
+        return {
+            "requirements": axis,
+            "cells": {},
+            "counts": column["counts"],
+            "available": False,
+            "unavailable_note": column["unavailable_note"],
+            "summary": _column_summary(column),
+        }
+
+    column = _candidate_column(row, axis, plan)
+    return {
+        "requirements": axis,
+        "cells": column["cells"],
+        "counts": column["counts"],
+        "available": True,
+        "unavailable_note": None,
+        "summary": _column_summary(column),
+    }
+
+
 def evaluate_matrix(
     db: Any,
     *,
@@ -704,6 +757,7 @@ __all__ = [
     "ComparisonError",
     "MAX_COMPARE_CANDIDATES",
     "MIN_COMPARE_CANDIDATES",
+    "evaluate_candidate_checklist",
     "evaluate_candidate_summary",
     "evaluate_matrix",
     "live_valid_index_rows",

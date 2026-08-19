@@ -70,9 +70,22 @@ logger = logging.getLogger(__name__)
 _BRIEFS_TABLE = "recruiter_hiring_briefs"
 _BRIEF_CANDIDATES_TABLE = "recruiter_hiring_brief_candidates"
 
-# Must stay in sync with the CHECK constraints in migration 068.
+# Must stay in sync with the CHECK constraints in migrations 068/069.
 BRIEF_STATUSES = ("draft", "active", "paused", "closed")
-BRIEF_CANDIDATE_STATUSES = ("saved", "reviewing", "shortlisted", "archived")
+# The ROLE-SCOPED 9-stage pipeline (069 widened the 068 vocabulary; strict
+# superset, ordered for display). Any→any transitions — the activity trail
+# is the audit, not a state machine.
+BRIEF_CANDIDATE_STATUSES = (
+    "saved",
+    "reviewing",
+    "shortlisted",
+    "contacted",
+    "interview",
+    "decision",
+    "hired",
+    "passed",
+    "archived",
+)
 
 MAX_TITLE_LENGTH = 120
 MAX_NOTE_LENGTH = 2000
@@ -562,9 +575,11 @@ def add_brief_candidates(
             "added_at": now,
             "updated_at": now,
         }
+        inserted = False
         try:
             _insert_pool_row(db, row)
             added += 1
+            inserted = True
         except Exception:
             # Two tabs racing the same add: the (brief_id, student_user_id)
             # primary key rejects the loser — the candidate is in the pool
@@ -572,6 +587,14 @@ def add_brief_candidates(
             if _pool_row(db, str(brief["id"]), uid) is None:
                 raise
             already += 1
+        if inserted:
+            # Recruiter-private activity trail (069); never raises. Lazy
+            # import: the interview service imports this module at top level.
+            from app.services.recruiter_interview_service import (
+                record_candidate_event,
+            )
+
+            record_candidate_event(db, str(brief["id"]), uid, "added", {})
         existing_ids.add(uid)
 
     _update_brief_row(
@@ -663,6 +686,7 @@ def update_brief_candidate(
             "candidate_not_found", "This candidate is not in this role."
         )
 
+    previous_status = str(row.get("status") or "saved")
     updates: dict[str, Any] = {"updated_at": _now_iso()}
     if status is not ...:
         if status not in BRIEF_CANDIDATE_STATUSES:
@@ -674,6 +698,21 @@ def update_brief_candidate(
         updates["note"] = str(note or "")[:MAX_NOTE_LENGTH] or None
 
     _update_pool_row(db, str(brief["id"]), str(row["student_user_id"]), updates)
+    if "status" in updates and updates["status"] != previous_status:
+        # Stage moves feed the recruiter-private activity trail (069):
+        # from/to stage names ONLY — never the note text. Lazy import: the
+        # interview service imports this module at top level.
+        from app.services.recruiter_interview_service import (
+            record_candidate_event,
+        )
+
+        record_candidate_event(
+            db,
+            str(brief["id"]),
+            str(row["student_user_id"]),
+            "stage_changed",
+            {"from": previous_status, "to": updates["status"]},
+        )
     refreshed = _pool_row(db, str(brief["id"]), str(row["student_user_id"]))
     return _pool_row_view(
         db,
@@ -691,7 +730,16 @@ def remove_brief_candidate(
     brief = _brief_row(db, recruiter_user_id, brief_id)
     if brief is None:
         return False
-    return _delete_pool_row(db, str(brief["id"]), str(student_user_id or "").strip())
+    uid = str(student_user_id or "").strip()
+    removed = _delete_pool_row(db, str(brief["id"]), uid)
+    if removed:
+        # Lazy import: the interview service imports this module at top level.
+        from app.services.recruiter_interview_service import (
+            record_candidate_event,
+        )
+
+        record_candidate_event(db, str(brief["id"]), uid, "removed", {})
+    return removed
 
 
 # ── Comparison (live view over the brief) ────────────────────────────────────

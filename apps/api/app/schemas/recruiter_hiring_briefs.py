@@ -21,7 +21,19 @@ from app.schemas.recruiter_comparisons import (
 )
 
 BriefStatus = Literal["draft", "active", "paused", "closed"]
-BriefCandidateStatus = Literal["saved", "reviewing", "shortlisted", "archived"]
+# The ROLE-SCOPED 9-stage pipeline (migration 069; strict superset of V3).
+# Must stay in sync with the SQL CHECK and BRIEF_CANDIDATE_STATUSES.
+BriefCandidateStatus = Literal[
+    "saved",
+    "reviewing",
+    "shortlisted",
+    "contacted",
+    "interview",
+    "decision",
+    "hired",
+    "passed",
+    "archived",
+]
 
 
 class CreateHiringBriefRequest(BaseModel):
@@ -50,11 +62,17 @@ class UpdateHiringBriefRequest(BaseModel):
 
 
 class BriefCandidateStatusCounts(BaseModel):
-    """Transparent pool counts by role-scoped status — never a score."""
+    """Transparent pool counts by role-scoped pipeline stage — never a
+    score. One explicit field per stage (closed shape)."""
 
     saved: int = 0
     reviewing: int = 0
     shortlisted: int = 0
+    contacted: int = 0
+    interview: int = 0
+    decision: int = 0
+    hired: int = 0
+    passed: int = 0
     archived: int = 0
 
     model_config = {"extra": "forbid"}

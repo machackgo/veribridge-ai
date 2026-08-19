@@ -451,7 +451,8 @@ def test_add_candidates_idempotent_and_deduped(
     ).json()
     assert listing["total"] == 3
     assert listing["status_counts"] == {
-        "saved": 3, "reviewing": 0, "shortlisted": 0, "archived": 0,
+        "saved": 3, "reviewing": 0, "shortlisted": 0, "contacted": 0,
+        "interview": 0, "decision": 0, "hired": 0, "passed": 0, "archived": 0,
     }
 
 
@@ -522,10 +523,18 @@ def test_role_scoped_status_and_note(client: TestClient, mem_store: dict) -> Non
     assert res.json()["candidate"]["note"] is None
     assert res.json()["candidate"]["status"] == "shortlisted"
 
-    # Unknown status rejected at the schema boundary.
+    # V4 pipeline stages are accepted (9-stage vocabulary, migration 069).
     res = client.patch(
         f"/api/v1/recruiter/briefs/{brief['id']}/candidates/u-alpha",
         json={"status": "hired"},
+    )
+    assert res.status_code == 200
+    assert res.json()["candidate"]["status"] == "hired"
+
+    # Unknown status rejected at the schema boundary.
+    res = client.patch(
+        f"/api/v1/recruiter/briefs/{brief['id']}/candidates/u-alpha",
+        json={"status": "onboarded"},
     )
     assert res.status_code == 422
 
