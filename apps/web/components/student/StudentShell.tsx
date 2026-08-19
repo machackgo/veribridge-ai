@@ -18,6 +18,7 @@
 
 import { Suspense, useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
+import { KeystoneMark } from "../brand"
 import { usePathname, useSearchParams } from "next/navigation"
 import { listVBRProjects, type VBRProjectResponse } from "@/lib/vbr-api"
 import { SignOutButton } from "./SignOutButton"
@@ -296,7 +297,7 @@ export function StudentShell({
             data-testid="student-shell-brand"
             style={{ display: "flex", alignItems: "center", gap: 8 }}
           >
-            <span className="vb-logo" aria-hidden />
+            <KeystoneMark size={24} tone="light" />
             <span style={{ fontWeight: 700, fontSize: 14, color: "var(--ink)" }}>VeriBridge</span>
             <span className="vb-eyebrow" style={{ fontSize: 10 }}>
               Student

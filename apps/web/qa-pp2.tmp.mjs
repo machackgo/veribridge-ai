@@ -1,0 +1,11 @@
+import { chromium } from "@playwright/test";
+const OUT = "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-landing/05155df8-7ef5-4e8f-992f-c60a84066cc9/scratchpad";
+const browser = await chromium.launch();
+const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+const page = await ctx.newPage();
+await page.goto("https://veribridgeai.com/p/ZwC_0l8HutI", { waitUntil: "domcontentloaded", timeout: 60000 });
+await page.getByTestId("passport-identity-header").waitFor({ timeout: 90000 });
+await page.waitForTimeout(1200);
+await page.screenshot({ path: `${OUT}/prodbrand-passport.png` });
+console.log("passport header rendered");
+await ctx.close(); await browser.close();

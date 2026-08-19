@@ -38,6 +38,7 @@ import {
   type BadgeTone,
 } from "../../../../components/passport/shared"
 import { recordPublicPassportView } from "@/lib/passport-view-beacon"
+import { VeriBridgeBrand } from "../../../../components/brand"
 import { EvidenceTraceList } from "../../../../components/passport/EvidenceTrace"
 import { SaveCandidateButton } from "../../../../components/recruiter/SaveCandidateButton"
 import { ProjectDefenseInspectionSection } from "../../../../components/passport/ProjectDefenseInspectionCard"
@@ -682,6 +683,13 @@ function TransparencySection({ passport }: { passport: PublicWorkPassport }) {
   const [open, setOpen] = useState(false)
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <a
+        href="/"
+        aria-label="VeriBridge home"
+        style={{ alignSelf: "center", textDecoration: "none" }}
+      >
+        <VeriBridgeBrand markSize={18} tone="light" fontSize={13} />
+      </a>
       <p className={styles.footNote} data-testid="public-passport-disclosure" style={{ textAlign: "center" }}>
         VeriBridge summarizes evidence submitted by the candidate. Recruiters should review linked
         reports and public sources before making decisions.

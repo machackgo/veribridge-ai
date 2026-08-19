@@ -1,102 +1,87 @@
 import { expect, test } from "@playwright/test";
 
-test.describe("Proof-of-Skill section — interactive skill tabs", () => {
+/* ── Landing v2 — interactive product demonstrations ── */
+
+test.describe("Work Passport demo", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
-    // Scroll to the proof section so it's in view
-    await page.locator("#proof").scrollIntoViewIfNeeded();
+    await page.getByTestId("passport-demo").scrollIntoViewIfNeeded();
   });
 
-  test("Docker tab is selected by default", async ({ page }) => {
-    const dockerTab = page.getByRole("tab", { name: /Docker/i });
-    await expect(dockerTab).toHaveAttribute("aria-selected", "true");
+  test("renders the fixture passport with skills and projects", async ({
+    page,
+  }) => {
+    const demo = page.getByTestId("passport-demo");
+    await expect(demo.getByText("Verified Work Passport")).toBeVisible();
+    await expect(
+      demo.getByRole("listitem").filter({ hasText: "Machine Learning" }),
+    ).toBeVisible();
+    await expect(demo.getByText("sign-language-translator")).toBeVisible();
   });
 
-  test("Clicking React tab updates evidence panel", async ({ page }) => {
-    const reactTab = page.getByRole("tab", { name: /React/i });
-    await reactTab.click();
-    await expect(reactTab).toHaveAttribute("aria-selected", "true");
-
-    const panel = page.getByRole("tabpanel");
-    await expect(panel).toBeVisible();
-    await expect(panel.getByRole("heading", { level: 3 })).toContainText("React");
+  test("skill without evidence is labeled claimed only", async ({ page }) => {
+    const nlp = page
+      .getByTestId("passport-demo")
+      .getByRole("listitem")
+      .filter({ hasText: "NLP" });
+    await expect(nlp).toContainText("claimed only");
   });
 
-  test("Clicking Distributed Systems tab updates evidence panel", async ({ page }) => {
-    const tab = page.getByRole("tab", { name: /Distributed Systems/i });
-    await tab.click();
-    await expect(tab).toHaveAttribute("aria-selected", "true");
+  test("selecting a skill dims unrelated projects", async ({ page }) => {
+    const demo = page.getByTestId("passport-demo");
+    // Focus (keyboard path) is deterministic under entry animations,
+    // and doubles as an a11y check for the hover interaction.
+    await demo
+      .getByRole("listitem")
+      .filter({ hasText: "Machine Learning" })
+      .focus();
+    const events = demo
+      .locator(".lv-passport-project")
+      .filter({ hasText: "campus-events-api" });
+    await expect(events).toHaveAttribute("data-dim", "true");
+  });
+});
 
-    const panel = page.getByRole("tabpanel");
-    await expect(panel.getByRole("heading", { level: 3 })).toContainText("Distributed Systems");
+test.describe("Recruiter search demo", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("recruiter-demo").scrollIntoViewIfNeeded();
   });
 
-  test("Clicking Machine Learning tab shows pending state", async ({ page }) => {
-    const tab = page.getByRole("tab", { name: /Machine Learning/i });
-    await tab.click();
-    await expect(tab).toHaveAttribute("aria-selected", "true");
-
-    const panel = page.getByRole("tabpanel");
-    await expect(panel.getByRole("heading", { level: 3 })).toContainText("Machine Learning");
-    // ML is pending — check the specific status badge, not any text node
-    await expect(panel.getByTestId("skill-status-badge")).toHaveText("Pending");
+  test("plays through to a candidate result with requirement states", async ({
+    page,
+  }) => {
+    const demo = page.getByTestId("recruiter-demo");
+    await expect(demo.getByText("Maya Chen")).toBeVisible({ timeout: 15000 });
+    await expect(
+      demo.getByRole("listitem").filter({ hasText: "Python" }),
+    ).toContainText("Published evidence");
+    await expect(
+      demo.getByRole("listitem").filter({ hasText: "NLP" }),
+    ).toContainText("No published evidence");
   });
 
-  test("Clicking SQL & Postgres tab updates evidence panel", async ({ page }) => {
-    const tab = page.getByRole("tab", { name: /SQL/i });
-    await tab.click();
-    await expect(tab).toHaveAttribute("aria-selected", "true");
-
-    const panel = page.getByRole("tabpanel");
-    await expect(panel.getByRole("heading", { level: 3 })).toContainText("SQL");
+  test("View Proof expands the evidence panel", async ({ page }) => {
+    const demo = page.getByTestId("recruiter-demo");
+    const viewProof = demo.getByRole("button", { name: "View Proof" });
+    await viewProof.click({ timeout: 15000 });
+    await expect(demo.getByText("Recorded defense · 12 min")).toBeVisible();
+    await expect(
+      demo.getByRole("button", { name: "Hide proof" }),
+    ).toHaveAttribute("aria-expanded", "true");
   });
 
-  test("All 5 skill tabs are present and clickable", async ({ page }) => {
-    const tabs = page.getByRole("tab");
-    await expect(tabs).toHaveCount(5);
-    for (let i = 0; i < 5; i++) {
-      const tab = tabs.nth(i);
-      await expect(tab).toBeVisible();
-      await expect(tab).toBeEnabled();
-    }
+  test("Save Candidate toggles saved state", async ({ page }) => {
+    const demo = page.getByTestId("recruiter-demo");
+    const save = demo.getByRole("button", { name: "Save Candidate" });
+    await save.click({ timeout: 15000 });
+    await expect(demo.getByRole("button", { name: /Saved/ })).toBeVisible();
   });
 
-  test("Evidence cards are rendered as clickable links", async ({ page }) => {
-    // Default Docker tab — evidence cards should be <a> or Next.js <Link>
-    const evCards = page.locator(".cp-ev-card");
-    const count = await evCards.count();
-    expect(count).toBeGreaterThan(0);
-    for (let i = 0; i < count; i++) {
-      const card = evCards.nth(i);
-      // Each card should be either an anchor or have a parent anchor
-      const tagName = await card.evaluate((el) => el.tagName.toLowerCase());
-      expect(["a"]).toContain(tagName);
-    }
-  });
-
-  test("GitHub Repo evidence card opens external link", async ({ page }) => {
-    const githubCard = page.locator(".cp-ev-card").filter({ hasText: "GitHub Repo" }).first();
-    const href = await githubCard.getAttribute("href");
-    // Should be an external link (https://)
-    expect(href).toMatch(/^https?:\/\//);
-    const target = await githubCard.getAttribute("target");
-    expect(target).toBe("_blank");
-  });
-
-  test("Coursework evidence card links to /dashboard/profile", async ({ page }) => {
-    const courseworkCard = page.locator(".cp-ev-card").filter({ hasText: "Coursework" }).first();
-    const href = await courseworkCard.getAttribute("href");
-    expect(href).toBe("/dashboard/profile");
-  });
-
-  test("switching tabs changes evidence count in panel heading", async ({ page }) => {
-    // Docker: 4 sources
-    let panel = page.getByRole("tabpanel");
-    await expect(panel.locator("text=4 evidence sources")).toBeVisible();
-
-    // Click SQL → 2 sources
-    await page.getByRole("tab", { name: /SQL/i }).click();
-    panel = page.getByRole("tabpanel");
-    await expect(panel.locator("text=2 evidence source")).toBeVisible();
+  test("demo never shows scores or percentages", async ({ page }) => {
+    const demo = page.getByTestId("recruiter-demo");
+    await expect(demo.getByText("Maya Chen")).toBeVisible({ timeout: 15000 });
+    const text = await demo.innerText();
+    expect(text).not.toMatch(/\d+%/);
   });
 });

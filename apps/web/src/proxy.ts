@@ -66,6 +66,10 @@ export async function proxy(request: NextRequest) {
     pathname === "/privacy" ||
     pathname === "/robots.txt" ||
     pathname === "/sitemap.xml" ||
+    pathname === "/icon.svg" ||
+    pathname === "/apple-icon.png" ||
+    // Static Keystone V brand assets (favicon/social/og images)
+    pathname.startsWith("/brand/") ||
     pathname === "/extension" ||
     pathname.startsWith("/extension/") ||
     pathname.startsWith("/auth/") ||

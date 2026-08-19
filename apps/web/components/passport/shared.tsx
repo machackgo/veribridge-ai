@@ -3,6 +3,7 @@
 import type { ReactNode } from "react"
 
 import type { PassportIdentity } from "@/lib/vbr-api"
+import { KeystoneMark } from "../brand"
 
 // ── Design tokens (match globals.css variables) ──────────────────────────
 
@@ -403,8 +404,19 @@ export function PassportIdentityHeader({
           flexWrap: "wrap",
         }}
       >
-        <Mono style={{ fontSize: 11, letterSpacing: "0.16em", color: TOKEN.indigo, textTransform: "uppercase" }}>
-          🪪 VeriBridge AI · {verification}
+        <Mono
+          style={{
+            fontSize: 11,
+            letterSpacing: "0.16em",
+            color: TOKEN.indigo,
+            textTransform: "uppercase",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <KeystoneMark size={14} tone="light" />
+          VeriBridge AI · {verification}
         </Mono>
         {status && (
           <span data-testid="passport-identity-status">

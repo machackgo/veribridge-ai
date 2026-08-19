@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
+import { KeystoneMark } from "../../../components/brand"
 
 type Step = "email" | "otp"
 
@@ -59,24 +60,7 @@ function getOtpSendErrorMessage(err: unknown) {
 function Logo() {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 32 }}>
-      <div
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: "50%",
-          background: "linear-gradient(135deg, #4361ee 0%, #3730a3 100%)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontWeight: 700,
-          fontSize: 14,
-          color: "#fff",
-          letterSpacing: "-0.5px",
-          flexShrink: 0,
-        }}
-      >
-        vb
-      </div>
+      <KeystoneMark size={40} tone="light" style={{ flexShrink: 0 }} />
       <span
         style={{
           fontWeight: 700,
