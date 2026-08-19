@@ -20,11 +20,26 @@ import type {
 } from "@/lib/recruiter-search-api"
 
 export type BriefStatus = "draft" | "active" | "paused" | "closed"
-export type BriefCandidateStatus =
-  | "saved"
-  | "reviewing"
-  | "shortlisted"
-  | "archived"
+
+/**
+ * The role-scoped pipeline vocabulary, in pipeline order (V4).
+ * `passed` = considered and declined for THIS role; `archived` = parked
+ * without a decision. Any→any transitions are allowed — the activity trail
+ * is the audit, not a state machine.
+ */
+export const CANDIDATE_STAGE_ORDER = [
+  "saved",
+  "reviewing",
+  "shortlisted",
+  "contacted",
+  "interview",
+  "decision",
+  "hired",
+  "passed",
+  "archived",
+] as const
+
+export type BriefCandidateStatus = (typeof CANDIDATE_STAGE_ORDER)[number]
 
 export interface RequirementsInput {
   required?: (string | string[])[]
@@ -65,6 +80,11 @@ export interface BriefStatusCounts {
   saved: number
   reviewing: number
   shortlisted: number
+  contacted: number
+  interview: number
+  decision: number
+  hired: number
+  passed: number
   archived: number
 }
 
@@ -222,25 +242,50 @@ export interface BriefComparisonResponse {
   matrix: ComparisonMatrix
 }
 
-async function parseErrorMessage(res: Response, fallback: string): Promise<string> {
+/**
+ * A non-OK Hiring Briefs API response, carrying the machine-readable
+ * `detail.code` (e.g. "too_few_candidates") alongside the human message so
+ * views can branch on WHY a request failed instead of pattern-matching
+ * error prose. `code` is null when the API sent no structured code.
+ */
+export class BriefApiError extends Error {
+  code: string | null
+
+  constructor(message: string, code: string | null = null) {
+    super(message)
+    this.name = "BriefApiError"
+    this.code = code
+  }
+}
+
+async function parseErrorDetail(
+  res: Response,
+  fallback: string,
+): Promise<{ message: string; code: string | null }> {
   try {
-    const body = (await res.json()) as { detail?: { message?: string } | string }
-    const detail = body?.detail
-    if (detail && typeof detail === "object" && typeof detail.message === "string") {
-      return detail.message
+    const body = (await res.json()) as {
+      detail?: { message?: string; code?: string } | string
     }
-    if (typeof detail === "string") return detail
+    const detail = body?.detail
+    if (detail && typeof detail === "object") {
+      return {
+        message: typeof detail.message === "string" ? detail.message : fallback,
+        code: typeof detail.code === "string" ? detail.code : null,
+      }
+    }
+    if (typeof detail === "string") return { message: detail, code: null }
   } catch {
     // response body was not JSON — fall back to generic message
   }
-  return fallback
+  return { message: fallback, code: null }
 }
 
 async function request<T>(path: string, init: RequestInit | undefined, fallback: string): Promise<T> {
   const res = await fetchAPI(path, init)
   if (res.status === 401) throw new AuthRequiredError()
   if (!res.ok) {
-    throw new Error(await parseErrorMessage(res, fallback))
+    const { message, code } = await parseErrorDetail(res, fallback)
+    throw new BriefApiError(message, code)
   }
   return res.json() as Promise<T>
 }
@@ -369,6 +414,165 @@ export async function getBriefComparison(
     undefined,
     "Failed to load the comparison.",
   )
+}
+
+// ── Interview workspace (V4) ─────────────────────────────────────────────
+//
+// Everything below is RECRUITER-PRIVATE hiring context: prep/interview/
+// decision notes, per-requirement interview marks, generated questions and
+// the activity trail are never candidate-visible and never become public
+// evidence. The checklist itself is recomputed live from PUBLISHED evidence
+// on every load (fail-closed) — nothing is snapshotted.
+
+export type InterviewMarkState = "discussed" | "verified" | "follow_up"
+
+export interface InterviewMark {
+  requirement_key: string
+  state: InterviewMarkState
+  marked_at: string | null
+}
+
+/** The live, deterministic verification checklist for one (brief, candidate). */
+export interface InterviewChecklist {
+  requirements: MatrixRequirement[]
+  cells: Record<string, MatrixCell>
+  counts: BriefColumnCounts
+  available: boolean
+  unavailable_note: string | null
+  summary: string
+}
+
+export interface InterviewRecord {
+  scheduled_at: string | null
+  interviewer_name: string | null
+  prep_notes: string | null
+  notes: string | null
+  decision_notes: string | null
+  updated_at: string | null
+}
+
+export interface InterviewQuestionGrounding {
+  requirement_display: string
+  state: MatrixCellState
+  matched_label: string | null
+  evidence_sources: string[]
+  project_titles: string[]
+  proof_path: string | null
+}
+
+export interface InterviewQuestion {
+  id: string
+  requirement_key: string
+  /** "evidence" = grounded in published proof; "gap" = verify in interview. */
+  kind: "evidence" | "gap"
+  question: string
+  grounding: InterviewQuestionGrounding
+  /** False when the cited evidence is no longer published (re-graded on load). */
+  evidence_available: boolean
+}
+
+export interface InterviewQuestions {
+  items: InterviewQuestion[]
+  source: "llm" | "deterministic"
+  generated_at: string | null
+  fallback_reason: string | null
+}
+
+export interface InterviewActivityEvent {
+  event_type: string
+  detail: Record<string, unknown>
+  created_at: string | null
+}
+
+export interface InterviewWorkspace {
+  brief: HiringBriefListItem
+  candidate: BriefCandidateIdentity
+  pool_status: BriefCandidateStatus
+  checklist: InterviewChecklist
+  marks: InterviewMark[]
+  interview: InterviewRecord | null
+  questions: InterviewQuestions | null
+  activity: InterviewActivityEvent[]
+}
+
+/** Partial update over the interview row; `clear_*` empties a field. */
+export interface InterviewPatch {
+  scheduled_at?: string
+  interviewer_name?: string
+  prep_notes?: string
+  notes?: string
+  decision_notes?: string
+  clear_scheduled_at?: boolean
+  clear_interviewer_name?: boolean
+  clear_prep_notes?: boolean
+  clear_notes?: boolean
+  clear_decision_notes?: boolean
+}
+
+function interviewPath(briefId: string, studentUserId: string, suffix = ""): string {
+  return `/api/v1/recruiter/briefs/${encodeURIComponent(briefId)}/candidates/${encodeURIComponent(studentUserId)}/interview${suffix}`
+}
+
+/** The full interview workspace: live checklist, marks, notes, questions, activity. */
+export async function getInterviewWorkspace(
+  briefId: string,
+  studentUserId: string,
+): Promise<InterviewWorkspace> {
+  return request<InterviewWorkspace>(
+    interviewPath(briefId, studentUserId),
+    undefined,
+    "Failed to load the interview workspace.",
+  )
+}
+
+/** Autosave-friendly partial upsert of the recruiter-private interview row. */
+export async function updateInterview(
+  briefId: string,
+  studentUserId: string,
+  patch: InterviewPatch,
+): Promise<InterviewRecord> {
+  const body = await request<{ interview: InterviewRecord } | InterviewRecord>(
+    interviewPath(briefId, studentUserId),
+    { method: "PATCH", body: JSON.stringify(patch) },
+    "Failed to save interview notes.",
+  )
+  return "interview" in body ? body.interview : body
+}
+
+/**
+ * Generate (or return stored, unless `regenerate`) evidence-grounded
+ * interview questions. LLM failure degrades silently to the deterministic
+ * set with an honest `fallback_reason` — never an error.
+ */
+export async function generateInterviewQuestions(
+  briefId: string,
+  studentUserId: string,
+  params: { regenerate?: boolean } = {},
+): Promise<InterviewQuestions> {
+  const body = await request<{ questions: InterviewQuestions } | InterviewQuestions>(
+    interviewPath(briefId, studentUserId, "/questions"),
+    { method: "POST", body: JSON.stringify(params) },
+    "Failed to generate interview questions.",
+  )
+  return "questions" in body ? body.questions : body
+}
+
+/**
+ * Set (or clear, with state null) one recruiter-private checklist mark.
+ * Body, not path param — requirement keys contain `:` and `|`.
+ * Returns the updated marks list.
+ */
+export async function setChecklistMark(
+  briefId: string,
+  studentUserId: string,
+  params: { requirement_key: string; state: InterviewMarkState | null },
+): Promise<InterviewMark[]> {
+  const body = await request<{ marks: InterviewMark[] } | InterviewMark[]>(
+    interviewPath(briefId, studentUserId, "/checklist"),
+    { method: "POST", body: JSON.stringify(params) },
+    "Failed to save the checklist mark.",
+  )
+  return Array.isArray(body) ? body : (body.marks ?? [])
 }
 
 /**

@@ -8,7 +8,7 @@
  * in-role annotation and add-to-role.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const routerPush = vi.fn()
@@ -51,6 +51,7 @@ import {
   type BriefCandidate,
   type BriefCandidatesResponse,
   type BriefComparisonResponse,
+  type BriefStatusCounts,
   type HiringBrief,
   type HiringBriefListItem,
   type RequirementsView,
@@ -92,6 +93,19 @@ const REQUIREMENTS_VIEW: RequirementsView = {
   unrecognized_terms: [],
 }
 
+/** All-zero 9-stage role-scoped counts (V4 pipeline vocabulary). */
+const ZERO_COUNTS: BriefStatusCounts = {
+  saved: 0,
+  reviewing: 0,
+  shortlisted: 0,
+  contacted: 0,
+  interview: 0,
+  decision: 0,
+  hired: 0,
+  passed: 0,
+  archived: 0,
+}
+
 const BRIEF: HiringBrief = {
   id: "brief-1",
   title: "AI Engineer — Fall 2026",
@@ -99,7 +113,7 @@ const BRIEF: HiringBrief = {
   status: "active",
   requirements_view: REQUIREMENTS_VIEW,
   candidate_count: 2,
-  status_counts: { saved: 1, reviewing: 0, shortlisted: 1, archived: 0 },
+  status_counts: { ...ZERO_COUNTS, saved: 1, shortlisted: 1 },
   created_at: "2026-08-18T00:00:00+00:00",
   updated_at: "2026-08-18T00:00:00+00:00",
 }
@@ -184,7 +198,7 @@ const BRAVO: BriefCandidate = {
 const POOL: BriefCandidatesResponse = {
   candidates: [ALPHA, BRAVO],
   total: 2,
-  status_counts: { saved: 1, reviewing: 0, shortlisted: 1, archived: 0 },
+  status_counts: { ...ZERO_COUNTS, saved: 1, shortlisted: 1 },
 }
 
 const CONNECTION_OUTSIDE_POOL: RecruiterConnection = {
@@ -464,14 +478,20 @@ describe("BriefDetailView", () => {
     expect(chips).toContain("Live deployed project")
   })
 
-  it("shows pool candidates with role-scoped status and live evaluation", async () => {
+  it("shows the pipeline: stage-grouped candidates with live evaluation", async () => {
     render(<BriefDetailView briefId="brief-1" />)
 
     const cards = await screen.findAllByTestId("brief-candidate-card")
     expect(cards).toHaveLength(2)
-    expect(screen.getByText("Alpha Candidate")).toBeInTheDocument()
-    const badges = screen.getAllByTestId("brief-candidate-status-badge")
-    expect(badges[0]).toHaveTextContent("Shortlisted")
+
+    // Candidates are grouped into stage sections, in pipeline order
+    // (saved before shortlisted) — only non-empty stages render sections.
+    const savedSection = screen.getByTestId("brief-stage-section-saved")
+    const shortlistedSection = screen.getByTestId("brief-stage-section-shortlisted")
+    expect(within(savedSection).getByText("Bravo Candidate")).toBeInTheDocument()
+    expect(within(shortlistedSection).getByText("Alpha Candidate")).toBeInTheDocument()
+    expect(screen.queryByTestId("brief-stage-section-hired")).not.toBeInTheDocument()
+
     expect(screen.getByTestId("brief-candidate-evaluation")).toHaveTextContent(
       "2 of 2 required proven",
     )
@@ -480,25 +500,104 @@ describe("BriefDetailView", () => {
     expect(screen.getByTestId("brief-candidate-note")).toHaveTextContent(
       "Strong FastAPI + ML.",
     )
+    // Every card links to its interview workspace.
+    expect(
+      within(shortlistedSection).getByTestId("brief-candidate-interview-link"),
+    ).toHaveAttribute("href", "/recruiters/briefs/brief-1/interview/u-alpha")
   })
 
-  it("updates a candidate's ROLE-SCOPED status", async () => {
+  it("renders the 9-stage summary bar with live counts and filters by stage", async () => {
     render(<BriefDetailView briefId="brief-1" />)
     await screen.findAllByTestId("brief-candidate-card")
 
-    fireEvent.click(screen.getAllByTestId("brief-candidate-set-reviewing")[0])
+    // All 9 stages render as count pills — empty stages included.
+    const bar = screen.getByTestId("brief-stage-bar")
+    expect(within(bar).getByTestId("brief-stage-pill-all")).toHaveTextContent("All · 2")
+    expect(within(bar).getByTestId("brief-stage-pill-saved")).toHaveTextContent("Saved · 1")
+    expect(within(bar).getByTestId("brief-stage-pill-shortlisted")).toHaveTextContent(
+      "Shortlisted · 1",
+    )
+    for (const stage of [
+      "reviewing", "contacted", "interview", "decision", "hired", "passed", "archived",
+    ]) {
+      expect(within(bar).getByTestId(`brief-stage-pill-${stage}`)).toHaveTextContent("· 0")
+    }
+
+    // Filtering to one stage hides the other sections.
+    const savedPill = within(bar).getByTestId("brief-stage-pill-saved")
+    fireEvent.click(savedPill)
+    expect(savedPill).toHaveAttribute("aria-pressed", "true")
+    expect(screen.getByTestId("brief-stage-section-saved")).toBeInTheDocument()
+    expect(screen.queryByTestId("brief-stage-section-shortlisted")).not.toBeInTheDocument()
+
+    // An empty stage filter shows a calm empty line, not a blank page.
+    fireEvent.click(within(bar).getByTestId("brief-stage-pill-hired"))
+    expect(screen.getByTestId("brief-stage-filter-empty")).toHaveTextContent("Hired")
+
+    // Clicking the active pill returns to All.
+    fireEvent.click(within(bar).getByTestId("brief-stage-pill-hired"))
+    expect(screen.getAllByTestId("brief-candidate-card")).toHaveLength(2)
+  })
+
+  it("updates a candidate's ROLE-SCOPED stage through the accessible select", async () => {
+    mockUpdateCandidate.mockResolvedValue({ ...ALPHA, status: "contacted" })
+    render(<BriefDetailView briefId="brief-1" />)
+    await screen.findAllByTestId("brief-candidate-card")
+
+    const alphaCard = within(
+      screen.getByTestId("brief-stage-section-shortlisted"),
+    ).getByTestId("brief-candidate-card")
+    const select = within(alphaCard).getByTestId("brief-candidate-stage-select")
+    // The select carries the full 9-stage vocabulary.
+    expect(within(select).getAllByRole("option").map((o) => (o as HTMLOptionElement).value)).toEqual([
+      "saved", "reviewing", "shortlisted", "contacted", "interview",
+      "decision", "hired", "passed", "archived",
+    ])
+
+    fireEvent.change(select, { target: { value: "contacted" } })
     await waitFor(() =>
       expect(mockUpdateCandidate).toHaveBeenCalledWith("brief-1", "u-alpha", {
-        status: "reviewing",
+        status: "contacted",
       }),
     )
+    // The card moves to its new stage section; counts follow.
+    await waitFor(() =>
+      expect(screen.getByTestId("brief-stage-section-contacted")).toBeInTheDocument(),
+    )
+    expect(screen.getByTestId("brief-stage-pill-contacted")).toHaveTextContent(
+      "Contacted · 1",
+    )
+    expect(screen.queryByTestId("brief-stage-section-shortlisted")).not.toBeInTheDocument()
+  })
+
+  it("reverts an optimistic stage move when the update fails", async () => {
+    mockUpdateCandidate.mockRejectedValue(new Error("network down"))
+    render(<BriefDetailView briefId="brief-1" />)
+    await screen.findAllByTestId("brief-candidate-card")
+
+    const alphaCard = within(
+      screen.getByTestId("brief-stage-section-shortlisted"),
+    ).getByTestId("brief-candidate-card")
+    fireEvent.change(within(alphaCard).getByTestId("brief-candidate-stage-select"), {
+      target: { value: "hired" },
+    })
+
+    // The failed request restores the original stage and explains why.
+    await waitFor(() =>
+      expect(screen.getByTestId("brief-stage-section-shortlisted")).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId("brief-stage-section-hired")).not.toBeInTheDocument()
+    expect(screen.getByText("network down")).toBeInTheDocument()
   })
 
   it("removes a candidate from the role only", async () => {
     render(<BriefDetailView briefId="brief-1" />)
     await screen.findAllByTestId("brief-candidate-card")
 
-    fireEvent.click(screen.getAllByTestId("brief-candidate-remove")[0])
+    const alphaCard = within(
+      screen.getByTestId("brief-stage-section-shortlisted"),
+    ).getByTestId("brief-candidate-card")
+    fireEvent.click(within(alphaCard).getByTestId("brief-candidate-remove"))
     await waitFor(() =>
       expect(mockRemoveCandidate).toHaveBeenCalledWith("brief-1", "u-alpha"),
     )
@@ -545,6 +644,38 @@ describe("BriefDetailView", () => {
     expect(screen.getByTestId("comparison-note")).toHaveTextContent(
       "no longer publicly available",
     )
+  })
+
+  it("shows a calm compare empty state for a small pool without calling the API", async () => {
+    // One comparable candidate (Bravo archived): compare is an invitation,
+    // never an alarming error — and the comparison endpoint is never hit.
+    mockListCandidates.mockResolvedValue({
+      candidates: [ALPHA, { ...BRAVO, status: "archived" }],
+      total: 2,
+      status_counts: { ...ZERO_COUNTS, shortlisted: 1, archived: 1 },
+    })
+    render(<BriefDetailView briefId="brief-1" />)
+    await screen.findByTestId("brief-title")
+
+    fireEvent.click(screen.getByTestId("brief-tab-compare"))
+    const empty = await screen.findByTestId("brief-comparison-empty")
+    expect(empty).toHaveTextContent("Only one candidate in this role")
+    expect(empty).toHaveTextContent("Add at least 2 candidates to compare evidence.")
+    expect(mockComparison).not.toHaveBeenCalled()
+    expect(screen.queryByTestId("brief-comparison-error")).not.toBeInTheDocument()
+  })
+
+  it("treats a server-side too_few_candidates code as an empty state, not an error", async () => {
+    const { BriefApiError } = await import("@/lib/recruiter-briefs-api")
+    mockComparison.mockRejectedValue(
+      new BriefApiError("At least 2 candidates are required.", "too_few_candidates"),
+    )
+    render(<BriefDetailView briefId="brief-1" />)
+    await screen.findByTestId("brief-title")
+
+    fireEvent.click(screen.getByTestId("brief-tab-compare"))
+    expect(await screen.findByTestId("brief-comparison-empty")).toBeInTheDocument()
+    expect(screen.queryByTestId("brief-comparison-error")).not.toBeInTheDocument()
   })
 
   it("runs brief-scoped search and adds a result to the role", async () => {
