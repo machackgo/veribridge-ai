@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { KeystoneMark } from "../brand";
 
 export type NavItem = {
   label: string;
@@ -152,7 +153,7 @@ export function DashboardShell({
             href="/"
             style={{ display: "flex", alignItems: "center", gap: 10, fontWeight: 600, fontSize: 15, color: "var(--ink)", textDecoration: "none" }}
           >
-            <span className="vb-logo" aria-hidden="true" />
+            <KeystoneMark size={24} tone="light" />
             <span>
               VeriBridge
               <span style={{ color: "var(--muted)", fontWeight: 500, marginLeft: 2 }}>AI</span>

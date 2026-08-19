@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import Link from "next/link"
+import { KeystoneMark } from "../../../components/brand"
 
 export default function ExtensionPagesLayout({ children }: { children: ReactNode }) {
   return (
@@ -14,7 +15,19 @@ export default function ExtensionPagesLayout({ children }: { children: ReactNode
           gap: 12,
         }}
       >
-        <Link href="/" style={{ fontWeight: 800, fontSize: 15, color: "#312e81", textDecoration: "none" }}>
+        <Link
+          href="/"
+          style={{
+            fontWeight: 800,
+            fontSize: 15,
+            color: "#312e81",
+            textDecoration: "none",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <KeystoneMark size={20} tone="light" />
           VeriBridge
         </Link>
         <span style={{ color: "#9ca3af", fontSize: 13 }}>/</span>

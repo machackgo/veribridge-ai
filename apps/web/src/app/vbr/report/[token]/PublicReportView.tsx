@@ -35,6 +35,7 @@ import {
 } from "@/lib/vbr-api"
 import { PUBLIC_API_BASE } from "@/lib/api-base"
 import { recordPublicReportView } from "@/lib/report-view-beacon"
+import { KeystoneMark } from "../../../../../components/brand"
 import {
   Badge,
   Card,
@@ -401,7 +402,19 @@ export function PublicReportView({ token }: { token: string }) {
     <div data-testid="public-report" className={styles.page}>
       {/* Header */}
       <div style={{ textAlign: "center", display: "flex", flexDirection: "column", gap: 6 }}>
-        <Mono style={{ fontSize: 11, letterSpacing: "0.16em", color: TOKEN.indigo, textTransform: "uppercase" }}>
+        <Mono
+          style={{
+            fontSize: 11,
+            letterSpacing: "0.16em",
+            color: TOKEN.indigo,
+            textTransform: "uppercase",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            justifyContent: "center",
+          }}
+        >
+          <KeystoneMark size={14} tone="light" />
           VeriBridge AI · Verified Build Report
         </Mono>
         <h1 className={styles.reportTitle}>{report.report_title}</h1>

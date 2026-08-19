@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { getPublicVBRReport, type VBRPublicReportResponse } from "@/lib/vbr-api"
+import { KeystoneMark } from "../../../../components/brand"
 
 const JUDGMENT_LABELS: Record<string, string> = {
   demonstrated: "Demonstrated",
@@ -85,19 +86,7 @@ export default function PublicVBRReportPage() {
           gap: 12,
         }}
       >
-        <div
-          style={{
-            width: 28,
-            height: 28,
-            borderRadius: 7,
-            background: "linear-gradient(135deg,#4f46e5,#8b5cf6)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <span style={{ color: "#fff", fontSize: 14, fontWeight: 800 }}>V</span>
-        </div>
+        <KeystoneMark size={28} tone="dark" />
         <span style={{ color: "#fff", fontWeight: 700, fontSize: 14 }}>VeriBridge AI</span>
         <span style={{ color: "#475569", fontSize: 13 }}>Verified Build Report</span>
       </div>
