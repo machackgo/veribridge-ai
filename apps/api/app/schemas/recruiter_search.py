@@ -108,6 +108,7 @@ class QueryInterpretation(BaseModel):
     role: str | None = None
     seniority: str | None = None
     location: str | None = None
+    remote: bool = False
     residual_terms: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -138,6 +139,10 @@ class SearchResultCandidate(BaseModel):
     evidence_flags: dict[str, bool] = Field(default_factory=dict)
     matched_reasons: list[MatchedReason] = Field(default_factory=list)
     passport_published_at: str | None = None
+    # V3 — set only on brief-scoped searches: whether this candidate is
+    # already in the driving Hiring Brief, and their role-scoped status.
+    in_brief: bool = False
+    brief_status: str | None = None
 
     model_config = {"extra": "forbid"}
 

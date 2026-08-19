@@ -53,6 +53,9 @@ from app.services.recruiter_search_taxonomy import (
 )
 
 MAX_QUERY_LENGTH = 320
+# Hiring-brief descriptions run longer than search queries; the same grammar
+# parses both, callers pick the cap.
+MAX_BRIEF_LENGTH = 600
 
 # ── Vocabulary ────────────────────────────────────────────────────────────────
 
@@ -86,6 +89,8 @@ _INTENT_WORDS = {
     "how", "there", "whats", "everything", "anything", "any", "vbr", "vbrs",
     "what", "you", "your", "prove", "proves", "proved", "proving", "was",
     "were", "all",
+    # Hiring-brief phrasing (V3) — request words, never meaning.
+    "fully", "friendly", "ok", "okay", "somewhere", "anywhere", "open",
 }
 
 # Tokens that read as role nouns when a role phrase did not match; dropped
@@ -151,6 +156,9 @@ _SENIORITY_PHRASES: dict[str, tuple[str, str]] = {
     "internship": ("intern", "Intern"),
     "co op": ("intern", "Co-op / intern"),
     "coop": ("intern", "Co-op / intern"),
+    "senior": ("senior", "Senior"),
+    "mid level": ("mid_level", "Mid-level"),
+    "midlevel": ("mid_level", "Mid-level"),
 }
 
 # Evidence-expectation phrases → evidence requirement keys.
@@ -222,11 +230,32 @@ EVIDENCE_REQUIREMENT_DISPLAY: dict[str, str] = {
 _NEGATION_STARTERS = ("but not", "and not", "not", "without", "excluding", "except", "no")
 _PREFER_STARTERS = (
     "nice to have", "preferably", "prefer", "prefers", "preferred",
-    "ideally", "bonus if", "bonus", "a plus",
+    "ideally", "bonus if", "bonus", "a plus", "optional",
 )
-_REQUIRE_STARTERS = ("must have", "must know", "required", "require", "requires")
+_REQUIRE_STARTERS = (
+    "must have", "must know", "required", "require", "requires",
+    "must haves", "a must",
+)
 
 _LOCATION_STARTERS = ("around", "near", "based in", "located in", "location")
+
+# Places recognized without an explicit location starter ("AI engineer in
+# Massachusetts"). Closed vocabulary so "experience in fintech" can never
+# become a location. Multi-word entries are matched longest-first.
+_KNOWN_PLACES = {
+    "alabama", "alaska", "arizona", "arkansas", "california", "colorado",
+    "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho",
+    "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana",
+    "maine", "maryland", "massachusetts", "michigan", "minnesota",
+    "mississippi", "missouri", "montana", "nebraska", "nevada",
+    "new hampshire", "new jersey", "new mexico", "new york",
+    "north carolina", "north dakota", "ohio", "oklahoma", "oregon",
+    "pennsylvania", "rhode island", "south carolina", "south dakota",
+    "tennessee", "texas", "utah", "vermont", "virginia", "washington",
+    "west virginia", "wisconsin", "wyoming",
+    "boston", "cambridge", "worcester", "springfield",
+}
+_MAX_PLACE_WORDS = 2
 
 _MODE_MARKERS: dict[str, str] = (
     {p: "excluded" for p in _NEGATION_STARTERS}
@@ -310,10 +339,14 @@ def _split_plus(token: str) -> list[str]:
     return [p for p in parts if p]
 
 
-def _tokenize(text: str) -> list[str]:
+def _tokenize(text: str, max_length: int = MAX_QUERY_LENGTH) -> list[str]:
     """Lowercased word tokens with "," kept as a boundary marker."""
-    lowered = str(text or "").strip().lower()[:MAX_QUERY_LENGTH]
+    lowered = str(text or "").strip().lower()[:max_length]
     lowered = lowered.replace("/", " ").replace("&", " and ")
+    # Sentence enders act as mode boundaries exactly like commas ("NLP is
+    # preferred. They should have built…" must not leave preferred mode
+    # running). Word-internal dots ("node.js", "c#.net") are untouched.
+    lowered = re.sub(r"[.;!?](?=\s|$)", " , ", lowered)
     out: list[str] = []
     for raw in _TOKEN_RE.findall(lowered):
         if raw == ",":
@@ -346,7 +379,66 @@ def _phrase_at(
     return None
 
 
-def parse_recruiter_query(q: Any) -> dict[str, Any]:
+# Trailing requirement markers — "NLP is preferred", "Python required",
+# "computer vision optional", "Python and FastAPI are must-haves". The token
+# walk only understands LEADING markers ("preferably NLP"), so these clauses
+# are deterministically rewritten into that form before tokenization. Clause
+# boundaries are periods/semicolons/commas; only a clause that ENDS with the
+# marker is rewritten, so leading-marker phrasing is untouched.
+_TRAILING_REQUIRED_RE = re.compile(
+    r"\s+(?:(?:is|are)\s+)?"
+    r"(?:required|mandatory|a\s+must(?:[-\s]have)?|must[-\s]haves?|non[-\s]?negotiable)"
+    r"\s*$",
+    re.IGNORECASE,
+)
+_TRAILING_PREFERRED_RE = re.compile(
+    r"\s+(?:(?:is|are|would\s+be)\s+(?:really\s+)?nice"
+    r"|(?:(?:is|are|would\s+be)\s+)?"
+    r"(?:preferred|optional|a\s+plus|a\s+bonus|nice[-\s]to[-\s]have))"
+    r"\s*$",
+    re.IGNORECASE,
+)
+_CLAUSE_SPLIT_RE = re.compile(r"([.;,])")
+
+
+def _rewrite_trailing_markers(text: str) -> str:
+    """Normalize trailing-marker clauses into leading-marker form."""
+    parts = _CLAUSE_SPLIT_RE.split(text)
+    out: list[str] = []
+    for part in parts:
+        if part in {".", ";", ","}:
+            out.append(part)
+            continue
+        stripped = part.strip()
+        if not stripped:
+            out.append(part)
+            continue
+        required_match = _TRAILING_REQUIRED_RE.search(stripped)
+        if required_match is not None and stripped[: required_match.start()].strip():
+            out.append(" must have " + stripped[: required_match.start()].strip())
+            continue
+        preferred_match = _TRAILING_PREFERRED_RE.search(stripped)
+        if preferred_match is not None and stripped[: preferred_match.start()].strip():
+            out.append(" preferably " + stripped[: preferred_match.start()].strip())
+            continue
+        out.append(part)
+    return "".join(out)
+
+
+def _place_at(tokens: list[str], i: int) -> tuple[str, int] | None:
+    """Longest known-place match starting at ``tokens[i]`` → (place, words)."""
+    max_len = min(_MAX_PLACE_WORDS, len(tokens) - i)
+    for length in range(max_len, 0, -1):
+        window = tokens[i : i + length]
+        if "," in window:
+            continue
+        phrase = " ".join(window)
+        if phrase in _KNOWN_PLACES:
+            return phrase, length
+    return None
+
+
+def parse_recruiter_query(q: Any, max_length: int = MAX_QUERY_LENGTH) -> dict[str, Any]:
     """Parse a recruiter's free-text request into a structured search plan.
 
     Returns a plain dict (dual-mode friendly):
@@ -359,11 +451,12 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
       role: {"display": str, "hint_concepts": [...]} | None
       seniority: {"key": str, "display": str} | None
       location: str | None
+      remote: bool
       residual_terms: [str, ...]
     """
-    raw = str(q or "").strip()[:MAX_QUERY_LENGTH]
+    raw = str(q or "").strip()[:max_length]
     intent = classify_intent(raw.lower())
-    tokens = _tokenize(raw)
+    tokens = _tokenize(_rewrite_trailing_markers(raw), max_length + 32)
 
     required_groups: list[list[str]] = []
     preferred: list[str] = []
@@ -374,6 +467,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
     role: dict[str, Any] | None = None
     seniority: dict[str, str] | None = None
     location: str | None = None
+    remote = False
 
     seen_concepts: set[str] = set()
     mode_stack = "required"  # required | preferred | excluded
@@ -407,14 +501,49 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
             i += 1
             continue
 
-        # Location: "around Worcester" — take the next non-keyword token.
+        # Remote-friendliness: "Massachusetts or remote", "fully remote".
+        # Stored as a flag on the plan; displayed honestly, never a hard gate
+        # (passports do not declare remote preference).
+        if token == "remote":
+            remote = True
+            pending_or = False
+            i += 1
+            continue
+
+        # Location: "around Worcester" — prefer a known multi-word place,
+        # else take the next non-keyword token.
         loc = _phrase_at(tokens, i, {p: True for p in _LOCATION_STARTERS})
         if loc is not None and location is None:
             _, _, length = loc
             j = i + length
+            place = _place_at(tokens, j)
+            if place is not None:
+                location, place_len = place
+                i = j + place_len
+                continue
             if j < n and tokens[j] != "," and tokens[j] not in PHRASE_TO_CONCEPT:
                 location = tokens[j]
                 i = j + 1
+                continue
+
+        # Bare "in <known place>" ("AI engineer in Massachusetts") — only the
+        # closed place vocabulary, so "experience in fintech" never becomes a
+        # location.
+        if token == "in" and location is None:
+            place = _place_at(tokens, i + 1)
+            if place is not None:
+                location, place_len = place
+                i = i + 1 + place_len
+                continue
+
+        # A known place mentioned bare ("Massachusetts or remote") — same
+        # closed vocabulary.
+        if location is None:
+            place = _place_at(tokens, i)
+            if place is not None:
+                location, place_len = place
+                pending_or = False
+                i += place_len
                 continue
 
         # Role phrases (may be longer than an embedded concept — try first).
@@ -488,7 +617,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
 
     structured = bool(
         required_groups or preferred or excluded or evidence
-        or preferred_evidence or role or seniority or location
+        or preferred_evidence or role or seniority or location or remote
     )
     if not raw:
         mode = "browse"
@@ -509,6 +638,7 @@ def parse_recruiter_query(q: Any) -> dict[str, Any]:
         "role": role,
         "seniority": seniority,
         "location": location,
+        "remote": remote,
         "residual_terms": residual[:12],
     }
 
@@ -523,6 +653,7 @@ __all__ = [
     "INTENT_CANDIDATE_SEARCH",
     "INTENT_EVIDENCE_SEARCH",
     "INTENT_PROJECT_SEARCH",
+    "MAX_BRIEF_LENGTH",
     "MAX_QUERY_LENGTH",
     "classify_intent",
     "describe_group",

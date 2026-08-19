@@ -97,6 +97,7 @@ export interface QueryInterpretation {
   role: string | null
   seniority: string | null
   location: string | null
+  remote: boolean
   residual_terms: string[]
 }
 
@@ -120,6 +121,10 @@ export interface SearchResultCandidate {
   evidence_flags: Partial<Record<EvidenceFilter, boolean>>
   matched_reasons: MatchedReason[]
   passport_published_at: string | null
+  /** Set only on brief-scoped searches: this candidate is already in the
+   * brief's pool, with their ROLE-SCOPED review status. */
+  in_brief: boolean
+  brief_status: string | null
 }
 
 export interface SearchQueryEcho {

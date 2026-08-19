@@ -114,6 +114,7 @@ function response(
       role: null,
       seniority: null,
       location: null,
+      remote: false,
       residual_terms: [],
     },
     evidence: evidenceResults(),
@@ -141,7 +142,8 @@ const BROWSE: RecruiterSearchResponse = {
     role: null,
     seniority: null,
     location: null,
-    residual_terms: [],
+    remote: false,
+      residual_terms: [],
   },
   query: { q: "", terms: [], skills: [], evidence: [], availability: null },
 }
@@ -292,6 +294,8 @@ describe("RecruiterSearchView — evidence discovery", () => {
       evidence_flags: {},
       matched_reasons: [],
       passport_published_at: null,
+      in_brief: false,
+      brief_status: null,
     }
     render(<RecruiterSearchView />)
     await waitFor(() => expect(mockSearch).toHaveBeenCalled())
@@ -314,7 +318,8 @@ describe("RecruiterSearchView — evidence discovery", () => {
           role: null,
           seniority: null,
           location: null,
-          residual_terms: [],
+          remote: false,
+      residual_terms: [],
         },
       }),
     )
