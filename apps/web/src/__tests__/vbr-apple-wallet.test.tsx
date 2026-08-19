@@ -201,7 +201,7 @@ describe("Apple Wallet button gating on /beam", () => {
     expect(screen.queryByTestId("beam-add-to-apple-wallet")).not.toBeInTheDocument()
     // The Beam Card itself is untouched: QR still the revocable short link.
     expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
-      beamShortUrl(BEAM_CODE),
+      `${beamShortUrl(BEAM_CODE)}?src=qr`,
     )
   })
 
@@ -263,7 +263,7 @@ describe("Apple Wallet button when the backend is fully configured", () => {
     expect(screen.getByTestId("beam-copy")).toBeInTheDocument()
     expect(screen.getByTestId("beam-open-public")).toBeInTheDocument()
     expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
-      beamShortUrl(BEAM_CODE),
+      `${beamShortUrl(BEAM_CODE)}?src=qr`,
     )
   })
 

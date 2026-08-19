@@ -331,7 +331,8 @@ describe("Beam Card QR", () => {
     const card = await renderBeam()
     const qr = within(card).getByTestId("beam-card-qr")
     const encoded = qr.getAttribute("data-qr-value") ?? ""
-    expect(encoded).toBe(beamShortUrl(BEAM_CODE))
+    // The QR carries the `src=qr` scan marker on top of the short link.
+    expect(encoded).toBe(`${beamShortUrl(BEAM_CODE)}?src=qr`)
     expect(encoded).toContain(`/b/${BEAM_CODE}`)
     expect(encoded).not.toContain("/p/")
     expect(encoded).not.toContain("/card/")
@@ -355,7 +356,7 @@ describe("Beam Card QR", () => {
     vi.mocked(getOrCreateBeamLink).mockRejectedValue(new Error("beam service down"))
     const card = await renderBeam()
     const encoded = within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")
-    expect(encoded).toBe(publicPassportUrl("slug123"))
+    expect(encoded).toBe(`${publicPassportUrl("slug123")}?src=qr`)
     expect(screen.getByTestId("beam-link-fallback-note")).toHaveTextContent(
       /secure short link unavailable/i,
     )
@@ -368,7 +369,7 @@ describe("Beam Card QR", () => {
     fireEvent.click(screen.getByTestId("beam-link-retry"))
     await waitFor(() =>
       expect(screen.getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
-        beamShortUrl(BEAM_CODE),
+        `${beamShortUrl(BEAM_CODE)}?src=qr`,
       ),
     )
     expect(screen.queryByTestId("beam-link-fallback-note")).not.toBeInTheDocument()
@@ -379,7 +380,7 @@ describe("Beam Card QR", () => {
     vi.mocked(getOrCreateBeamLink).mockRejectedValue(new Error("beam service down"))
     const card = await renderBeam()
     expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
-      beamShortUrl("cachedCode123456"),
+      `${beamShortUrl("cachedCode123456")}?src=qr`,
     )
     // A revocable link is still in play — no fallback warning needed.
     expect(screen.queryByTestId("beam-link-fallback-note")).not.toBeInTheDocument()
@@ -399,7 +400,7 @@ describe("Beam Card QR", () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://veribridgeai.com")
     const card = await renderBeam()
     const encoded = within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value") ?? ""
-    expect(encoded).toBe(`https://veribridgeai.com/b/${BEAM_CODE}`)
+    expect(encoded).toBe(`https://veribridgeai.com/b/${BEAM_CODE}?src=qr`)
     expect(encoded).not.toContain("localhost")
   })
 })
@@ -493,7 +494,7 @@ describe("Beam offline fallback", () => {
     // The offline QR still carries the SHORT link — a revoked code shows the
     // safe inactive page at scan time even from an offline-rendered card.
     expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
-      beamShortUrl(BEAM_CODE),
+      `${beamShortUrl(BEAM_CODE)}?src=qr`,
     )
   })
 
@@ -507,7 +508,7 @@ describe("Beam offline fallback", () => {
 
     const card = await screen.findByTestId("beam-card")
     expect(within(card).getByTestId("beam-card-qr").getAttribute("data-qr-value")).toBe(
-      publicPassportUrl("slug123"),
+      `${publicPassportUrl("slug123")}?src=qr`,
     )
   })
 

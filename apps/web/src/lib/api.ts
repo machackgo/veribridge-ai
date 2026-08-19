@@ -50,7 +50,12 @@ export function buildPublicAppUrl(path: string): string {
  * (e.g. `/api/v1/proofs/...`, backed by `get_optional_user_id`) are NOT
  * listed — anonymous recruiters legitimately call them from public pages.
  */
-const AUTH_REQUIRED_PATH_PREFIXES = ["/api/v1/student", "/api/v1/admin"]
+const AUTH_REQUIRED_PATH_PREFIXES = [
+  "/api/v1/student",
+  "/api/v1/admin",
+  "/api/v1/recruiter/connections",
+  "/api/v1/recruiter/search",
+]
 
 function isAuthRequiredPath(path: string): boolean {
   return AUTH_REQUIRED_PATH_PREFIXES.some((prefix) => path.startsWith(prefix))

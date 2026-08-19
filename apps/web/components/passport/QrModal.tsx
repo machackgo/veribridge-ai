@@ -18,12 +18,18 @@ import { QrCode } from "./QrCode"
  */
 export function QrModal({
   value,
+  qrValue,
   open,
   onClose,
   title = "Scan to open the Work Passport",
   subtitle = "Point a phone camera at the code to open the verified Work Passport.",
 }: {
   value: string | null | undefined
+  /**
+   * Optional QR-only override (e.g. the passport URL stamped with the
+   * `src=qr` scan marker). The visible/copyable link always stays `value`.
+   */
+  qrValue?: string | null
   open: boolean
   onClose: () => void
   title?: string
@@ -91,7 +97,7 @@ export function QrModal({
           <span style={{ fontSize: 12, color: "#6b7280", lineHeight: 1.5 }}>{subtitle}</span>
         </div>
 
-        <QrCode value={value} size={208} data-testid="passport-modal-qr" />
+        <QrCode value={qrValue ?? value} size={208} data-testid="passport-modal-qr" />
 
         {/* Accessible text fallback: the QR is never the only way to the link. */}
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, width: "100%" }}>

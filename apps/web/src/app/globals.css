@@ -71,26 +71,6 @@ html {
     0 12px 24px -12px rgb(10 14 26 / 0.1);
 }
 
-.vb-logo {
-  position: relative;
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border-radius: 7px;
-  background: linear-gradient(135deg, var(--foreground), #2a3050);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.15);
-}
-
-.vb-logo::after {
-  width: 6px;
-  height: 6px;
-  content: "";
-  border-radius: 999px;
-  background: linear-gradient(135deg, var(--indigo), var(--purple));
-  box-shadow: 0 0 12px rgb(79 70 229 / 0.7);
-}
-
 .vb-eyebrow {
   font-family:
     "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;

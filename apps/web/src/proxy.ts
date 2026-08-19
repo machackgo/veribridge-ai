@@ -58,9 +58,18 @@ export async function proxy(request: NextRequest) {
   //   /extension/**       — recorder install help / privacy policy / support
   //                         (must stay public: they are the Chrome Web Store
   //                         listing's privacy-policy and support URLs)
+  //   /privacy            — canonical VeriBridge privacy policy (Chrome Web
+  //                         Store requires it reachable without login)
   const isPublic =
     pathname === "/" ||
     pathname === "/login" ||
+    pathname === "/privacy" ||
+    pathname === "/robots.txt" ||
+    pathname === "/sitemap.xml" ||
+    pathname === "/icon.svg" ||
+    pathname === "/apple-icon.png" ||
+    // Static Keystone V brand assets (favicon/social/og images)
+    pathname.startsWith("/brand/") ||
     pathname === "/extension" ||
     pathname.startsWith("/extension/") ||
     pathname.startsWith("/auth/") ||

@@ -20,6 +20,13 @@ export default function ExtensionPrivacyPolicyPage() {
       <p style={{ ...p, color: "#6b7280" }}>Effective date: August 3, 2026</p>
 
       <p style={p}>
+        This page is the extension-specific privacy policy for the VeriBridge
+        Website Proof Recorder. The full VeriBridge Privacy Policy, which covers
+        the whole platform and incorporates this page, is at{" "}
+        <Link href="/privacy" style={{ color: "#4f46e5" }}>veribridgeai.com/privacy</Link>.
+      </p>
+
+      <p style={p}>
         The VeriBridge Website Proof Recorder (&quot;the recorder&quot;) is a browser
         extension with a single purpose: it records a demonstration session that
         <strong> you</strong> start from your signed-in VeriBridge account and attaches the

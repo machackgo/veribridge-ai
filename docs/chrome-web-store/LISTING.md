@@ -16,7 +16,7 @@ Everything below is copy-paste-ready for the Developer Dashboard. Items marked
 | **Language** | English |
 | **Homepage URL** | https://veribridgeai.com |
 | **Support URL** | https://veribridgeai.com/extension/support |
-| **Privacy policy URL** | https://veribridgeai.com/extension/privacy |
+| **Privacy policy URL** | https://veribridgeai.com/privacy — the canonical VeriBridge Privacy Policy (platform + extension; live since 2026-08-16 after the "Purple Nickel" rejection). Enter this in the item's **Privacy** tab → "Privacy policy" field; do NOT use the homepage, /extension (install help), or /dashboard/privacy (login-walled). https://veribridgeai.com/extension/privacy remains live as the extension-specific policy and is linked from /privacy. |
 | **Support email** | support@veribridgeai.com — live 2026-08-04 via free ImprovMX forwarding (catch-all) to the publisher's monitored Gmail; replies come from the publisher's Gmail for now. Receive-only is sufficient for Chrome Web Store purposes; professional outbound sending FROM the domain is an OPTIONAL post-launch enhancement, not a release requirement. |
 
 ### Detailed description
@@ -48,7 +48,7 @@ Privacy, by design
   other destination.
 
 This extension is only useful with a VeriBridge student account. Full privacy
-policy: https://veribridgeai.com/extension/privacy
+policy: https://veribridgeai.com/privacy
 ```
 
 ### Single-purpose statement
