@@ -74,6 +74,11 @@ test.describe("Recruiter Hiring Briefs V3 — local rig", () => {
     const page = await recruiterPage(browser, qa.rec3);
     await page.goto(`${BASE}/recruiters/briefs`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("brief-create-form")).toBeVisible({ timeout: 45_000 });
+    // Hydration guard: the list region only renders client-side; once it
+    // shows, React owns the form and fill() cannot be reset by hydration.
+    await expect(
+      page.getByTestId("briefs-empty").or(page.getByTestId("brief-card").first()),
+    ).toBeVisible({ timeout: 45_000 });
 
     await page
       .getByTestId("brief-create-role-text")
@@ -176,6 +181,11 @@ test.describe("Recruiter Hiring Briefs V3 — local rig", () => {
     const page = await recruiterPage(browser, qa.rec3);
     await page.goto(`${BASE}/recruiters/briefs`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("brief-create-form")).toBeVisible({ timeout: 45_000 });
+    // Hydration guard: the list region only renders client-side; once it
+    // shows, React owns the form and fill() cannot be reset by hydration.
+    await expect(
+      page.getByTestId("briefs-empty").or(page.getByTestId("brief-card").first()),
+    ).toBeVisible({ timeout: 45_000 });
     await page.getByTestId("brief-create-role-text").fill("Python required.");
     await page.getByTestId("brief-create-submit").click();
     await page.waitForURL(/\/recruiters\/briefs\/[0-9a-f-]{36}/, { timeout: 45_000 });
