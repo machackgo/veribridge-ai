@@ -135,15 +135,24 @@ test.describe("Recruiter Hiring Briefs V3 — local rig", () => {
       .getByTestId("brief-candidate-card")
       .filter({ hasText: shortlistedName })
       .first();
-    await card.getByTestId("brief-candidate-set-shortlisted").click();
-    await expect(card.getByTestId("brief-candidate-status-badge")).toContainText("Shortlisted", {
-      timeout: 30_000,
-    });
+    // V4 pipeline: stage moves happen through the accessible stage select
+    // (the V3 status pills were replaced by the 9-stage <select>), and the
+    // card moves into its stage section — re-scope through the section so
+    // an identically-named sibling card can never be matched instead.
+    await card.getByTestId("brief-candidate-stage-select").selectOption("shortlisted");
+    const shortlistedCard = page
+      .getByTestId("brief-stage-section-shortlisted")
+      .getByTestId("brief-candidate-card")
+      .first();
+    await expect(shortlistedCard.getByTestId("brief-candidate-status-badge")).toContainText(
+      "Shortlisted",
+      { timeout: 30_000 },
+    );
 
-    await card.getByTestId("brief-candidate-note-toggle").click();
-    await card.getByTestId("brief-candidate-note-input").fill("Strong for this role — verified FastAPI evidence.");
-    await card.getByTestId("brief-candidate-note-save").click();
-    await expect(card.getByTestId("brief-candidate-note")).toContainText("Strong for this role", {
+    await shortlistedCard.getByTestId("brief-candidate-note-toggle").click();
+    await shortlistedCard.getByTestId("brief-candidate-note-input").fill("Strong for this role — verified FastAPI evidence.");
+    await shortlistedCard.getByTestId("brief-candidate-note-save").click();
+    await expect(shortlistedCard.getByTestId("brief-candidate-note")).toContainText("Strong for this role", {
       timeout: 30_000,
     });
     await page.screenshot({ path: `${SCRATCH}/shots-local/b3-pool-shortlist.png`, fullPage: true });
@@ -209,7 +218,10 @@ test.describe("Recruiter Hiring Briefs V3 — local rig", () => {
     await expect(targetResult.getByTestId("brief-search-in-brief")).not.toContainText("Shortlisted");
 
     await page.getByTestId("brief-tab-candidates").click();
+    // V4 pipeline sections make the role-scoped stage explicit: the fresh
+    // add sits in the Saved section of THIS brief.
     const card2 = page
+      .getByTestId("brief-stage-section-saved")
       .getByTestId("brief-candidate-card")
       .filter({ hasText: shortlistedName })
       .first();
@@ -220,6 +232,7 @@ test.describe("Recruiter Hiring Briefs V3 — local rig", () => {
     // Brief 1 still shows Shortlisted — no global status anywhere.
     await page.goto(brief1Url, { waitUntil: "domcontentloaded" });
     const card1 = page
+      .getByTestId("brief-stage-section-shortlisted")
       .getByTestId("brief-candidate-card")
       .filter({ hasText: shortlistedName })
       .first();

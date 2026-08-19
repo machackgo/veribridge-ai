@@ -17,6 +17,7 @@ import Link from "next/link"
 
 import {
   Badge,
+  Btn,
   Card,
   EmptyState,
   ErrorState,
@@ -26,7 +27,9 @@ import {
 } from "../../../../../components/passport/shared"
 import {
   addBriefCandidates,
+  BriefApiError,
   briefSearch,
+  CANDIDATE_STAGE_ORDER,
   getBrief,
   getBriefComparison,
   listBriefCandidates,
@@ -38,6 +41,7 @@ import {
   type BriefCandidatesResponse,
   type BriefComparisonResponse,
   type BriefStatus,
+  type BriefStatusCounts,
   type HiringBrief,
   type MatrixCell,
   type RequirementsView,
@@ -49,26 +53,38 @@ import {
 import type { RecruiterSearchResponse } from "@/lib/recruiter-search-api"
 import { BRIEF_STATUS_LABEL } from "../BriefsListView"
 
-const CANDIDATE_STATUS_LABEL: Record<BriefCandidateStatus, string> = {
+export const CANDIDATE_STATUS_LABEL: Record<BriefCandidateStatus, string> = {
   saved: "Saved",
   reviewing: "Reviewing",
   shortlisted: "Shortlisted",
+  contacted: "Contacted",
+  interview: "Interview",
+  decision: "Decision",
+  hired: "Hired",
+  passed: "Passed",
   archived: "Archived",
 }
 
-const CANDIDATE_STATUS_TONE: Record<BriefCandidateStatus, BadgeTone> = {
+// Tones are calm and never carry meaning alone — the text label is always
+// rendered beside them.
+export const CANDIDATE_STATUS_TONE: Record<BriefCandidateStatus, BadgeTone> = {
   saved: "slate",
   reviewing: "sky",
   shortlisted: "emerald",
-  archived: "amber",
+  contacted: "purple",
+  interview: "indigo",
+  decision: "amber",
+  hired: "emerald",
+  passed: "rose",
+  archived: "slate",
 }
 
-const CANDIDATE_STATUSES: BriefCandidateStatus[] = [
-  "saved",
-  "reviewing",
-  "shortlisted",
-  "archived",
-]
+/** Fresh all-zero role-scoped stage counts (client-side recompute base). */
+function emptyStatusCounts(): BriefStatusCounts {
+  return Object.fromEntries(
+    CANDIDATE_STAGE_ORDER.map((status) => [status, 0]),
+  ) as unknown as BriefStatusCounts
+}
 
 type Tab = "candidates" | "compare" | "search"
 
@@ -194,13 +210,20 @@ function EvaluationLine({ candidate }: { candidate: BriefCandidate }) {
 function PoolCandidateCard({
   briefId,
   entry,
+  stageError,
   onChanged,
   onRemoved,
+  onStageError,
 }: {
   briefId: string
   entry: BriefCandidate
+  /** Stage-move failure for THIS candidate, held by the parent — a stage
+   * change remounts the card in another section, so card-local state
+   * would silently lose the message. */
+  stageError: string | null
   onChanged: (candidate: BriefCandidate) => void
   onRemoved: (studentUserId: string) => void
+  onStageError: (studentUserId: string, message: string | null) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [noteDraft, setNoteDraft] = useState(entry.note ?? "")
@@ -210,15 +233,21 @@ function PoolCandidateCard({
 
   const setStatus = async (status: BriefCandidateStatus) => {
     if (status === entry.status) return
-    setBusy(true)
+    const previous = entry
     setError(null)
+    onStageError(entry.student_user_id, null)
+    // Optimistic: the card moves to its new stage immediately; a failed
+    // request reverts it and says why.
+    onChanged({ ...entry, status })
     try {
       const updated = await updateBriefCandidate(briefId, entry.student_user_id, { status })
-      onChanged({ ...entry, ...updated, evaluation: entry.evaluation })
+      onChanged({ ...previous, ...updated, evaluation: previous.evaluation })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update status.")
-    } finally {
-      setBusy(false)
+      onChanged(previous)
+      onStageError(
+        entry.student_user_id,
+        err instanceof Error ? err.message : "Failed to update the stage.",
+      )
     }
   }
 
@@ -274,29 +303,30 @@ function PoolCandidateCard({
 
         <EvaluationLine candidate={entry} />
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {CANDIDATE_STATUSES.map((status) => (
-            <button
-              key={status}
-              type="button"
-              data-testid={`brief-candidate-set-${status}`}
-              onClick={() => void setStatus(status)}
-              disabled={busy || status === entry.status}
-              style={{
-                padding: "5px 10px",
-                borderRadius: 999,
-                border: `1px solid ${status === entry.status ? TOKEN.indigo : TOKEN.line}`,
-                background: status === entry.status ? TOKEN.indigoSoft : "#fff",
-                color: status === entry.status ? TOKEN.indigo : TOKEN.muted,
-                fontSize: 11.5,
-                fontWeight: 600,
-                cursor: busy || status === entry.status ? "default" : "pointer",
-              }}
-            >
-              {CANDIDATE_STATUS_LABEL[status]}
-            </button>
-          ))}
-        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: TOKEN.muted, fontWeight: 600 }}>
+          Stage
+          <select
+            data-testid="brief-candidate-stage-select"
+            value={entry.status}
+            onChange={(event) => void setStatus(event.target.value as BriefCandidateStatus)}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              padding: "6px 10px",
+              borderRadius: 8,
+              border: `1px solid ${TOKEN.line}`,
+              fontSize: 12.5,
+              color: TOKEN.ink,
+              background: "#fff",
+            }}
+          >
+            {CANDIDATE_STAGE_ORDER.map((status) => (
+              <option key={status} value={status}>
+                {CANDIDATE_STATUS_LABEL[status]}
+              </option>
+            ))}
+          </select>
+        </label>
 
         {entry.note && !noteOpen && (
           <p data-testid="brief-candidate-note" style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5, background: TOKEN.bg, borderRadius: 8, padding: "8px 10px" }}>
@@ -346,8 +376,10 @@ function PoolCandidateCard({
           </div>
         )}
 
-        {error && (
-          <p style={{ fontSize: 12, color: "#b91c1c", margin: 0 }}>{error}</p>
+        {(error || stageError) && (
+          <p role="alert" style={{ fontSize: 12, color: "#b91c1c", margin: 0 }}>
+            {error ?? stageError}
+          </p>
         )}
 
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, borderTop: `1px solid ${TOKEN.line}`, paddingTop: 10, marginTop: "auto" }}>
@@ -370,6 +402,13 @@ function PoolCandidateCard({
           >
             Remove from role
           </button>
+          <Link
+            data-testid="brief-candidate-interview-link"
+            href={`/recruiters/briefs/${encodeURIComponent(briefId)}/interview/${encodeURIComponent(entry.student_user_id)}`}
+            style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid ${TOKEN.line}`, background: "#fff", color: TOKEN.indigo, fontSize: 12, fontWeight: 600, textDecoration: "none" }}
+          >
+            Interview prep →
+          </Link>
           {entry.candidate.public_slug ? (
             <a
               data-testid="brief-candidate-open"
@@ -535,9 +574,17 @@ export function BriefDetailView({ briefId }: { briefId: string }) {
   const [editingRequirements, setEditingRequirements] = useState(false)
   const [savingRequirements, setSavingRequirements] = useState(false)
 
+  const [stageFilter, setStageFilter] = useState<BriefCandidateStatus | "all">("all")
+  // Stage-move failures keyed by candidate: held here (not in the card)
+  // because a stage change remounts the card in another section.
+  const [stageErrors, setStageErrors] = useState<Record<string, string>>({})
+
   const [comparison, setComparison] = useState<BriefComparisonResponse | null>(null)
   const [comparisonLoading, setComparisonLoading] = useState(false)
   const [comparisonError, setComparisonError] = useState<string | null>(null)
+  // Server-confirmed "not enough candidates" (defense in depth behind the
+  // client-side comparableCount guard) — a calm empty state, never an error.
+  const [comparisonTooFew, setComparisonTooFew] = useState(false)
 
   const [searchQ, setSearchQ] = useState("")
   const [searchResults, setSearchResults] = useState<RecruiterSearchResponse | null>(null)
@@ -581,17 +628,32 @@ export function BriefDetailView({ briefId }: { briefId: string }) {
   const loadComparison = useCallback(() => {
     setComparisonLoading(true)
     setComparisonError(null)
+    setComparisonTooFew(false)
     getBriefComparison(briefId)
       .then(setComparison)
-      .catch((err: unknown) =>
-        setComparisonError(err instanceof Error ? err.message : "Failed to load the comparison."),
-      )
+      .catch((err: unknown) => {
+        if (err instanceof BriefApiError && err.code === "too_few_candidates") {
+          // A valid small pool is an empty state, never "Something went wrong".
+          setComparison(null)
+          setComparisonTooFew(true)
+          return
+        }
+        setComparisonError(err instanceof Error ? err.message : "Failed to load the comparison.")
+      })
       .finally(() => setComparisonLoading(false))
   }, [briefId])
 
+  // Comparison needs at least 2 candidates still in play for this role
+  // (mirrors the server: archived candidates are excluded). Fetch only once
+  // the pool is known and large enough — a small pool renders a calm empty
+  // state without ever hitting the API.
+  const comparableCount = (pool?.candidates ?? []).filter(
+    (c) => c.status !== "archived",
+  ).length
+
   useEffect(() => {
-    if (tab === "compare") loadComparison()
-  }, [tab, loadComparison])
+    if (tab === "compare" && !poolLoading && comparableCount >= 2) loadComparison()
+  }, [tab, poolLoading, comparableCount, loadComparison])
 
   const saveRequirements = async () => {
     setSavingRequirements(true)
@@ -804,37 +866,130 @@ export function BriefDetailView({ briefId }: { briefId: string }) {
               />
             </div>
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: 14, alignItems: "stretch" }}>
-              {pool.candidates.map((entry) => (
-                <PoolCandidateCard
-                  key={entry.student_user_id}
-                  briefId={briefId}
-                  entry={entry}
-                  onChanged={(candidate) =>
-                    setPool((current) => {
-                      if (!current) return current
-                      const candidates = current.candidates.map((c) =>
-                        c.student_user_id === candidate.student_user_id ? candidate : c,
-                      )
-                      const status_counts = { saved: 0, reviewing: 0, shortlisted: 0, archived: 0 }
-                      for (const c of candidates) status_counts[c.status] += 1
-                      return { ...current, candidates, status_counts }
-                    })
-                  }
-                  onRemoved={(studentUserId) =>
-                    setPool((current) =>
-                      current
-                        ? {
-                            ...current,
-                            candidates: current.candidates.filter((c) => c.student_user_id !== studentUserId),
-                            total: current.total - 1,
+            (() => {
+              const onCardChanged = (candidate: BriefCandidate) =>
+                setPool((current) => {
+                  if (!current) return current
+                  const candidates = current.candidates.map((c) =>
+                    c.student_user_id === candidate.student_user_id ? candidate : c,
+                  )
+                  const status_counts = emptyStatusCounts()
+                  for (const c of candidates) status_counts[c.status] += 1
+                  return { ...current, candidates, status_counts }
+                })
+              const onCardRemoved = (studentUserId: string) =>
+                setPool((current) => {
+                  if (!current) return current
+                  const candidates = current.candidates.filter(
+                    (c) => c.student_user_id !== studentUserId,
+                  )
+                  const status_counts = emptyStatusCounts()
+                  for (const c of candidates) status_counts[c.status] += 1
+                  return { ...current, candidates, status_counts, total: current.total - 1 }
+                })
+              const sections = CANDIDATE_STAGE_ORDER.filter(
+                (status) => stageFilter === "all" || status === stageFilter,
+              )
+                .map((status) => ({
+                  status,
+                  entries: pool.candidates.filter((c) => c.status === status),
+                }))
+                .filter((section) => section.entries.length > 0)
+              return (
+                <>
+                  {/* Stage summary bar: live counts, click to filter. */}
+                  <div
+                    data-testid="brief-stage-bar"
+                    role="group"
+                    aria-label="Pipeline stages"
+                    style={{ display: "flex", flexWrap: "wrap", gap: 6 }}
+                  >
+                    {(
+                      [
+                        ["all", "All", pool.total] as const,
+                        ...CANDIDATE_STAGE_ORDER.map(
+                          (status) =>
+                            [status, CANDIDATE_STATUS_LABEL[status], pool.status_counts[status]] as const,
+                        ),
+                      ]
+                    ).map(([key, label, count]) => {
+                      const active = stageFilter === key
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          data-testid={`brief-stage-pill-${key}`}
+                          aria-pressed={active}
+                          onClick={() =>
+                            setStageFilter((current) =>
+                              key === "all" || current === key ? "all" : key,
+                            )
                           }
-                        : current,
-                    )
-                  }
-                />
-              ))}
-            </div>
+                          style={{
+                            padding: "5px 11px",
+                            borderRadius: 999,
+                            border: `1px solid ${active ? TOKEN.indigo : TOKEN.line}`,
+                            background: active ? TOKEN.indigoSoft : "#fff",
+                            color: active ? TOKEN.indigo : TOKEN.muted,
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {label} · {count}
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  {sections.length === 0 ? (
+                    <p
+                      data-testid="brief-stage-filter-empty"
+                      style={{ fontSize: 13, color: TOKEN.muted, margin: 0 }}
+                    >
+                      No candidates in{" "}
+                      {stageFilter === "all" ? "this role" : CANDIDATE_STATUS_LABEL[stageFilter]}{" "}
+                      yet.
+                    </p>
+                  ) : (
+                    sections.map(({ status, entries }) => (
+                      <section
+                        key={status}
+                        data-testid={`brief-stage-section-${status}`}
+                        style={{ display: "flex", flexDirection: "column", gap: 10 }}
+                      >
+                        <h3 style={{ fontSize: 14, color: TOKEN.ink, margin: 0, fontWeight: 700 }}>
+                          {CANDIDATE_STATUS_LABEL[status]}{" "}
+                          <span style={{ color: TOKEN.muted, fontWeight: 600 }}>
+                            ({entries.length})
+                          </span>
+                        </h3>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))", gap: 14, alignItems: "stretch" }}>
+                          {entries.map((entry) => (
+                            <PoolCandidateCard
+                              key={entry.student_user_id}
+                              briefId={briefId}
+                              entry={entry}
+                              stageError={stageErrors[entry.student_user_id] ?? null}
+                              onChanged={onCardChanged}
+                              onRemoved={onCardRemoved}
+                              onStageError={(studentUserId, message) =>
+                                setStageErrors((current) => {
+                                  const next = { ...current }
+                                  if (message) next[studentUserId] = message
+                                  else delete next[studentUserId]
+                                  return next
+                                })
+                              }
+                            />
+                          ))}
+                        </div>
+                      </section>
+                    ))
+                  )}
+                </>
+              )
+            })()
           )}
 
           {addableConnections.length > 0 && (
@@ -871,8 +1026,29 @@ export function BriefDetailView({ briefId }: { briefId: string }) {
 
       {tab === "compare" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {comparisonLoading ? (
+          {poolLoading || comparisonLoading ? (
             <LoadingState label="Evaluating live evidence…" />
+          ) : comparableCount < 2 || comparisonTooFew ? (
+            <div data-testid="brief-comparison-empty">
+              <EmptyState
+                icon="⚖️"
+                title={
+                  comparableCount === 0
+                    ? "No candidates to compare yet"
+                    : "Only one candidate in this role"
+                }
+                description={
+                  comparableCount === 0
+                    ? "Find candidates using this role's requirements."
+                    : "Add at least 2 candidates to compare evidence."
+                }
+                action={
+                  <Btn variant="secondary" onClick={() => setTab("search")}>
+                    Find candidates
+                  </Btn>
+                }
+              />
+            </div>
           ) : comparisonError ? (
             <div data-testid="brief-comparison-error">
               <ErrorState message={comparisonError} onRetry={loadComparison} />

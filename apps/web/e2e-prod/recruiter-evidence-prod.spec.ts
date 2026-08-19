@@ -233,7 +233,12 @@ test.describe("Recruiter Evidence Discovery — production", () => {
     await searchFor(page, "show me proof of fastapi");
     await expect(page.getByTestId("evidence-results")).toBeVisible({ timeout: 30_000 });
     const group = page.getByTestId("evidence-group-card").first();
-    await group.getByTestId("search-result-save").click();
+    // Another prod suite in the same batch may already have saved this
+    // candidate as rec2 (the search journey) — both paths prove the surface.
+    const saveButton = group.getByTestId("search-result-save");
+    if ((await saveButton.count()) > 0) {
+      await saveButton.click();
+    }
     await expect(group.getByTestId("search-result-saved")).toBeVisible({ timeout: 30_000 });
     await page.goto(`${BASE}/recruiters/workspace`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("workspace-candidate-card").first()).toBeVisible({ timeout: 45_000 });

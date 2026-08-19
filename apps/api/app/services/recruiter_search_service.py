@@ -50,6 +50,7 @@ from app.services.recruiter_query_understanding import (
     INTENT_CANDIDATE_SEARCH,
     INTENT_EVIDENCE_SEARCH,
     INTENT_PROJECT_SEARCH,
+    PLACE_ALIASES,
     describe_group,
     parse_recruiter_query,
 )
@@ -640,6 +641,32 @@ def _term_in(term: str, text: Any) -> bool:
     return bool(term) and term in str(text or "").lower()
 
 
+_LOCATION_WORD_RE = re.compile(r"[a-z]+")
+
+
+def _canonical_location(text: Any) -> str:
+    """Canonicalize a location string for matching.
+
+    Lowercases and expands a TRAILING (or solo) US state abbreviation /
+    informal alias to its full name through the parser's PLACE_ALIASES table,
+    so a stored profile "Boston, MA" canonicalizes to "boston massachusetts"
+    and matches a plan location of "massachusetts" (and still matches
+    "boston"). This is profile/plan *location-field* data, never free query
+    text, so expanding a trailing two-letter token is safe here — the query
+    side keeps its strict context rules in recruiter_query_understanding.
+    Only the final token is expanded: mid-string words like the preposition
+    "in" must never become Indiana.
+    """
+    words = _LOCATION_WORD_RE.findall(str(text or "").lower())
+    if not words:
+        return ""
+    last = words[-1]
+    expanded = PLACE_ALIASES.get(last)
+    if expanded is not None:
+        words = words[:-1] + [expanded]
+    return " ".join(words)
+
+
 def _skill_key(name: Any) -> str:
     return skill_slug(str(name or ""))
 
@@ -655,6 +682,9 @@ def _match_candidate(
     """
     skills = row.get("skills") or []
     projects = row.get("projects") or []
+    # Canonicalized once per row: lets a lexical "massachusetts" term hit a
+    # stored "Boston, MA" (soft signal only — weight unchanged).
+    location_canonical = _canonical_location(row.get("location"))
     reasons: list[dict[str, Any]] = []
     score = 0.0
     matched_skill_count = 0
@@ -777,8 +807,12 @@ def _match_candidate(
                     "term": term,
                 }
 
-        # 7. Location.
-        if best_weight < _WEIGHT_LOCATION and _term_in(term, row.get("location")):
+        # 7. Location. Raw substring OR alias-canonical form, so a lexical
+        # "massachusetts" still hits a stored "Boston, MA".
+        if best_weight < _WEIGHT_LOCATION and (
+            _term_in(term, row.get("location"))
+            or _term_in(term, location_canonical)
+        ):
             best_weight = _WEIGHT_LOCATION
             best_reason = {
                 "type": "location",
@@ -1091,7 +1125,13 @@ def _context_rows(
             )
 
     location = plan.get("location")
-    if location and _term_in(str(location), row.get("location")):
+    # Canonicalize BOTH sides through the shared alias table so a plan
+    # location of "massachusetts" matches a stored "Boston, MA" (and
+    # "boston" still matches). Substring check on canonical strings only —
+    # honesty unchanged: no match, no boost, no row.
+    if location and _term_in(
+        _canonical_location(location), _canonical_location(row.get("location"))
+    ):
         boost += 1.0
         rows.append(
             {

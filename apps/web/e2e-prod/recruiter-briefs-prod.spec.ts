@@ -125,7 +125,14 @@ test.describe("Recruiter Hiring Briefs V3 — production", () => {
       "2 of 2 required proven",
     );
 
-    await card.getByTestId("brief-candidate-set-shortlisted").click();
+    // V4 pipeline: stage moves happen through the accessible stage select;
+    // await the PATCH response so nothing downstream aborts it in flight.
+    const patch = page.waitForResponse(
+      (res) => res.url().includes("/candidates/") && res.request().method() === "PATCH",
+      { timeout: 60_000 },
+    );
+    await card.getByTestId("brief-candidate-stage-select").selectOption("shortlisted");
+    await patch;
     await expect(card.getByTestId("brief-candidate-status-badge")).toContainText("Shortlisted", {
       timeout: 60_000,
     });
@@ -144,8 +151,13 @@ test.describe("Recruiter Hiring Briefs V3 — production", () => {
     await page.goto(brief1Url, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("brief-title")).toBeVisible({ timeout: 60_000 });
     await page.getByTestId("brief-tab-compare").click();
-    await expect(page.getByTestId("brief-comparison-error")).toBeVisible({ timeout: 60_000 });
-    await expect(page.getByTestId("brief-comparison-error")).toContainText(/at least 2/i);
+    // V4 fixed the V3 defect: a valid small pool is a calm guarded empty
+    // state (no fetch, no alarming ErrorState, no raw error code).
+    await expect(page.getByTestId("brief-comparison-empty")).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId("brief-comparison-empty")).toContainText(/at least 2/i);
+    const bodyText = await page.locator("body").innerText();
+    expect(bodyText).not.toContain("Something went wrong");
+    expect(bodyText).not.toContain("too_few_candidates");
     await browser.close();
   });
 

@@ -30,20 +30,21 @@ import {
   TOKEN,
 } from "../../../../components/passport/shared"
 import {
+  EvidenceItemBlock,
+  RequirementRow,
+} from "../../../../components/recruiter/EvidenceProofDrawer"
+import {
   listConnections,
   saveCandidate,
 } from "@/lib/recruiter-connections-api"
 import {
   searchCandidates,
-  viewEvidence,
   type AvailabilityFilter,
   type EvidenceFilter,
-  type EvidenceItem,
   type EvidenceResults,
   type MatchedReason,
   type QueryInterpretation,
   type RecruiterSearchResponse,
-  type RequirementMatch,
   type SearchResultCandidate,
 } from "@/lib/recruiter-search-api"
 import { useSpeechRecognition } from "@/lib/use-speech-recognition"
@@ -110,284 +111,6 @@ function reasonTone(reason: MatchedReason): "emerald" | "indigo" | "slate" {
   if (reason.type === "skill") return "emerald"
   if (reason.type === "technology") return "indigo"
   return "slate"
-}
-
-/** Evidence citation line under one verified requirement. */
-function requirementDetail(req: RequirementMatch): string {
-  if (!req.satisfied) return req.note ?? `No published ${req.display} evidence`
-  const parts: string[] = []
-  if (req.matched_label && req.matched_label !== req.display) {
-    parts.push(`via ${req.matched_label}`)
-  }
-  if (req.skill_status) parts.push(req.skill_status)
-  if (req.evidence_sources.length > 0) {
-    parts.push(req.evidence_sources.slice(0, 3).join(" · "))
-  }
-  if (req.project_titles.length > 0) {
-    parts.push(`in ${req.project_titles.slice(0, 2).join(", ")}`)
-  }
-  if (req.note && parts.length === 0) parts.push(req.note)
-  return parts.join(" · ")
-}
-
-/** Qualitative status → badge tone (labels only — never numeric). */
-function statusTone(status: string): "emerald" | "indigo" | "slate" {
-  if (status === "Demonstrated") return "emerald"
-  if (status === "Partially demonstrated" || status === "Evidence observed") {
-    return "indigo"
-  }
-  return "slate"
-}
-
-/**
- * One proof unit: a skill's published evidence (or an explicitly-labeled
- * project technology claim), with the projects and sanitized trace previews
- * behind it, linking through to the real public artifacts.
- */
-function EvidenceItemBlock({ item }: { item: EvidenceItem }) {
-  const claimed = item.tier === "claimed"
-  return (
-    <div
-      data-testid="evidence-item"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        padding: "10px 12px",
-        borderRadius: 10,
-        border: `1px solid ${TOKEN.line}`,
-        background: claimed ? "#fffdf5" : "#fafbff",
-      }}
-    >
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-        {item.requirement_display && item.requirement_display !== item.skill && (
-          <span style={{ fontSize: 12, color: TOKEN.muted, fontWeight: 600 }}>
-            {item.requirement_display} ·
-          </span>
-        )}
-        <span style={{ fontSize: 13.5, color: TOKEN.ink, fontWeight: 700, overflowWrap: "anywhere" }}>
-          {item.skill}
-        </span>
-        <Badge tone={claimed ? "slate" : statusTone(item.status)}>
-          {claimed ? "Claimed — not verified evidence" : item.status}
-        </Badge>
-        {item.evidence_sources.slice(0, 4).map((source) => (
-          <Badge key={source} tone="purple">
-            {source}
-          </Badge>
-        ))}
-      </div>
-      {item.note && (
-        <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-          {item.note}
-        </p>
-      )}
-      {item.projects.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {item.projects.map((project, index) => (
-            <div
-              key={`${project.title}-${index}`}
-              style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", fontSize: 12.5 }}
-            >
-              <span style={{ color: TOKEN.inkSoft, fontWeight: 600, overflowWrap: "anywhere" }}>
-                {project.title || "Published project"}
-              </span>
-              {project.proof_types.slice(0, 4).map((type) => (
-                <span key={type} style={{ fontSize: 11, color: TOKEN.muted }}>
-                  {type}
-                </span>
-              ))}
-              {project.public_report_path && (
-                <a
-                  data-testid="evidence-open-project"
-                  href={project.public_report_path}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none", whiteSpace: "nowrap" }}
-                >
-                  Open project report →
-                </a>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {item.traces.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {item.traces.map((trace, index) => (
-            <p
-              key={`${trace.source_title}-${index}`}
-              style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5, overflowWrap: "anywhere" }}
-            >
-              <span style={{ fontWeight: 600, color: TOKEN.inkSoft }}>
-                {trace.source_type}
-                {trace.source_title ? ` · ${trace.source_title}` : ""}
-              </span>
-              {trace.summary ? ` — ${trace.summary}` : ""}
-              {trace.public_url && (
-                <>
-                  {" "}
-                  <a
-                    href={trace.public_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}
-                  >
-                    Open source ↗
-                  </a>
-                </>
-              )}
-            </p>
-          ))}
-        </div>
-      )}
-      {item.proof_path && (
-        <a
-          data-testid="evidence-view-full"
-          href={item.proof_path}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            alignSelf: "flex-start",
-            fontSize: 12.5,
-            color: TOKEN.indigo,
-            fontWeight: 700,
-            textDecoration: "none",
-          }}
-        >
-          View full evidence →
-        </a>
-      )}
-    </div>
-  )
-}
-
-function RequirementRow({
-  req,
-  candidateSlug,
-}: {
-  req: RequirementMatch
-  candidateSlug?: string
-}) {
-  const satisfied = req.satisfied
-  const detail = requirementDetail(req)
-  // View proof: expand the actual published evidence behind a verified
-  // requirement without a second search. Concept requirements only —
-  // evidence expectations and soft context rows have no per-skill artifact.
-  const canViewProof = Boolean(candidateSlug) && req.kind === "concept" && satisfied
-  const [open, setOpen] = useState(false)
-  const [items, setItems] = useState<EvidenceItem[] | null>(null)
-  const [drawerError, setDrawerError] = useState<string | null>(null)
-  const [drawerLoading, setDrawerLoading] = useState(false)
-
-  const toggleProof = async () => {
-    if (open) {
-      setOpen(false)
-      return
-    }
-    setOpen(true)
-    if (items !== null || drawerLoading) return
-    setDrawerLoading(true)
-    setDrawerError(null)
-    try {
-      const res = await viewEvidence({
-        skill: req.requirement,
-        candidate: candidateSlug,
-      })
-      setItems(res.evidence.groups.flatMap((group) => group.items))
-    } catch (err) {
-      setDrawerError(
-        err instanceof Error ? err.message : "Could not load proof.",
-      )
-    } finally {
-      setDrawerLoading(false)
-    }
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <div
-        style={{
-          display: "flex",
-          gap: 8,
-          alignItems: "baseline",
-          fontSize: 12.5,
-          lineHeight: 1.5,
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            color: satisfied ? TOKEN.emerald : TOKEN.rose,
-            fontWeight: 700,
-            flexShrink: 0,
-          }}
-        >
-          {satisfied ? "✓" : "✕"}
-        </span>
-        <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>
-          <span
-            style={{
-              color: satisfied ? TOKEN.ink : TOKEN.rose,
-              fontWeight: 600,
-            }}
-          >
-            {req.display}
-            {!req.required && (
-              <span style={{ color: TOKEN.muted, fontWeight: 500 }}> (preferred)</span>
-            )}
-          </span>
-          {detail && (
-            <span style={{ color: TOKEN.muted }}> — {detail}</span>
-          )}
-          {canViewProof && (
-            <>
-              {" "}
-              <button
-                type="button"
-                data-testid="requirement-view-proof"
-                aria-expanded={open}
-                onClick={() => void toggleProof()}
-                style={{
-                  background: "none",
-                  border: "none",
-                  padding: 0,
-                  color: TOKEN.indigo,
-                  fontSize: 12,
-                  fontWeight: 700,
-                  cursor: "pointer",
-                }}
-              >
-                {open ? "Hide proof" : "View proof"}
-              </button>
-            </>
-          )}
-        </span>
-      </div>
-      {open && (
-        <div
-          data-testid="requirement-proof-drawer"
-          style={{ display: "flex", flexDirection: "column", gap: 8, marginLeft: 18 }}
-        >
-          {drawerLoading ? (
-            <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>Loading proof…</p>
-          ) : drawerError ? (
-            <p role="alert" style={{ fontSize: 12, color: TOKEN.rose, margin: 0 }}>
-              {drawerError}
-            </p>
-          ) : items && items.length > 0 ? (
-            items.map((item, index) => (
-              <EvidenceItemBlock key={`${item.skill_slug}-${index}`} item={item} />
-            ))
-          ) : items ? (
-            <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
-              No published evidence artifacts for this requirement.
-            </p>
-          ) : null}
-        </div>
-      )}
-    </div>
-  )
 }
 
 type SaveState = "idle" | "saving" | "saved" | "error"
@@ -862,6 +585,12 @@ function EvidenceResultsSection({
 }
 
 /** "Understood as …" — the executed interpretation, shown transparently. */
+/** The parser canonicalizes locations to lowercase ("Boston, MA" →
+ * "massachusetts"); present them as place names. */
+function titleCaseLocation(location: string): string {
+  return location.replace(/\b[a-z]/g, (letter) => letter.toUpperCase())
+}
+
 function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
   const evidenceIntent =
     interp.intent === "evidence_search" || interp.intent === "project_search"
@@ -874,7 +603,8 @@ function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
     interp.preferred_evidence.length > 0 ||
     Boolean(interp.role) ||
     Boolean(interp.seniority) ||
-    Boolean(interp.location)
+    Boolean(interp.location) ||
+    interp.residual_terms.length > 0
   if (!hasChips) return null
   return (
     <div
@@ -901,7 +631,9 @@ function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
       )}
       {interp.role && <Badge tone="purple">Role: {interp.role}</Badge>}
       {interp.seniority && <Badge tone="purple">{interp.seniority}</Badge>}
-      {interp.location && <Badge tone="slate">Near: {interp.location}</Badge>}
+      {interp.location && (
+        <Badge tone="slate">Near: {titleCaseLocation(interp.location)}</Badge>
+      )}
       {interp.required.map((chip) => (
         <Badge key={`req-${chip.display}`} tone="indigo">
           {chip.display}
@@ -927,6 +659,14 @@ function InterpretationPanel({ interp }: { interp: QueryInterpretation }) {
           Not: {chip.display}
         </Badge>
       ))}
+      {interp.residual_terms.length > 0 && (
+        <p
+          data-testid="search-residual-terms"
+          style={{ fontSize: 12, color: TOKEN.muted, margin: 0, width: "100%" }}
+        >
+          Not understood (never silently used): {interp.residual_terms.join(", ")}
+        </p>
+      )}
     </div>
   )
 }

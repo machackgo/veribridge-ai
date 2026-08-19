@@ -212,7 +212,13 @@ test.describe("Recruiter Search V1.5 — local rig", () => {
     await expect(passportPage.locator("body")).toContainText(/Work Passport/i, { timeout: 45_000 });
     await passportPage.close();
 
-    await firstCard.getByTestId("search-result-save").click();
+    // Another suite in the same batch may already have saved this candidate
+    // as rec2 (the evidence suite's proof-card journey) — both paths prove
+    // the save surface, mirroring the evidence suite's own tolerance.
+    const saveButton = firstCard.getByTestId("search-result-save");
+    if ((await saveButton.count()) > 0) {
+      await saveButton.click();
+    }
     await expect(firstCard.getByTestId("search-result-saved")).toBeVisible({ timeout: 30_000 });
 
     await page.getByTestId("search-nav-workspace").click();

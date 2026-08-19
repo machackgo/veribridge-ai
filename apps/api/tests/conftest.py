@@ -118,4 +118,12 @@ def _hermetic_llm_synthesis(monkeypatch):
 
     monkeypatch.setattr(llm_mod, "_local_openai_llm_fn", _blocked_provider, raising=False)
     monkeypatch.setattr(llm_mod, "_anthropic_llm_fn", _blocked_provider, raising=False)
+
+    # 3. The recruiter interview-question generator has its own module-level
+    #    LlmFn seam (recruiter_interview_service._llm_fn, default Anthropic).
+    #    Force it to None so no test can reach the network through it; tests
+    #    that exercise the LLM path monkeypatch _llm_fn with a fake.
+    import app.services.recruiter_interview_service as interview_mod
+
+    monkeypatch.setattr(interview_mod, "_llm_fn", None, raising=False)
     yield
