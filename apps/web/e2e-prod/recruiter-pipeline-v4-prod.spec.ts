@@ -142,12 +142,24 @@ test.describe("Recruiter Pipeline V4 — production @post-deploy", () => {
     await expect(page.getByTestId("brief-stage-bar")).toBeVisible();
     await expect(page.getByTestId("brief-stage-pill-saved")).toContainText("1");
 
+    // Stage moves render optimistically — await each PATCH response before
+    // moving on so a navigation never aborts an in-flight request (an abort
+    // logs "Failed to fetch" even though the server processed it).
     const select = card.getByTestId("brief-candidate-stage-select");
+    const patchDone = () =>
+      page.waitForResponse(
+        (res) => res.url().includes("/candidates/") && res.request().method() === "PATCH",
+        { timeout: 60_000 },
+      );
+    let patch = patchDone();
     await select.selectOption("reviewing");
+    await patch;
     await expect(page.getByTestId("brief-stage-pill-reviewing")).toContainText("1", {
       timeout: 60_000,
     });
+    patch = patchDone();
     await select.selectOption("interview");
+    await patch;
     await expect(page.getByTestId("brief-stage-pill-interview")).toContainText("1", {
       timeout: 60_000,
     });
@@ -233,7 +245,14 @@ test.describe("Recruiter Pipeline V4 — production @post-deploy", () => {
     );
 
     const decision = page.getByTestId("interview-decision");
+    // The Hired badge is optimistic — await the stage PATCH response before
+    // navigating away so the navigation never aborts the in-flight request.
+    const hiredPatch = page.waitForResponse(
+      (res) => res.url().includes("/candidates/") && res.request().method() === "PATCH",
+      { timeout: 60_000 },
+    );
     await decision.getByRole("button", { name: /hired/i }).click();
+    await hiredPatch;
     await expect(decision).toContainText(/hired/i, { timeout: 60_000 });
 
     await page.goto(briefUrl, { waitUntil: "domcontentloaded" });
