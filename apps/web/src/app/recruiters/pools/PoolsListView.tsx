@@ -1,12 +1,11 @@
 "use client"
 
 /**
- * Hiring Briefs list — one brief per hiring need.
- *
- * A brief holds the role's requirements and its ROLE-SCOPED candidate pool:
- * a candidate can be Shortlisted for one brief while merely Saved for
- * another. Creating a brief parses the role description with the same
- * deterministic grammar as recruiter search — no scores, no LLM.
+ * Talent Pools list — recruiter-owned, role-independent candidate
+ * collections ("AI / ML Early Talent"). A pool is an organizing label:
+ * membership is a reference to the candidate's stable identity, never a
+ * copy of their data. Archived pools stay listed in their own group and
+ * are restorable.
  */
 
 import { useCallback, useEffect, useState } from "react"
@@ -19,29 +18,14 @@ import {
   ErrorState,
   LoadingState,
   TOKEN,
-  type BadgeTone,
 } from "../../../../components/passport/shared"
 import { RecruiterNav } from "../../../../components/recruiter/RecruiterNav"
 import {
-  createBrief,
-  deleteBrief,
-  listBriefs,
-  type HiringBriefListItem,
-} from "@/lib/recruiter-briefs-api"
-
-export const BRIEF_STATUS_LABEL: Record<string, string> = {
-  draft: "Draft",
-  active: "Active",
-  paused: "Paused",
-  closed: "Closed",
-}
-
-export const BRIEF_STATUS_TONE: Record<string, BadgeTone> = {
-  draft: "slate",
-  active: "emerald",
-  paused: "amber",
-  closed: "slate",
-}
+  createPool,
+  deletePool,
+  listPools,
+  type TalentPool,
+} from "@/lib/recruiter-pools-api"
 
 function updatedLabel(iso: string | null): string {
   if (!iso) return ""
@@ -54,47 +38,46 @@ function updatedLabel(iso: string | null): string {
   })
 }
 
-function BriefCard({
-  brief,
+function PoolCard({
+  pool,
   onDelete,
   deleting,
 }: {
-  brief: HiringBriefListItem
+  pool: TalentPool
   onDelete: (id: string) => void
   deleting: boolean
 }) {
   return (
     <Card style={{ padding: 18, height: "100%", display: "flex", flexDirection: "column" }}>
       <div
-        data-testid="brief-card"
+        data-testid="pool-card"
         style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1 }}
       >
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
           <div style={{ minWidth: 0, flex: 1 }}>
             <h3
-              data-testid="brief-card-title"
+              data-testid="pool-card-name"
               style={{ fontSize: 15.5, color: TOKEN.ink, margin: 0, fontWeight: 700, overflowWrap: "anywhere" }}
             >
-              {brief.title}
+              {pool.name}
             </h3>
-            {brief.role && (
-              <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: "2px 0 0", lineHeight: 1.5 }}>
-                {brief.role}
+            {pool.description && (
+              <p style={{ fontSize: 13, color: TOKEN.inkSoft, margin: "2px 0 0", lineHeight: 1.5, overflowWrap: "anywhere" }}>
+                {pool.description}
               </p>
             )}
           </div>
-          <Badge tone={BRIEF_STATUS_TONE[brief.status] ?? "slate"}>
-            {BRIEF_STATUS_LABEL[brief.status] ?? brief.status}
-          </Badge>
+          {pool.status === "archived" && (
+            <span data-testid="pool-card-archived">
+              <Badge tone="amber">Archived</Badge>
+            </span>
+          )}
         </div>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           <Badge tone="indigo">
-            {brief.candidate_count} {brief.candidate_count === 1 ? "candidate" : "candidates"}
+            {pool.candidate_count} {pool.candidate_count === 1 ? "candidate" : "candidates"}
           </Badge>
-          {brief.shortlisted_count > 0 && (
-            <Badge tone="emerald">{brief.shortlisted_count} shortlisted</Badge>
-          )}
         </div>
 
         <div
@@ -109,13 +92,13 @@ function BriefCard({
           }}
         >
           <span style={{ fontSize: 11.5, color: TOKEN.muted }}>
-            {updatedLabel(brief.updated_at) ? `Updated ${updatedLabel(brief.updated_at)}` : ""}
+            {updatedLabel(pool.updated_at) ? `Updated ${updatedLabel(pool.updated_at)}` : ""}
           </span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               type="button"
-              data-testid="brief-card-delete"
-              onClick={() => onDelete(brief.id)}
+              data-testid="pool-card-delete"
+              onClick={() => onDelete(pool.id)}
               disabled={deleting}
               style={{
                 padding: "7px 12px",
@@ -131,8 +114,8 @@ function BriefCard({
               {deleting ? "Deleting…" : "Delete"}
             </button>
             <a
-              data-testid="brief-card-open"
-              href={`/recruiters/briefs/${encodeURIComponent(brief.id)}`}
+              data-testid="pool-card-open"
+              href={`/recruiters/pools/${encodeURIComponent(pool.id)}`}
               style={{
                 padding: "7px 14px",
                 borderRadius: 8,
@@ -143,7 +126,7 @@ function BriefCard({
                 textDecoration: "none",
               }}
             >
-              Open role →
+              Open pool →
             </a>
           </div>
         </div>
@@ -152,25 +135,26 @@ function BriefCard({
   )
 }
 
-export function BriefsListView() {
+export function PoolsListView() {
   const router = useRouter()
-  const [briefs, setBriefs] = useState<HiringBriefListItem[]>([])
+  const [pools, setPools] = useState<TalentPool[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
-  const [title, setTitle] = useState("")
-  const [roleText, setRoleText] = useState("")
+  const [name, setName] = useState("")
+  const [description, setDescription] = useState("")
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
   const load = useCallback(() => {
     setLoading(true)
     setError(null)
-    listBriefs()
-      .then(setBriefs)
+    listPools()
+      .then(setPools)
       .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : "Failed to load hiring briefs."),
+        setError(err instanceof Error ? err.message : "Failed to load Talent Pools."),
       )
       .finally(() => setLoading(false))
   }, [])
@@ -180,39 +164,67 @@ export function BriefsListView() {
   }, [load])
 
   const create = async () => {
-    if (!roleText.trim() && !title.trim()) {
-      setCreateError("Describe the role or give it a title first.")
+    if (!name.trim()) {
+      setCreateError("Give the Talent Pool a name first.")
       return
     }
     setCreating(true)
     setCreateError(null)
     try {
-      const brief = await createBrief({
-        title: title.trim() || null,
-        role_text: roleText.trim() || null,
+      const pool = await createPool({
+        name: name.trim(),
+        description: description.trim() || null,
       })
-      router.push(`/recruiters/briefs/${encodeURIComponent(brief.id)}`)
+      router.push(`/recruiters/pools/${encodeURIComponent(pool.id)}`)
     } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Failed to create the hiring brief.")
+      setCreateError(err instanceof Error ? err.message : "Failed to create the Talent Pool.")
       setCreating(false)
     }
   }
 
-  const remove = async (briefId: string) => {
-    setDeletingId(briefId)
+  const remove = async (poolId: string) => {
+    if (confirmDeleteId !== poolId) {
+      setConfirmDeleteId(poolId)
+      return
+    }
+    setConfirmDeleteId(null)
+    setDeletingId(poolId)
     try {
-      await deleteBrief(briefId)
-      setBriefs((current) => current.filter((b) => b.id !== briefId))
+      await deletePool(poolId)
+      setPools((current) => current.filter((p) => p.id !== poolId))
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete the hiring brief.")
+      setError(err instanceof Error ? err.message : "Failed to delete the Talent Pool.")
     } finally {
       setDeletingId(null)
     }
   }
 
+  const active = pools.filter((p) => p.status !== "archived")
+  const archived = pools.filter((p) => p.status === "archived")
+
+  const grid = (items: TalentPool[]) => (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))",
+        gap: 14,
+        alignItems: "stretch",
+      }}
+    >
+      {items.map((pool) => (
+        <PoolCard
+          key={pool.id}
+          pool={pool}
+          onDelete={(id) => void remove(id)}
+          deleting={deletingId === pool.id}
+        />
+      ))}
+    </div>
+  )
+
   return (
     <div
-      data-testid="recruiter-briefs"
+      data-testid="recruiter-pools"
       style={{ maxWidth: 1080, margin: "0 auto", padding: "40px 24px", display: "flex", flexDirection: "column", gap: 18 }}
     >
       <div style={{ minWidth: 0 }}>
@@ -220,19 +232,19 @@ export function BriefsListView() {
           Recruiter Workspace
         </p>
         <h1 style={{ fontSize: 26, color: TOKEN.ink, margin: "4px 0 0", letterSpacing: "-0.5px" }}>
-          Hiring Briefs
+          Talent Pools
         </h1>
         <p style={{ fontSize: 13, color: TOKEN.muted, margin: "6px 0 0", lineHeight: 1.5 }}>
-          Define each role once — requirements, candidate pool, comparison and
-          shortlist stay scoped to that role.
+          Reusable candidate collections that live across roles — one candidate
+          can belong to many pools, and their evidence always stays live.
         </p>
       </div>
 
-      <RecruiterNav active="briefs" testidPrefix="briefs" />
+      <RecruiterNav active="pools" testidPrefix="pools" />
 
       <Card style={{ padding: 18 }}>
         <form
-          data-testid="brief-create-form"
+          data-testid="pools-create-form"
           onSubmit={(event) => {
             event.preventDefault()
             void create()
@@ -240,14 +252,14 @@ export function BriefsListView() {
           style={{ display: "flex", flexDirection: "column", gap: 10 }}
         >
           <h2 style={{ fontSize: 15, color: TOKEN.ink, margin: 0, fontWeight: 700 }}>
-            New Hiring Brief
+            New Talent Pool
           </h2>
           <input
-            data-testid="brief-create-title"
+            data-testid="pools-create-name"
             type="text"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Title (optional) — e.g. AI Engineer Intern, Fall 2026"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Name — e.g. AI / ML Early Talent"
             maxLength={120}
             style={{
               padding: "10px 12px",
@@ -257,32 +269,30 @@ export function BriefsListView() {
               color: TOKEN.ink,
             }}
           />
-          <textarea
-            data-testid="brief-create-role-text"
-            value={roleText}
-            onChange={(event) => setRoleText(event.target.value)}
-            placeholder="Describe the role in plain language — e.g. “Entry-level AI Engineer. Python, FastAPI and Machine Learning are required. NLP and live deployment are preferred.”"
+          <input
+            data-testid="pools-create-description"
+            type="text"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Description (optional) — e.g. Prospects from the Fall 2026 career fair"
             maxLength={600}
-            rows={3}
             style={{
               padding: "10px 12px",
               borderRadius: 8,
               border: `1px solid ${TOKEN.line}`,
               fontSize: 13.5,
               color: TOKEN.ink,
-              resize: "vertical",
-              lineHeight: 1.5,
             }}
           />
           {createError && (
-            <p data-testid="brief-create-error" style={{ fontSize: 12.5, color: "#b91c1c", margin: 0 }}>
+            <p data-testid="pools-create-error" style={{ fontSize: 12.5, color: "#b91c1c", margin: 0 }}>
               {createError}
             </p>
           )}
           <div>
             <button
               type="submit"
-              data-testid="brief-create-submit"
+              data-testid="pools-create-submit"
               disabled={creating}
               style={{
                 padding: "9px 18px",
@@ -295,42 +305,43 @@ export function BriefsListView() {
                 cursor: creating ? "wait" : "pointer",
               }}
             >
-              {creating ? "Creating…" : "Create brief"}
+              {creating ? "Creating…" : "Create pool"}
             </button>
           </div>
         </form>
       </Card>
 
+      {confirmDeleteId && (
+        <p data-testid="pool-delete-confirm" role="alert" style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
+          Delete this Talent Pool? Deleting a pool never removes candidates,
+          saved connections, or Hiring Briefs — press Delete again to confirm.
+        </p>
+      )}
+
       {loading ? (
-        <LoadingState label="Loading hiring briefs…" />
+        <LoadingState label="Loading Talent Pools…" />
       ) : error ? (
         <ErrorState message={error} onRetry={load} />
-      ) : briefs.length === 0 ? (
-        <div data-testid="briefs-empty">
+      ) : pools.length === 0 ? (
+        <div data-testid="pools-empty">
           <EmptyState
-            icon="📋"
-            title="No hiring briefs yet"
-            description="Create a brief for each role you're hiring for. The same brief then drives search, evidence comparison and a role-scoped shortlist."
+            icon="🗂"
+            title="No Talent Pools yet"
+            description="Create a Talent Pool to organize candidates across roles."
           />
         </div>
       ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))",
-            gap: 14,
-            alignItems: "stretch",
-          }}
-        >
-          {briefs.map((brief) => (
-            <BriefCard
-              key={brief.id}
-              brief={brief}
-              onDelete={(id) => void remove(id)}
-              deleting={deletingId === brief.id}
-            />
-          ))}
-        </div>
+        <>
+          {grid(active)}
+          {archived.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <p data-testid="pools-archived-heading" style={{ fontSize: 13, color: TOKEN.muted, margin: "6px 0 0", fontWeight: 700 }}>
+                Archived ({archived.length})
+              </p>
+              {grid(archived)}
+            </div>
+          )}
+        </>
       )}
     </div>
   )

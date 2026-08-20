@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.deps import get_current_user_id, get_db
+from app.api.deps import get_current_user_id, get_db, get_provisioned_user_id
 from app.db.supabase import SupabaseError
 from app.schemas.skill_evidence import (
     PublicProofVerificationResponse,
@@ -68,7 +68,9 @@ def list_skill_evidence(
 )
 def create_skill_evidence(
     body: SkillEvidenceCreate,
-    user_id: str = Depends(get_current_user_id),
+    # First-write root for the Website Proof flow: a fresh signup has no
+    # public.users row yet, and skill_evidence.user_id FKs against it.
+    user_id: str = Depends(get_provisioned_user_id),
     db: Any = Depends(get_db),
 ) -> SkillEvidenceResponse:
     try:
