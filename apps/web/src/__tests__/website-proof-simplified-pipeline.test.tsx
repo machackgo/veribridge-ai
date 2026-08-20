@@ -28,6 +28,7 @@ const apiMocks = vi.hoisted(() => ({
 }))
 
 const vbrMocks = vi.hoisted(() => ({
+  createVBRProject: vi.fn(),
   finalizeWebsiteProof: vi.fn(),
   listVBRProjects: vi.fn(),
 }))
@@ -212,6 +213,9 @@ describe("Simplified Website Proof — completed session view", () => {
 
   it("attaches the completed proof to an explicitly selected project", async () => {
     await renderCompleted()
+    // A vault-only session defaults to "Keep in Proof Vault"; attaching is an
+    // explicit mode switch.
+    fireEvent.click(await screen.findByTestId("website-proof-save-mode-existing"))
     const select = await screen.findByTestId("website-proof-save-project-select")
     fireEvent.change(select, { target: { value: PROJECT.id } })
     fireEvent.click(screen.getByRole("button", { name: "Save this proof" }))
@@ -222,6 +226,104 @@ describe("Simplified Website Proof — completed session view", () => {
       })
     })
     expect(await screen.findByText(`Saved to project: ${PROJECT.title}`)).toBeInTheDocument()
+  })
+
+  it("keeps a vault-only proof in the Proof Vault without requiring any project", async () => {
+    // Brand-new student: zero projects. The completed proof must still be
+    // preservable — this was the V1.0.0 dead end.
+    vbrMocks.listVBRProjects.mockResolvedValue([])
+    await renderCompleted()
+    const keepButton = await screen.findByRole("button", { name: "Keep in Proof Vault" })
+    fireEvent.click(keepButton)
+    expect(await screen.findByTestId("website-proof-kept-in-vault")).toBeInTheDocument()
+    expect(screen.getByText("Kept in Proof Vault")).toBeInTheDocument()
+    // Vault-keeping mutates nothing and never silently attaches to a project.
+    expect(vbrMocks.finalizeWebsiteProof).not.toHaveBeenCalled()
+    expect(vbrMocks.createVBRProject).not.toHaveBeenCalled()
+  })
+
+  it("guides a zero-project student from the existing-project mode instead of dead-ending", async () => {
+    vbrMocks.listVBRProjects.mockResolvedValue([])
+    await renderCompleted()
+    fireEvent.click(await screen.findByTestId("website-proof-save-mode-existing"))
+    expect(await screen.findByTestId("website-proof-no-projects")).toBeInTheDocument()
+    expect(screen.queryByTestId("website-proof-save-project-select")).not.toBeInTheDocument()
+  })
+
+  it("creates a new project inline and attaches the completed proof to it", async () => {
+    vbrMocks.listVBRProjects.mockResolvedValue([])
+    const newProject = {
+      ...PROJECT,
+      id: "project-fresh",
+      title: "My First Project",
+      repo_url: "https://github.com/student/first",
+    }
+    vbrMocks.createVBRProject.mockResolvedValue(newProject)
+    vbrMocks.finalizeWebsiteProof.mockResolvedValue({
+      proof_type: "website",
+      proof_id: SESSION_ID,
+      project_id: newProject.id,
+      already_finalized: false,
+      finalized_at: "2026-08-20T11:20:00Z",
+      project_relationship: { state: "directly_linked", project_id: newProject.id, project_title: newProject.title },
+    })
+
+    await renderCompleted()
+    fireEvent.click(await screen.findByTestId("website-proof-save-mode-create"))
+    const titleInput = await screen.findByTestId("website-proof-create-title")
+    const repoInput = screen.getByTestId("website-proof-create-repo")
+    // The repository URL entered at recording time is offered as an editable
+    // prefill — never auto-submitted on its own.
+    expect((repoInput as HTMLInputElement).value).toBe("https://github.com/reactplay/react-play")
+    fireEvent.change(titleInput, { target: { value: "My First Project" } })
+    fireEvent.change(repoInput, { target: { value: "https://github.com/student/first" } })
+    fireEvent.click(screen.getByRole("button", { name: "Create project & attach proof" }))
+
+    await waitFor(() => {
+      expect(vbrMocks.createVBRProject).toHaveBeenCalledWith({
+        title: "My First Project",
+        repo_url: "https://github.com/student/first",
+        deployed_url: "https://reactplay.io",
+      })
+    })
+    await waitFor(() => {
+      expect(vbrMocks.finalizeWebsiteProof).toHaveBeenCalledWith({
+        proof_id: SESSION_ID,
+        project_id: newProject.id,
+      })
+    })
+    expect(await screen.findByText(`Saved to project: ${newProject.title}`)).toBeInTheDocument()
+  })
+
+  it("preserves the completed proof when project creation fails", async () => {
+    vbrMocks.listVBRProjects.mockResolvedValue([])
+    vbrMocks.createVBRProject.mockRejectedValue(new Error("repo_url must be a supported GitHub repository URL."))
+    await renderCompleted()
+    fireEvent.click(await screen.findByTestId("website-proof-save-mode-create"))
+    fireEvent.change(await screen.findByTestId("website-proof-create-title"), { target: { value: "Broken" } })
+    fireEvent.change(screen.getByTestId("website-proof-create-repo"), { target: { value: "not-a-repo" } })
+    fireEvent.click(screen.getByRole("button", { name: "Create project & attach proof" }))
+
+    expect(await screen.findByTestId("website-proof-save-error")).toHaveTextContent(
+      "repo_url must be a supported GitHub repository URL.",
+    )
+    // The proof itself is untouched and the flow remains retryable.
+    expect(vbrMocks.finalizeWebsiteProof).not.toHaveBeenCalled()
+    expect(screen.getByTestId("website-proof-finalization")).toBeInTheDocument()
+  })
+
+  it("defaults to attaching when the session was started against a project", async () => {
+    apiMocks.getExtensionProofSession.mockResolvedValue(session({ project_id: PROJECT.id }))
+    await renderCompleted()
+    const select = await screen.findByTestId("website-proof-save-project-select")
+    expect((select as HTMLSelectElement).value).toBe(PROJECT.id)
+    fireEvent.click(screen.getByRole("button", { name: "Save this proof" }))
+    await waitFor(() => {
+      expect(vbrMocks.finalizeWebsiteProof).toHaveBeenCalledWith({
+        proof_id: SESSION_ID,
+        project_id: PROJECT.id,
+      })
+    })
   })
 
   it("reconciles an already-saved proof against the same project without creating a new session", async () => {

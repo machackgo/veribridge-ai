@@ -381,6 +381,9 @@ describe("Website Proof entry-state contract", () => {
 
     expect(await screen.findByTestId("website-proof-finalization")).toHaveTextContent("Save this proof")
     expect(apiMocks.getExtensionProofSession).toHaveBeenCalledWith("session-old-localhost")
+    // Attaching is an explicit mode choice — vault-only sessions default to
+    // "Keep in Proof Vault".
+    fireEvent.click(screen.getByTestId("website-proof-save-mode-existing"))
     fireEvent.change(screen.getByTestId("website-proof-save-project-select"), { target: { value: PROJECT.id } })
     fireEvent.click(screen.getByRole("button", { name: "Save this proof" }))
 
@@ -414,6 +417,7 @@ describe("Website Proof entry-state contract", () => {
     apiMocks.getExtensionProofSession.mockResolvedValue(session())
     render(<ExtensionProofPanel onBack={() => undefined} requestedSessionId="session-old-localhost" />)
 
+    fireEvent.click(await screen.findByTestId("website-proof-save-mode-existing"))
     fireEvent.click(await screen.findByRole("button", { name: "Save this proof" }))
 
     // Target the save error specifically — the recorded-video section renders

@@ -58,6 +58,7 @@ import { probeRecorderExtension } from "@/lib/website-proof-recorder"
 import { workflowAnalysisReviewLabel } from "@/lib/analysis-review-labels"
 import { coherentOverallDefenseScore } from "@/lib/defense-score"
 import {
+  createVBRProject,
   finalizeWebsiteProof,
   listVBRProjects,
   type ProofFinalizationResult,
@@ -7451,9 +7452,16 @@ export function ExtensionProofPanel({
   const [analyzing, setAnalyzing]       = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false)
-  const [saveState, setSaveState] = useState<"not_saved" | "saving" | "saved" | "already_saved" | "error">("not_saved")
+  const [saveState, setSaveState] = useState<"not_saved" | "saving" | "saved" | "already_saved" | "kept_in_vault" | "error">("not_saved")
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saveResult, setSaveResult] = useState<ProofFinalizationResult | null>(null)
+  // Completion flow: how the student wants to keep the completed proof.
+  //   vault    — keep in the Proof Vault, attached to no project (no mutation)
+  //   existing — attach to one of their existing projects
+  //   create   — create a new project first, then attach
+  const [saveMode, setSaveMode] = useState<"vault" | "existing" | "create">("vault")
+  const [newProjectTitle, setNewProjectTitle] = useState("")
+  const [newProjectRepoUrl, setNewProjectRepoUrl] = useState("")
   const [websiteProofProgressLifecycle, dispatchWebsiteProofProgress] = useReducer(
     websiteProofProgressReducer,
     "idle" as WebsiteProofProgressLifecycle,
@@ -7561,6 +7569,9 @@ export function ExtensionProofPanel({
     setSaveState("not_saved")
     setSaveError(null)
     setSaveResult(null)
+    setSaveMode("vault")
+    setNewProjectTitle("")
+    setNewProjectRepoUrl("")
   }
 
   function resetAndBack() {
@@ -7605,20 +7616,20 @@ export function ExtensionProofPanel({
     if (POLLING_STATUSES.includes(restored.status)) setPoll(true)
   }
 
-  async function handleSaveProof() {
+  /**
+   * Attach the completed proof to one exact owned project through the shared
+   * canonical finalization boundary. Idempotent on the server; a failure never
+   * touches the completed proof itself.
+   */
+  async function attachProofToProject(projectId: string) {
     if (!session || session.status !== "completed") return
-    if (!selectedProjectId) {
-      setSaveState("error")
-      setSaveError("Select the project this Website Proof belongs to before saving.")
-      return
-    }
     setSaveState("saving")
     setSaveError(null)
     transitionRecorderLifecycle("SAVE_REQUESTED")
     try {
       const result = await finalizeWebsiteProof({
         proof_id: session.id,
-        project_id: selectedProjectId,
+        project_id: projectId,
       })
       setSaveResult(result)
       setSaveState(result.already_finalized ? "already_saved" : "saved")
@@ -7637,6 +7648,92 @@ export function ExtensionProofPanel({
       setSaveError(err instanceof Error ? err.message : "This Website Proof could not be saved safely.")
     }
   }
+
+  /**
+   * Keep the completed proof in the Proof Vault without attaching it to any
+   * project. The proof and its analysis are already durably persisted server-
+   * side as a vault-only item, so this is a pure completion acknowledgement —
+   * nothing is mutated and nothing is silently attached.
+   */
+  function handleKeepInVault() {
+    if (!session || session.status !== "completed") return
+    setSaveState("kept_in_vault")
+    setSaveError(null)
+    clearActiveExtensionProofSession(session.id)
+  }
+
+  async function handleSaveProof() {
+    if (!session || session.status !== "completed") return
+    if (saveMode === "vault") {
+      handleKeepInVault()
+      return
+    }
+    if (saveMode === "create") {
+      const title = newProjectTitle.trim()
+      const repoUrl = newProjectRepoUrl.trim()
+      if (!title) {
+        setSaveState("error")
+        setSaveError("Enter a title for the new project.")
+        return
+      }
+      if (!repoUrl) {
+        setSaveState("error")
+        setSaveError("Enter the project's public GitHub repository URL. If this proof has no repository, choose “Keep in Proof Vault” instead — you can attach it to a project later.")
+        return
+      }
+      setSaveState("saving")
+      setSaveError(null)
+      let project: VBRProjectResponse
+      try {
+        // The canonical project row is persisted FIRST via the existing
+        // projects endpoint; only then is the proof finalized against it. A
+        // creation failure leaves the completed proof untouched and retryable.
+        project = await createVBRProject({
+          title,
+          repo_url: repoUrl,
+          deployed_url: session.website_url ?? null,
+        })
+      } catch (err) {
+        setSaveState("error")
+        setSaveError(err instanceof Error ? err.message : "The new project could not be created.")
+        return
+      }
+      setAvailableProjects((current) => [project, ...current.filter((p) => p.id !== project.id)])
+      setSelectedProjectId(project.id)
+      // If attachment fails after creation, the project already exists — the
+      // retry path is the existing-project attach (idempotent), never a
+      // duplicate project creation.
+      setSaveMode("existing")
+      await attachProofToProject(project.id)
+      return
+    }
+    if (!selectedProjectId) {
+      setSaveState("error")
+      setSaveError("Select the project this Website Proof belongs to before saving.")
+      return
+    }
+    await attachProofToProject(selectedProjectId)
+  }
+
+  // When a completed session hydrates, default the completion flow to the
+  // student's original intent: a session started against a project defaults to
+  // attaching to that project; a "Proof Vault only" session defaults to the
+  // vault. The student can still switch modes explicitly. The repository URL
+  // provided at recording time is offered as an editable prefill for the
+  // create-project path — never auto-submitted.
+  const completionDefaultsSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!session || session.status !== "completed") return
+    if (completionDefaultsSessionRef.current === session.id) return
+    completionDefaultsSessionRef.current = session.id
+    if (session.project_id) {
+      setSaveMode("existing")
+      setSelectedProjectId((current) => current || session.project_id || "")
+    } else {
+      setSaveMode("vault")
+    }
+    if (session.github_url) setNewProjectRepoUrl((current) => current || session.github_url || "")
+  }, [session])
 
   // On mount, check for follow-up intent stored by the evidence card
   useEffect(() => {
@@ -8841,39 +8938,141 @@ export function ExtensionProofPanel({
         )}
 
         {/* Canonical finalization is intentionally the final result panel. */}
-        {isCompleted && (
-          <div data-testid="website-proof-finalization" style={{ border: `1px solid ${isSaved ? "#86efac" : "var(--line)"}`, borderRadius: 14, background: isSaved ? "#f0fdf4" : "var(--paper)", padding: "18px", display: "grid", gap: 12 }}>
+        {isCompleted && (() => {
+          const keptInVault = saveState === "kept_in_vault"
+          const modeRadio = (mode: "vault" | "existing" | "create") => ({
+            checked: saveMode === mode,
+            disabled: saveState === "saving",
+            onChange: () => {
+              setSaveMode(mode)
+              setSaveError(null)
+              if (saveState === "error") setSaveState("not_saved")
+            },
+          })
+          const radioLabelStyle = { display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12.5, color: "var(--ink-2)", lineHeight: 1.55, cursor: "pointer" } as const
+          const saveButtonLabel =
+            saveState === "saving"
+              ? "Saving…"
+              : saveMode === "vault"
+                ? "Keep in Proof Vault"
+                : saveMode === "create"
+                  ? "Create project & attach proof"
+                  : "Save this proof"
+          return (
+          <div data-testid="website-proof-finalization" style={{ border: `1px solid ${isSaved || keptInVault ? "#86efac" : "var(--line)"}`, borderRadius: 14, background: isSaved || keptInVault ? "#f0fdf4" : "var(--paper)", padding: "18px", display: "grid", gap: 12 }}>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 800, color: isSaved ? "#166534" : "var(--ink)" }}>
-                {isSaved ? "Saved" : "Save this proof"}
+              <div style={{ fontSize: 16, fontWeight: 800, color: isSaved || keptInVault ? "#166534" : "var(--ink)" }}>
+                {isSaved ? "Saved" : keptInVault ? "Kept in Proof Vault" : "Save this proof"}
               </div>
-              <p style={{ margin: "5px 0 0", fontSize: 12, color: isSaved ? "#166534" : "var(--ink-2)", lineHeight: 1.6 }}>
-                Attach this completed Website Proof to a project so it appears in your Work Passport and reports.
+              <p style={{ margin: "5px 0 0", fontSize: 12, color: isSaved || keptInVault ? "#166534" : "var(--ink-2)", lineHeight: 1.6 }}>
+                {isSaved
+                  ? "Attached to a project — it now counts in that project's report and your Work Passport."
+                  : keptInVault
+                    ? "This proof and its evidence are preserved in your Proof Vault under its skills. It is not counted in any project report. You can attach it to a project later."
+                    : "This proof is safely stored. Keep it in your Proof Vault, or attach it to a project so it counts in that project's report and your Work Passport."}
               </p>
             </div>
 
-            {!isSaved && (
-              <div style={{ display: "grid", gap: 5 }}>
-                <label htmlFor="website-proof-save-project" style={{ fontSize: 12, fontWeight: 700, color: "var(--ink-2)" }}>
-                  Project
+            {!isSaved && !keptInVault && (
+              <div style={{ display: "grid", gap: 10 }}>
+                <label style={radioLabelStyle}>
+                  <input type="radio" name="website-proof-save-mode" data-testid="website-proof-save-mode-vault" {...modeRadio("vault")} />
+                  <span>
+                    <strong style={{ color: "var(--ink)" }}>Keep in Proof Vault.</strong>{" "}
+                    Evidence stays preserved under its skills — not counted in any project report. No project needed.
+                  </span>
                 </label>
-                <select
-                  id="website-proof-save-project"
-                  data-testid="website-proof-save-project-select"
-                  value={selectedProjectId}
-                  onChange={(event) => {
-                    setSelectedProjectId(event.target.value)
-                    setSaveError(null)
-                    if (saveState === "error") setSaveState("not_saved")
-                  }}
-                  disabled={saveState === "saving"}
-                  style={inp}
-                >
-                  <option value="">Select a project</option>
-                  {availableProjects.map((project) => (
-                    <option key={project.id} value={project.id}>{project.title}</option>
-                  ))}
-                </select>
+
+                <label style={radioLabelStyle}>
+                  <input type="radio" name="website-proof-save-mode" data-testid="website-proof-save-mode-existing" {...modeRadio("existing")} />
+                  <span>
+                    <strong style={{ color: "var(--ink)" }}>Attach to one of my existing projects.</strong>
+                  </span>
+                </label>
+                {saveMode === "existing" && (
+                  <div style={{ display: "grid", gap: 5, paddingLeft: 24 }}>
+                    {projectLoadError && (
+                      <div role="alert" style={{ fontSize: 11, color: "#991b1b" }}>{projectLoadError}</div>
+                    )}
+                    {availableProjects.length === 0 && !projectLoadError ? (
+                      <div data-testid="website-proof-no-projects" style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>
+                        You have no projects yet — choose “Create a new project” below, or keep this proof in your Proof Vault.
+                      </div>
+                    ) : (
+                      <select
+                        id="website-proof-save-project"
+                        data-testid="website-proof-save-project-select"
+                        value={selectedProjectId}
+                        onChange={(event) => {
+                          setSelectedProjectId(event.target.value)
+                          setSaveError(null)
+                          if (saveState === "error") setSaveState("not_saved")
+                        }}
+                        disabled={saveState === "saving"}
+                        style={inp}
+                      >
+                        <option value="">Select a project</option>
+                        {availableProjects.map((project) => (
+                          <option key={project.id} value={project.id}>{project.title}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+
+                <label style={radioLabelStyle}>
+                  <input type="radio" name="website-proof-save-mode" data-testid="website-proof-save-mode-create" {...modeRadio("create")} />
+                  <span>
+                    <strong style={{ color: "var(--ink)" }}>Create a new project and attach this proof to it.</strong>
+                  </span>
+                </label>
+                {saveMode === "create" && (
+                  <div style={{ display: "grid", gap: 8, paddingLeft: 24 }}>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <label htmlFor="website-proof-create-title" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-2)" }}>
+                        Project title *
+                      </label>
+                      <input
+                        id="website-proof-create-title"
+                        data-testid="website-proof-create-title"
+                        type="text"
+                        value={newProjectTitle}
+                        placeholder="e.g. My Portfolio Site"
+                        disabled={saveState === "saving"}
+                        onChange={(event) => {
+                          setNewProjectTitle(event.target.value)
+                          setSaveError(null)
+                          if (saveState === "error") setSaveState("not_saved")
+                        }}
+                        style={inp}
+                      />
+                    </div>
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <label htmlFor="website-proof-create-repo" style={{ fontSize: 11.5, fontWeight: 700, color: "var(--ink-2)" }}>
+                        GitHub repository URL *
+                      </label>
+                      <input
+                        id="website-proof-create-repo"
+                        data-testid="website-proof-create-repo"
+                        type="url"
+                        value={newProjectRepoUrl}
+                        placeholder="https://github.com/owner/repo"
+                        disabled={saveState === "saving"}
+                        onChange={(event) => {
+                          setNewProjectRepoUrl(event.target.value)
+                          setSaveError(null)
+                          if (saveState === "error") setSaveState("not_saved")
+                        }}
+                        style={inp}
+                      />
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.55 }}>
+                      VeriBridge projects are repository-anchored. The project is created first, then this
+                      proof is attached to it — nothing is created automatically. No repository? Keep the
+                      proof in your Proof Vault instead; it stays fully preserved.
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -8883,16 +9082,39 @@ export function ExtensionProofPanel({
               </div>
             )}
 
-            {!isSaved && (
+            {!isSaved && !keptInVault && (
               <div>
                 <button
                   type="button"
+                  data-testid="website-proof-save-action"
                   onClick={() => void handleSaveProof()}
                   disabled={saveState === "saving"}
                   style={{ border: "1px solid var(--ink)", background: saveState === "saving" ? "var(--bg-2)" : "var(--ink)", color: saveState === "saving" ? "var(--muted)" : "#fff", borderRadius: 10, padding: "10px 18px", fontWeight: 800, fontSize: 14, cursor: saveState === "saving" ? "not-allowed" : "pointer" }}
                 >
-                  {saveState === "saving" ? "Saving…" : "Save this proof"}
+                  {saveButtonLabel}
                 </button>
+              </div>
+            )}
+
+            {keptInVault && (
+              <div data-testid="website-proof-kept-in-vault" style={{ display: "grid", gap: 8 }}>
+                <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+                  <a href="/student/vbr/passport/vault" style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View Proof Vault</a>
+                  <a href="/student/vbr/passport" style={{ color: "#166534", fontSize: 12, fontWeight: 700 }}>View in Passport</a>
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    data-testid="website-proof-attach-after-vault"
+                    onClick={() => {
+                      setSaveState("not_saved")
+                      setSaveMode(availableProjects.length > 0 ? "existing" : "create")
+                    }}
+                    style={{ border: "1px solid #86efac", background: "#fff", color: "#166534", borderRadius: 9, padding: "8px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer" }}
+                  >
+                    Attach to a project instead
+                  </button>
+                </div>
               </div>
             )}
 
@@ -8908,7 +9130,7 @@ export function ExtensionProofPanel({
                   <button
                     type="button"
                     data-testid="website-proof-reconcile-save"
-                    onClick={() => void handleSaveProof()}
+                    onClick={() => void attachProofToProject(savedProjectId)}
                     disabled={saveState === "saving"}
                     style={{ border: "1px solid #86efac", background: "#fff", color: "#166534", borderRadius: 9, padding: "8px 12px", fontWeight: 700, fontSize: 12, cursor: saveState === "saving" ? "not-allowed" : "pointer" }}
                   >
@@ -8923,7 +9145,8 @@ export function ExtensionProofPanel({
               </div>
             )}
           </div>
-        )}
+          )
+        })()}
       </div>
     )
   }
