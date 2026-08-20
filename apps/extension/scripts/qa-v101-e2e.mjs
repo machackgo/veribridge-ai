@@ -11,6 +11,16 @@
 //      same-origin and CROSS-ORIGIN navigation and SPA route changes with
 //      exactly one HUD; unrelated tabs never show the HUD and their events
 //      are never uploaded.
+//   C. Arbitrary-navigation matrix (manual retest bug 0→1→0→2): the HUD
+//      follows the ACTIVE PROOF SESSION through browser Back, Back→new
+//      forward branch, repeated Back/Forward, SPA route changes across the
+//      internal-path boundary, and BFCache restores — with timer and event
+//      count derived from authoritative session state, exactly one HUD, and
+//      Stop & Send working from a page reached after history branching.
+//      Session C runs against a REAL local HTTP server (no interception) with
+//      Chrome's BackForwardCache ENABLED (Playwright disables it by default,
+//      which is exactly why pre-fix automated runs could not see the manual
+//      failure mode).
 //
 // The screen-recording MediaRecorder itself is not driven here (Chromium's
 // desktop-capture picker cannot be automated reliably cross-platform); the
@@ -71,6 +81,43 @@ const apiServer = http.createServer((req, res) => {
   })
 })
 await new Promise((resolve) => apiServer.listen(API_PORT, "127.0.0.1", resolve))
+
+// ── Real local nav server for Session C ─────────────────────────────────────
+// Route interception can suppress BFCache; the arbitrary-navigation matrix
+// needs REAL document loads, real history entries, and real BFCache restores,
+// so its pages come from an actual HTTP server. localhost paths mirror the
+// production shape: /d/* are recordable pages, /dashboard is a VeriBridge-
+// internal app path (the shared contract treats localhost app prefixes as
+// internal, exactly like veribridgeai.com/dashboard).
+const NAV_PORT = 8129
+function navPage(name, links) {
+  return `<!doctype html><html><head><title>${name}</title></head><body>
+  <h1 style="font-family:sans-serif">${name}</h1>
+  <p>Result: demo output panel for ${name}</p>
+  ${links.map(([href, id]) => `<a id="${id}" href="${href}">${id}</a>`).join(" | ")}
+  <script>
+    window.addEventListener("pageshow", (e) => {
+      console.log("[navqa] pageshow " + location.pathname + " persisted=" + e.persisted);
+    });
+  </script></body></html>`
+}
+const navPages = {
+  "/d/dashboard": navPage("Dashboard (page 0)", [["/d/student", "to-student"], ["/d/recruiter", "to-recruiter"], ["/d/extra", "to-extra"]]),
+  "/d/student": navPage("Student (page 1)", [["/d/dashboard", "to-dashboard"], ["/d/recruiter", "to-recruiter"]]),
+  "/d/recruiter": navPage("Recruiter (page 2)", [["/d/dashboard", "to-dashboard"], ["/d/student", "to-student"]]),
+  "/d/extra": navPage("Extra (page 3)", [["/d/dashboard", "to-dashboard"]]),
+  "/dashboard": navPage("Internal app dashboard", [["/d/recruiter", "to-recruiter"]]),
+}
+const navServer = http.createServer((req, res) => {
+  const pathname = new URL(req.url, `http://localhost:${NAV_PORT}`).pathname
+  const body = navPages[pathname]
+  if (!body) { res.writeHead(404); res.end("not found"); return }
+  // no-store mirrors production Next.js dynamic responses (BFCache-hostile),
+  // while history restores of OTHER entries still exercise BFCache.
+  res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" })
+  res.end(body)
+})
+await new Promise((resolve) => navServer.listen(NAV_PORT, "127.0.0.1", resolve))
 
 const SCHEMA = 1
 const ACCESS_TOKEN = "qa-v101-access-token"
@@ -135,6 +182,10 @@ async function waitFor(fn, timeoutMs, label) {
 const context = await chromium.launchPersistentContext("", {
   headless: false,
   viewport: { width: 1280, height: 800 },
+  // Playwright disables Chrome's BackForwardCache by default. Real Chrome has
+  // it ON, and the manual 0→1→0→2 HUD regression involves history navigation —
+  // run with real-browser cache semantics.
+  ignoreDefaultArgs: ["--disable-back-forward-cache"],
   args: [
     `--disable-extensions-except=${stage}`,
     `--load-extension=${stage}`,
@@ -363,12 +414,186 @@ try {
     apiCalls.some((c) => c.url.endsWith("/qa-v101-session-wiki/workflow/visible-evidence") &&
       c.authorization === `Bearer ${ACCESS_TOKEN}`),
   )
+  await wikiTarget.close()
+
+  // ── Session C — arbitrary-navigation matrix (manual 0→1→0→2 regression) ───
+  const NAV = (p) => `http://localhost:${NAV_PORT}${p}`
+  const navTarget = await runSession({
+    label: "C (arbitrary navigation)",
+    sessionId: "qa-v101-session-nav",
+    websiteUrl: NAV("/d/dashboard"),
+    revision: 2,
+    appPage,
+  })
+  const navConsole = []
+  navTarget.on("console", (m) => { if (m.text().includes("[navqa]")) navConsole.push(m.text()) })
+
+  async function hudStats(page) {
+    try {
+      const text = await page.locator("#veribridge-recorder-host .bar").innerText({ timeout: 4000 })
+      const timer = text.match(/(\d{2}):(\d{2})/)
+      const events = text.match(/(\d+)\s+events?/)
+      return {
+        secs: timer ? Number(timer[1]) * 60 + Number(timer[2]) : null,
+        events: events ? Number(events[1]) : null,
+      }
+    } catch {
+      return { secs: null, events: null }
+    }
+  }
+  // BFCache restores commit without a load event — wait for commit + reconcile.
+  async function historyNav(page, direction) {
+    await page[direction]({ waitUntil: "commit" }).catch(() => undefined)
+    await page.waitForTimeout(1800)
+  }
+
+  await navTarget.waitForTimeout(1600)
+  const statsStart = await hudStats(navTarget)
+  record("C: HUD on page 0 at recording start", await hudVisible(navTarget), JSON.stringify(statsStart))
+  await navTarget.screenshot({ path: path.join(evidenceDir, "01-recording-dashboard.png") })
+
+  // TEST 1 — 0 → 1 (forward navigation via a real link click).
+  await navTarget.click("#to-student")
+  await navTarget.waitForURL("**/d/student")
+  await navTarget.waitForTimeout(1800)
+  const statsFwd = await hudStats(navTarget)
+  record("C: 0→1 HUD present after forward navigation", await hudVisible(navTarget), JSON.stringify(statsFwd))
+  record(
+    "C: timer continues (not reset) after forward navigation",
+    statsFwd.secs !== null && statsStart.secs !== null && statsFwd.secs >= statsStart.secs,
+    `start=${statsStart.secs}s fwd=${statsFwd.secs}s`,
+  )
+  await navTarget.screenshot({ path: path.join(evidenceDir, "02-forward-navigation-hud.png") })
+
+  // TEST 2 — browser Back → 0.
+  await historyNav(navTarget, "goBack")
+  record(
+    "C: 0→1→BACK→0 HUD present after browser Back",
+    await hudVisible(navTarget),
+    navTarget.url(),
+  )
+  await navTarget.screenshot({ path: path.join(evidenceDir, "03-back-navigation-hud.png") })
+
+  // TEST 3 — THE EXACT MANUAL REGRESSION: Back then a NEW forward branch.
+  await navTarget.click("#to-recruiter")
+  await navTarget.waitForURL("**/d/recruiter")
+  await navTarget.waitForTimeout(1800)
+  const statsBranch = await hudStats(navTarget)
+  record(
+    "C: 0→1→0→2 HUD present after Back→new-branch (manual bug)",
+    await hudVisible(navTarget),
+    `url=${navTarget.url()} ${JSON.stringify(statsBranch)}`,
+  )
+  record("C: exactly one HUD after history branching", (await hudHost(navTarget).count()) === 1)
+  record(
+    "C: timer continuity across Back→new-branch",
+    statsBranch.secs !== null && statsFwd.secs !== null && statsBranch.secs >= statsFwd.secs,
+    `fwd=${statsFwd.secs}s branch=${statsBranch.secs}s`,
+  )
+  record(
+    "C: event count never goes backward across navigation",
+    statsBranch.events !== null && statsStart.events !== null && statsBranch.events >= statsStart.events,
+    `start=${statsStart.events} branch=${statsBranch.events}`,
+  )
+  await navTarget.screenshot({ path: path.join(evidenceDir, "04-back-then-new-branch-hud.png") })
+
+  // TEST 4/5 — multiple Back/Forward traversals, HUD at every step.
+  await navTarget.click("#to-dashboard")
+  await navTarget.waitForURL("**/d/dashboard")
+  await navTarget.waitForTimeout(1500)
+  record("C: HUD after 2→0 link navigation", await hudVisible(navTarget), navTarget.url())
+  await navTarget.click("#to-extra")
+  await navTarget.waitForURL("**/d/extra")
+  await navTarget.waitForTimeout(1500)
+  record("C: HUD after 0→3 link navigation", await hudVisible(navTarget), navTarget.url())
+  await historyNav(navTarget, "goBack")
+  record("C: HUD after Back (multi-history step 1)", await hudVisible(navTarget), navTarget.url())
+  await historyNav(navTarget, "goBack")
+  record("C: HUD after second Back (multi-history step 2)", await hudVisible(navTarget), navTarget.url())
+  await historyNav(navTarget, "goForward")
+  record("C: HUD after Forward (multi-history step 3)", await hudVisible(navTarget), navTarget.url())
+  record("C: exactly one HUD after repeated Back/Forward", (await hudHost(navTarget).count()) === 1)
+  await navTarget.screenshot({ path: path.join(evidenceDir, "05-multi-history-hud.png") })
+
+  // TEST 6 — SPA route changes crossing the internal-path boundary. The HUD
+  // follows the SESSION TAB even onto internal app paths (capture stays
+  // excluded there); returning to an eligible route keeps exactly one HUD.
+  await navTarget.evaluate(() => history.pushState({}, "", "/dashboard"))
+  await navTarget.waitForTimeout(2000)
+  record("C: HUD stays with the session tab on internal SPA route", (await hudHost(navTarget).count()) === 1, navTarget.url())
+  await navTarget.evaluate(() => history.pushState({}, "", "/d/student"))
+  await navTarget.waitForTimeout(2000)
+  record("C: HUD present after SPA internal→eligible route", await hudVisible(navTarget), navTarget.url())
+  record("C: exactly one HUD across SPA route changes", (await hudHost(navTarget).count()) === 1)
+  // SPA back (popstate, same document).
+  await navTarget.evaluate(() => history.back())
+  await navTarget.waitForTimeout(2000)
+  record("C: HUD present after SPA popstate back", (await hudHost(navTarget).count()) === 1, navTarget.url())
+  await navTarget.evaluate(() => history.pushState({}, "", "/d/recruiter"))
+  await navTarget.waitForTimeout(1500)
+
+  // TEST 7 — BFCache actually engaged during the history traversals above.
+  record(
+    "C: BFCache restore occurred and was reconciled (pageshow persisted=true)",
+    navConsole.some((t) => t.includes("persisted=true")),
+    `${navConsole.filter((t) => t.includes("persisted=true")).length} restore(s)`,
+  )
+
+  // TEST 12/13 — Stop & Send from a page reached after history branching:
+  // exactly one upload, one finalization.
+  const statsPreStop = await hudStats(navTarget)
+  record(
+    "C: timer still authoritative before Stop & Send",
+    statsPreStop.secs !== null && statsBranch.secs !== null && statsPreStop.secs >= statsBranch.secs,
+    `branch=${statsBranch.secs}s preStop=${statsPreStop.secs}s`,
+  )
+  await navTarget.screenshot({ path: path.join(evidenceDir, "06-stop-and-send.png") })
+  await markVideoUploaded("qa-v101-session-nav")
+  const uploadC = await stopAndSendFromHud(navTarget, "C (arbitrary navigation)", "qa-v101-session-nav")
+  const uploadCallsC = apiCalls.filter((c) =>
+    c.url === "/api/v1/student/extension-proof/sessions/qa-v101-session-nav/upload")
+  record("C: exactly ONE proof upload after arbitrary navigation", uploadCallsC.length === 1, `${uploadCallsC.length} upload call(s)`)
+  const eventsC = uploadC.body?.workflow_events ?? []
+  record(
+    "C: workflow contains the branched navigation trail",
+    Array.isArray(uploadC.body?.tracked_urls) &&
+      uploadC.body.tracked_urls.some((u) => u.includes("/d/recruiter")) &&
+      uploadC.body.tracked_urls.some((u) => u.includes("/d/student")),
+    JSON.stringify(uploadC.body?.tracked_urls ?? []),
+  )
+  record(
+    "C: no page-level evidence from VeriBridge-internal paths",
+    !eventsC.some((e) =>
+      (e.type === "page_visit" || e.type === "click" || e.type === "input_change") &&
+      String(e.page_url ?? "").includes(`localhost:${NAV_PORT}/dashboard`)),
+    `${eventsC.length} workflow events`,
+  )
+  const okMsgC = navTarget.locator("#veribridge-recorder-host .msg.ok")
+  let uploadedShownC = false
+  try {
+    await okMsgC.waitFor({ state: "attached", timeout: 8000 })
+    uploadedShownC = true
+  } catch { /* recorded below */ }
+  record("C: HUD reports the successful upload", uploadedShownC)
+  await navTarget.screenshot({ path: path.join(evidenceDir, "07-proof-uploaded.png") })
+
+  // TEST 14 — completed session: HUD does not come back on later history
+  // navigation. Wait out the auto-dismiss, then traverse history.
+  await navTarget.waitForTimeout(6500)
+  await historyNav(navTarget, "goBack")
+  await navTarget.waitForTimeout(1500)
+  record(
+    "C: HUD does NOT reappear after the session completed",
+    (await hudHost(navTarget).count()) === 0,
+    navTarget.url(),
+  )
 } catch (err) {
   record("harness", false, err.message)
   exitCode = 1
 } finally {
   await context.close().catch(() => undefined)
   apiServer.close()
+  navServer.close()
 }
 
 const passCount = results.filter((r) => r.pass).length
