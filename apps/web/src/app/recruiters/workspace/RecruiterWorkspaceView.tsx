@@ -11,7 +11,6 @@
  */
 
 import { useCallback, useEffect, useState } from "react"
-import Link from "next/link"
 
 import {
   Badge,
@@ -21,6 +20,7 @@ import {
   LoadingState,
   TOKEN,
 } from "../../../../components/passport/shared"
+import { RecruiterNav } from "../../../../components/recruiter/RecruiterNav"
 import {
   deleteConnection,
   listConnections,
@@ -276,53 +276,7 @@ export function RecruiterWorkspaceView() {
         )}
       </div>
 
-      <nav style={{ display: "flex", gap: 8 }} aria-label="Recruiter sections">
-        <span
-          aria-current="page"
-          style={{
-            padding: "7px 14px",
-            borderRadius: 999,
-            background: TOKEN.indigo,
-            color: "#fff",
-            fontSize: 12.5,
-            fontWeight: 700,
-          }}
-        >
-          Saved candidates
-        </span>
-        <a
-          data-testid="workspace-nav-search"
-          href="/recruiters/search"
-          style={{
-            padding: "7px 14px",
-            borderRadius: 999,
-            border: `1px solid ${TOKEN.line}`,
-            background: "#fff",
-            color: TOKEN.muted,
-            fontSize: 12.5,
-            fontWeight: 600,
-            textDecoration: "none",
-          }}
-        >
-          Search
-        </a>
-        <Link
-          data-testid="workspace-nav-briefs"
-          href="/recruiters/briefs"
-          style={{
-            padding: "7px 14px",
-            borderRadius: 999,
-            border: `1px solid ${TOKEN.line}`,
-            background: "#fff",
-            color: TOKEN.muted,
-            fontSize: 12.5,
-            fontWeight: 600,
-            textDecoration: "none",
-          }}
-        >
-          Hiring Briefs
-        </Link>
-      </nav>
+      <RecruiterNav active="workspace" testidPrefix="workspace" />
 
       {loading ? (
         <LoadingState label="Loading saved candidates…" />
