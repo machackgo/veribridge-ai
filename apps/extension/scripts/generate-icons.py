@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Generate the VeriBridge Recorder icon set.
+"""LEGACY — DO NOT RUN FOR RELEASE ICONS.
 
-Design: deep-indigo rounded square, white "VB" monogram, red recording dot.
+Since v1.0.1 the packaged extension icons (icons/icon{16,32,48,128}.png and
+store-assets/store-icon-128.png) are the canonical VeriBridge Keystone brand
+assets (navy tile, white Keystone V, green keystone) copied from the approved
+Keystone V production package. Re-running this script would overwrite them
+with the retired purple "VB" monogram. It is kept only as provenance for the
+pre-1.0.1 icon set and the promo-tile geometry.
+
+Original design: deep-indigo rounded square, white "VB" monogram, red recording dot.
 The 128px icon keeps its artwork inside the central 96x96 region with
 transparent padding, per Chrome Web Store icon guidance. Also emits the
 440x280 small promo tile. Deterministic output (no timestamps embedded).
