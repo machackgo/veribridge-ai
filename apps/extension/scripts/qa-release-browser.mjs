@@ -142,13 +142,14 @@ await context.route("http://localhost:4599/**", (route) =>
 try {
   // 1 + 4 + 5 + 6 on the production app origin
   await withPage(context, "https://veribridgeai.com/student/proofs/website", async (page) => {
+    const manifestVersion = JSON.parse(fs.readFileSync("manifest.json", "utf8")).version
     const pongs = await ping(page, "qa-ping-1")
     const pong = pongs.find((m) => m.payload?.request_id === "qa-ping-1")
     record(
       "detection PONG on production origin",
       Boolean(pong) &&
         pong.payload.schema_version === SCHEMA &&
-        pong.payload.build_version === "1.0.0" &&
+        pong.payload.build_version === manifestVersion &&
         pong.payload.bridge_trusted === true &&
         pong.payload.context_valid === true,
       JSON.stringify(pong?.payload ?? null),
