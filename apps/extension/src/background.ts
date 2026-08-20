@@ -17,6 +17,7 @@ import {
   WEBSITE_PROOF_RECORDER_SCHEMA_VERSION,
   isAllowedRecorderApiBase,
   isRecorderBuildAtLeast,
+  isVeriBridgeInternalAppLocation,
   refreshWebsiteProofRecorderAuth,
   safeRecorderDiagnostic,
   type RecorderInitRequest,
@@ -227,6 +228,13 @@ interface PersistedRecordingState {
   videoKeyframeCount?: number
   captureSurface?: string | null
   recorderTabId?: number | null
+  /**
+   * Every tab that belongs to the recording session (target tab + tabs opened
+   * from it). Restoring only originalTabId after a service-worker restart
+   * silently untracked the other session tabs, which permanently removed
+   * their HUD (GET_STATE answered isTrackedTab=false forever).
+   */
+  trackedTabIds?: number[]
 }
 
 interface PersistedEvidenceBuffer {
@@ -273,6 +281,7 @@ function persistRecordingState(): void {
     videoKeyframeCount: state.videoKeyframeCount,
     captureSurface: state.captureSurface,
     recorderTabId: state.recorderTabId,
+    trackedTabIds: [...state.trackedTabIds],
   }
   const write = recordingStateWriteQueue.then(() =>
     chrome.storage.local.set({ [_SW_STATE_KEY]: payload }),
@@ -400,6 +409,12 @@ async function persistRecorderSessionConfig(config: RecorderSessionConfig): Prom
   await write
 }
 
+// True while the startup storage read below is still in flight. A GET_STATE
+// answered during this window reflects the DEFAULT state, not the absence of a
+// session — content scripts must treat such answers as indeterminate instead
+// of tearing down their HUD. Surfaced via the restorePending field.
+let sessionRestorePending = true
+
 // On service-worker startup, check whether a recording was active before the SW
 // was killed.  If so, restore the core fields so VISIBLE_EVIDENCE_EVENT messages
 // are accepted again and re-broadcast START_CAPTURING to all open tabs.
@@ -464,7 +479,13 @@ void chrome.storage.local.get([
   state.stoppedAt    = rs.stoppedAt ?? null
   state.originalTabId = rs.originalTabId ?? null
   state.proofBuilderTabId = rs.proofBuilderTabId ?? null
-  state.trackedTabIds = new Set()
+  // Restore the FULL session tab set — the target tab plus every tab opened
+  // from it. Restoring only originalTabId permanently untracked the rest.
+  state.trackedTabIds = new Set(
+    Array.isArray(rs.trackedTabIds)
+      ? rs.trackedTabIds.filter((id): id is number => typeof id === "number")
+      : [],
+  )
   if (state.originalTabId !== null) state.trackedTabIds.add(state.originalTabId)
   state.videoUploadStatus = rs.videoUploadStatus ?? "none"
   state.videoUploadError = rs.videoUploadError ?? null
@@ -476,10 +497,10 @@ void chrome.storage.local.get([
   state.statusMessage = state.isRecording
     ? "Recording resumed after extension restart…"
     : `Stopped — ${state.events.length} event(s) recovered. Click Send Proof to upload.`
-  // Re-broadcast START_CAPTURING so any content scripts that missed the original
-  // broadcast (because the SW was dead) begin capturing immediately.
+  // Re-send START_CAPTURING to the session's own tabs so content scripts that
+  // missed the original signal (because the SW was dead) begin capturing again.
   if (state.isRecording) {
-    void broadcastToAllTabs({ type: "START_CAPTURING" })
+    broadcastStartCapturingToSessionTabs()
     // An extension reload destroys the recorder page's JavaScript context and
     // its in-memory MediaRecorder even when the proof session itself restores
     // successfully. Reconnect (or recreate) that recorder tab as part of the
@@ -488,6 +509,8 @@ void chrome.storage.local.get([
     // recording Website Proof page will correctly never send.
     openOrRefreshRecorderTab({ active: true })
   }
+}).finally(() => {
+  sessionRestorePending = false
 })
 
 // ── Visual frame capture ──────────────────────────────────────────────────────
@@ -529,17 +552,12 @@ async function captureVisualFrame(
     }
     if (!tab.windowId) return
 
-    // Skip VeriBridge-internal and chrome:// pages — no useful evidence there.
+    // Skip VeriBridge-internal app pages and chrome:// pages — no evidence
+    // may ever be captured there (same path-scoped rule the content script
+    // applies for DOM snapshots).
     const tabUrl = tab.url ?? tab.pendingUrl ?? ""
-    if (
-      tabUrl.startsWith("chrome://") ||
-      tabUrl.startsWith("about:") ||
-      tabUrl.includes("veribridgeai.com/dashboard") ||
-      tabUrl.includes("veribridgeai.com/admin") ||
-      tabUrl.includes("localhost:3000/dashboard") ||
-      tabUrl.includes("localhost:3000/admin")
-    ) {
-      dbgVE("[VisualFrame] skip — internal page:", tabUrl.slice(0, 60))
+    if (isCaptureExcludedUrl(tabUrl)) {
+      dbgVE("[VisualFrame] skip — internal/excluded page:", tabUrl.slice(0, 60))
       return
     }
 
@@ -654,6 +672,42 @@ async function broadcastToAllTabs(message: unknown): Promise<void> {
     if (tab.id !== undefined) {
       chrome.tabs.sendMessage(tab.id, message).catch(() => undefined)
     }
+  }
+}
+
+/** True when a tab belongs to the active recording session's tab set. */
+function isSessionTabId(tabId: number | undefined): boolean {
+  if (tabId === undefined) return false
+  return state.trackedTabIds.has(tabId) || tabId === state.proofBuilderTabId
+}
+
+/**
+ * Send START_CAPTURING only to the session's own tabs (target tab, tabs opened
+ * from it, and the proof-builder tab for its silent modal sync). Unrelated
+ * open tabs must never be told to start capturing — that both leaked the
+ * recorder HUD into unrelated tabs and recorded browsing activity outside the
+ * proof session.
+ */
+function broadcastStartCapturingToSessionTabs(): void {
+  const targets = new Set<number>(state.trackedTabIds)
+  if (state.proofBuilderTabId !== null) targets.add(state.proofBuilderTabId)
+  for (const tabId of targets) {
+    chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
+  }
+}
+
+/** True when a URL is a VeriBridge-internal app page or a browser page that
+ *  must never be captured as evidence. */
+function isCaptureExcludedUrl(url: string): boolean {
+  if (!url) return true
+  if (url.startsWith("chrome://") || url.startsWith("chrome-extension://") || url.startsWith("about:")) {
+    return true
+  }
+  try {
+    const parsed = new URL(url)
+    return isVeriBridgeInternalAppLocation(parsed)
+  } catch {
+    return true
   }
 }
 
@@ -861,7 +915,7 @@ function startRecordingForConfiguredTarget(
   persistRecordingState()
   flushEvidenceBuffer()
   void rememberProofBuilderTab()
-  void broadcastToAllTabs({ type: "START_CAPTURING" })
+  broadcastStartCapturingToSessionTabs()
 
   // A recorder tab can survive an unpacked-extension reload while its JS
   // context is invalidated. Merely focusing that stale tab leaves
@@ -937,7 +991,17 @@ chrome.runtime.onMessage.addListener(
   (msg: { type: string; payload?: unknown }, sender: chrome.runtime.MessageSender, sendResponse) => {
     switch (msg.type) {
       case "GET_STATE":
-        sendResponse(publicState())
+        // isTrackedTab is per-sender: content scripts use it to decide whether
+        // THIS tab is part of the recording session (HUD + capture eligibility).
+        // Extension pages (popup, recorder tab) have no sender.tab and get false.
+        sendResponse({
+          ...publicState(),
+          isTrackedTab: sender.tab?.id !== undefined && state.trackedTabIds.has(sender.tab.id),
+          // While the startup restore is reading storage, this answer reflects
+          // the default state — content scripts keep their HUD instead of
+          // treating it as an authoritative "no session".
+          restorePending: sessionRestorePending,
+        })
         break
 
       case "GET_RECORDER_PRIVATE_STATE": {
@@ -1446,6 +1510,12 @@ chrome.runtime.onMessage.addListener(
       }
 
       case "WORKFLOW_EVENT":
+        // Only the session's tracked tabs may contribute workflow events —
+        // browsing activity from unrelated tabs is never recorded or uploaded.
+        // (Extension-internal senders have no sender.tab and pass through.)
+        if (sender.tab?.id !== undefined && !state.trackedTabIds.has(sender.tab.id)) {
+          break
+        }
         if (state.isRecording) {
           state.events.push(msg.payload as WorkflowEvent)
           persistEvidenceBuffer()
@@ -1483,6 +1553,15 @@ chrome.runtime.onMessage.addListener(
         break
 
       case "VISIBLE_EVIDENCE_EVENT":
+        // Same tracked-tab requirement as WORKFLOW_EVENT: DOM snapshots may
+        // only come from tabs that belong to this recording session.
+        if (
+          sender.tab?.id !== undefined &&
+          !state.trackedTabIds.has(sender.tab.id)
+        ) {
+          dbgVE("VISIBLE_EVIDENCE_EVENT from untracked tab — event dropped")
+          break
+        }
         if (state.isRecording) {
           const veEvent = msg.payload as VisibleEvidenceEvent
           state.visibleEvidenceEvents.push(veEvent)
@@ -1551,16 +1630,25 @@ chrome.tabs.onCreated.addListener((tab) => {
       page_title: tab.title ?? "",
     })
     persistEvidenceBuffer()
+    // The tracked set must survive a service-worker restart, or this tab's
+    // HUD disappears permanently the next time the worker is killed.
+    persistRecordingState()
   }
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!state.isRecording) return
-  if (changeInfo.status !== "complete") return
-  const url = tab.url
+  // React to BOTH full-document loads (status "complete") and URL-only
+  // updates. Single-page pushState/replaceState navigations surface as
+  // changeInfo.url without a reliable "complete" in every Chrome release —
+  // gating solely on "complete" made HUD reconciliation depend on the
+  // browser's navigation type instead of the session's authoritative state.
+  if (changeInfo.status !== "complete" && changeInfo.url === undefined) return
+  const url = tab.url ?? changeInfo.url
   if (!url || url.startsWith("chrome://") || url.startsWith("chrome-extension://") || url === "about:blank" || url === "about:newtab") return
 
-  // Record navigation events for tracked tabs only.
+  // Record navigation events for tracked tabs only. trackedTabUrls dedupes the
+  // double-fire when one navigation reports both a url change and "complete".
   if (state.trackedTabIds.has(tabId)) {
     const safeUrl = redactUrl(url)
     const lastUrl = state.trackedTabUrls.get(tabId)
@@ -1576,10 +1664,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     state.trackedTabUrls.set(tabId, safeUrl)
   }
 
-  // Send START_CAPTURING to ALL tabs during recording (not just tracked ones).
-  // This ensures the overlay re-appears after any page navigation in any tab,
-  // including the target website opened from the recorder tab or a new window.
-  chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
+  // Ask the session's own tabs (tracked tabs and the proof-builder tab) to
+  // reconcile against authoritative state. After a full-document navigation
+  // the fresh content script rehydrates capture + HUD exactly once; after an
+  // SPA route change the existing script re-evaluates eligibility. Unrelated
+  // tabs are never told to capture.
+  if (isSessionTabId(tabId)) {
+    chrome.tabs.sendMessage(tabId, { type: "START_CAPTURING" }).catch(() => undefined)
+  }
 })
 
 // Re-inject overlay when the user switches to a tab during recording.
@@ -1587,6 +1679,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 // missed the initial broadcast (e.g. the recorder tab was focused at that time).
 chrome.tabs.onActivated.addListener((activeInfo) => {
   if (!state.isRecording) return
+  if (!isSessionTabId(activeInfo.tabId)) return
   chrome.tabs.get(activeInfo.tabId, (tab) => {
     if (chrome.runtime.lastError) return
     const url = tab.url ?? ""

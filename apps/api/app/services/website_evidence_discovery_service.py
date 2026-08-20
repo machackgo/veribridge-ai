@@ -94,6 +94,21 @@ def _hostname_is_safe(hostname: str) -> tuple[bool, str | None]:
     if h in {"localhost"} or h.endswith(".localhost") or h.endswith(".local"):
         return False, "private_host"
 
+    # IP literals never need DNS — classify them directly. Resolving a literal
+    # through getaddrinfo lets a NAT64/DNS64 resolver synthesize a PUBLIC IPv6
+    # address for a private IPv4 literal (observed live on a NAT64 network:
+    # 192.168.1.1 → 2607:7700:…:c0a8:101), silently bypassing the private-range
+    # guard below. website_public_inspection_service applies the same
+    # literal-first rule.
+    try:
+        ipaddress.ip_address(h)
+    except ValueError:
+        pass
+    else:
+        if _ip_is_unsafe(h):
+            return False, "private_host"
+        return True, None
+
     # DNS pre-resolution: get all addresses and check each one.
     # This defeats hostnames like spoofed.evil.com → 127.0.0.1
     # AND catches 169.254.169.254 (cloud metadata) that string matching misses.

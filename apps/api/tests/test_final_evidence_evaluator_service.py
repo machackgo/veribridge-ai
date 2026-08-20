@@ -543,6 +543,36 @@ def test_missing_github_suggests_github_proof_action_not_generic_learning():
     assert result.recommendations.mode == "proof_repair"
 
 
+def test_non_code_claims_never_get_add_github_url_action():
+    # Bug 5 (V1.0.1): a generic non-code Website Proof (research/operations on
+    # a public site) must not be told to add a GitHub repository — absence of
+    # GitHub evidence is not absence of skill.
+    wf = _strong_wf(["Research", "Information Literacy"])
+    wf["evidence_strength_score"] = 45
+    result = _svc(wf=wf).evaluate(
+        "u1", "s1", claimed_skills=["Research", "Information Literacy"], github_url=None,
+    )
+    payload = result.to_dict()
+    all_actions = [a["action_type"] for a in payload["next_best_actions"]] + [
+        a["action_type"] for a in payload["recommendations"]["proof_actions"]
+    ]
+    assert "add_github_url" not in all_actions
+
+
+def test_provided_repo_still_gets_run_github_analysis_for_any_claim():
+    # The student explicitly attached a repository — running its analysis stays
+    # an appropriate next step even for non-code claims.
+    wf = _strong_wf(["Research"])
+    wf["evidence_strength_score"] = 45
+    result = _svc(wf=wf).evaluate(
+        "u1", "s1", claimed_skills=["Research"], github_url="https://github.com/acme/notes",
+    )
+    assert any(
+        a["action_type"] == "run_github_analysis"
+        for a in result.to_dict()["next_best_actions"]
+    )
+
+
 def test_learning_actions_do_not_reduce_final_score():
     result = _strong_result(["Machine Learning", "Python"], ["Python", "sklearn"])
     score_with_recommendations = result.final_score

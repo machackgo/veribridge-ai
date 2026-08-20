@@ -2642,6 +2642,8 @@ class FinalEvidenceEvaluatorService:
         if gh and gh.status in ("not_run", "missing") and gh.status != "pass":
             target = code_skills[0] if code_skills else (claimed_skills[0] if claimed_skills else "GitHub evidence")
             if github_url:
+                # The student explicitly provided a repository — running its
+                # analysis is always an appropriate next step.
                 _add_once(NextBestAction(
                     action_type="run_github_analysis",
                     target_skill=target,
@@ -2654,7 +2656,11 @@ class FinalEvidenceEvaluatorService:
                     priority="high",
                     is_recording=False,
                 ))
-            else:
+            elif code_skills:
+                # Contextual: only ask for a repository when a claimed skill is
+                # actually code-oriented. A non-code proof (research, operations,
+                # navigating a public website) is never told to add GitHub —
+                # absence of GitHub evidence is not absence of skill.
                 _add_once(NextBestAction(
                     action_type="add_github_url",
                     target_skill=target,

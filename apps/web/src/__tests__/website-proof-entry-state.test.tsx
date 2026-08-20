@@ -381,6 +381,9 @@ describe("Website Proof entry-state contract", () => {
 
     expect(await screen.findByTestId("website-proof-finalization")).toHaveTextContent("Save this proof")
     expect(apiMocks.getExtensionProofSession).toHaveBeenCalledWith("session-old-localhost")
+    // Attaching is an explicit mode choice — vault-only sessions default to
+    // "Keep in Proof Vault".
+    fireEvent.click(screen.getByTestId("website-proof-save-mode-existing"))
     fireEvent.change(screen.getByTestId("website-proof-save-project-select"), { target: { value: PROJECT.id } })
     fireEvent.click(screen.getByRole("button", { name: "Save this proof" }))
 
@@ -414,6 +417,7 @@ describe("Website Proof entry-state contract", () => {
     apiMocks.getExtensionProofSession.mockResolvedValue(session())
     render(<ExtensionProofPanel onBack={() => undefined} requestedSessionId="session-old-localhost" />)
 
+    fireEvent.click(await screen.findByTestId("website-proof-save-mode-existing"))
     fireEvent.click(await screen.findByRole("button", { name: "Save this proof" }))
 
     // Target the save error specifically — the recorded-video section renders
@@ -488,5 +492,170 @@ describe("Website Proof entry-state contract", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("not found or is not available to this account")
     expect(screen.queryByText(/DEV: session\.id/)).not.toBeInTheDocument()
+  })
+})
+
+// ── V1.0.1 retest regressions ────────────────────────────────────────────────
+// Live incident (2026-08-20): POST /start returned a transient 503 AFTER the
+// recorder had acknowledged capture, and the DB transition had actually
+// committed (lost response). The page split-brained into "start failed" while
+// the extension recorded and later truthfully reported "uploaded" — which the
+// page rendered without backend confirmation.
+describe("V1.0.1 retest — start resilience and grounded upload state", () => {
+  const FRESH = {
+    id: "session-v101-retest",
+    skill_evidence_id: "evidence-new",
+    status: "created" as const,
+    website_url: "https://veribridgeai.com/",
+    claimed_skills: ["Research"],
+    proof_objective: "Walk through the VeriBridge public site end to end",
+    proof_upload_id: null,
+    started_at: null,
+  }
+
+  async function driveToStartClick() {
+    apiMocks.createSkillEvidence.mockResolvedValue({ id: "evidence-new" })
+    apiMocks.createExtensionProofSession.mockResolvedValue(session(FRESH))
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    fireEvent.change(screen.getByPlaceholderText(/https:\/\/your-project\.vercel\.app/i), { target: { value: "https://veribridgeai.com/" } })
+    fireEvent.change(screen.getByPlaceholderText("e.g. FastAPI, React, Machine Learning"), { target: { value: "Research" } })
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you'll walk through/i), { target: { value: "Walk through the VeriBridge public site end to end" } })
+    fireEvent.click(screen.getByText(/I understand and will avoid showing sensitive information/i))
+    fireEvent.click(screen.getByRole("button", { name: "Start proof" }))
+    await waitFor(() => expect(document.querySelector('[data-entry-state="ACTIVE"]')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole("button", { name: /Start Proof Demo/i }))
+  }
+
+  it("reconciles a lost-response start 503 against the session's real state instead of split-braining", async () => {
+    // Both POST attempts fail transiently, but the transition actually
+    // committed server-side — the reconciliation GET reveals "recording".
+    apiMocks.startExtensionProofSession.mockRejectedValue(new Error("Start session failed (HTTP 503)."))
+    apiMocks.getExtensionProofSession.mockResolvedValue(session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" }))
+
+    await driveToStartClick()
+
+    await waitFor(() => {
+      expect(apiMocks.startExtensionProofSession).toHaveBeenCalledTimes(2)
+    }, { timeout: 5000 })
+    await waitFor(() => {
+      expect(screen.queryByText(/Start session failed \(HTTP 503\)/)).not.toBeInTheDocument()
+      expect(document.querySelector('[data-entry-state="ACTIVE"]')).toBeInTheDocument()
+      expect(screen.getByText(/VeriBridge Extension is recording/i)).toBeInTheDocument()
+    }, { timeout: 5000 })
+  }, 15000)
+
+  it("retries the start call once and succeeds without user-visible failure", async () => {
+    apiMocks.startExtensionProofSession
+      .mockRejectedValueOnce(new Error("Start session failed (HTTP 503)."))
+      .mockResolvedValueOnce(session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:21Z" }))
+
+    await driveToStartClick()
+
+    await waitFor(() => {
+      expect(apiMocks.startExtensionProofSession).toHaveBeenCalledTimes(2)
+      expect(screen.queryByText(/Start session failed/)).not.toBeInTheDocument()
+      expect(screen.getByText(/VeriBridge Extension is recording/i)).toBeInTheDocument()
+    }, { timeout: 5000 })
+  }, 15000)
+
+  it("still fails closed when the session genuinely never started", async () => {
+    apiMocks.startExtensionProofSession.mockRejectedValue(new Error("Start session failed (HTTP 503)."))
+    apiMocks.getExtensionProofSession.mockResolvedValue(session(FRESH)) // still "created"
+
+    await driveToStartClick()
+
+    await waitFor(() => {
+      expect(screen.getByText(/Start session failed \(HTTP 503\)/)).toBeInTheDocument()
+    }, { timeout: 5000 })
+    expect(screen.queryByText(/VeriBridge Extension is recording/i)).not.toBeInTheDocument()
+  }, 15000)
+
+  it("never renders upload-complete from an extension claim the backend does not confirm", async () => {
+    const active = session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" })
+    saveActiveExtensionProofSession({
+      sessionId: active.id,
+      form: { websiteUrl: active.website_url ?? "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
+      configRevision: 1,
+      savedAt: "2026-08-20T05:00:00Z",
+    })
+    // Resume load + the confirmation refetch BOTH still see "recording":
+    // the extension's "uploaded" claim is unfounded and must not render.
+    apiMocks.getExtensionProofSession.mockResolvedValue(active)
+
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }))
+    await waitFor(() => expect(document.querySelector('[data-entry-state="ACTIVE"]')).toBeInTheDocument())
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      data: {
+        source: "veribridge-extension",
+        type: "VERIBRIDGE_EXTENSION_STATE",
+        payload: { sessionId: active.id, status: "uploaded", statusMessage: "Proof uploaded successfully ✓", lastUploadError: null, isRecording: false },
+      },
+    }))
+
+    // The claim triggers a backend confirmation…
+    await waitFor(() => expect(apiMocks.getExtensionProofSession.mock.calls.length).toBeGreaterThanOrEqual(2))
+    // …and with no backend confirmation, no upload-complete UI appears.
+    expect(screen.queryByText(/Proof uploaded\. Click Analyze Workflow Evidence/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Uploading workflow proof")).not.toBeInTheDocument()
+  })
+
+  it("renders upload-complete once the backend confirms the extension's claim", async () => {
+    const active = session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" })
+    saveActiveExtensionProofSession({
+      sessionId: active.id,
+      form: { websiteUrl: active.website_url ?? "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
+      configRevision: 1,
+      savedAt: "2026-08-20T05:00:00Z",
+    })
+    apiMocks.getExtensionProofSession
+      .mockResolvedValueOnce(active) // resume load
+      .mockResolvedValue(session({ ...FRESH, status: "uploaded_pending_analysis", started_at: "2026-08-20T05:00:20Z", proof_upload_id: "upload-new" }))
+
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }))
+    await waitFor(() => expect(document.querySelector('[data-entry-state="ACTIVE"]')).toBeInTheDocument())
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      data: {
+        source: "veribridge-extension",
+        type: "VERIBRIDGE_EXTENSION_STATE",
+        payload: { sessionId: active.id, status: "uploaded", statusMessage: "Proof uploaded successfully ✓", lastUploadError: null, isRecording: false },
+      },
+    }))
+
+    expect(await screen.findByText(/Proof uploaded\. Click Analyze Workflow Evidence/)).toBeInTheDocument()
+  })
+
+  it("ignores an uploaded claim for a DIFFERENT session entirely", async () => {
+    const active = session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" })
+    saveActiveExtensionProofSession({
+      sessionId: active.id,
+      form: { websiteUrl: active.website_url ?? "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
+      configRevision: 1,
+      savedAt: "2026-08-20T05:00:00Z",
+    })
+    apiMocks.getExtensionProofSession.mockResolvedValue(active)
+
+    render(<ExtensionProofPanel onBack={() => undefined} />)
+    fireEvent.click(await screen.findByRole("button", { name: "Resume" }))
+    await waitFor(() => expect(document.querySelector('[data-entry-state="ACTIVE"]')).toBeInTheDocument())
+    const callsBefore = apiMocks.getExtensionProofSession.mock.calls.length
+
+    window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      data: {
+        source: "veribridge-extension",
+        type: "VERIBRIDGE_EXTENSION_STATE",
+        payload: { sessionId: "some-older-session", status: "uploaded", statusMessage: "Proof uploaded successfully ✓", lastUploadError: null, isRecording: false },
+      },
+    }))
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(apiMocks.getExtensionProofSession.mock.calls.length).toBe(callsBefore)
+    expect(screen.queryByText(/Proof uploaded\. Click Analyze Workflow Evidence/)).not.toBeInTheDocument()
   })
 })

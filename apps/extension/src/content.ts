@@ -5,7 +5,7 @@ import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./typ
 import {
   RECORDER_TARGET_READY,
   isTrustedVeriBridgeAppLocation,
-  isProductionVeriBridgeHostname,
+  isVeriBridgeInternalAppLocation,
 } from "../../../packages/shared/websiteProofRecorderContract"
 import { createRecorderBridgeHandler } from "./recorderBridge"
 import { IS_DEV_BUILD } from "./buildChannel"
@@ -124,19 +124,14 @@ function scrubBlock(text: string): string {
 }
 
 /**
- * Returns true when the current page is an internal VeriBridge page.
- * We skip evidence capture there to avoid leaking session metadata or auth tokens.
+ * Returns true when the current page is an internal VeriBridge APP page.
+ * We skip evidence capture there to avoid leaking session metadata or auth
+ * tokens. Path-scoped on the production domain so a student can explicitly
+ * record public veribridgeai.com pages while the authenticated app surfaces
+ * (/student, /dashboard, /passport, /admin, /vbr) remain excluded.
  */
 function isVeriBridgeInternal(): boolean {
-  const { hostname, pathname } = location
-  if (hostname === "localhost") {
-    return (
-      pathname.startsWith("/dashboard") ||
-      pathname.startsWith("/passport") ||
-      pathname.startsWith("/admin")
-    )
-  }
-  return isProductionVeriBridgeHostname(hostname)
+  return isVeriBridgeInternalAppLocation(location)
 }
 
 /**
@@ -290,6 +285,19 @@ interface StateSnapshot {
   captureSurface?: string | null
   /** Target website URL for website proof sessions. */
   targetWebsiteUrl?: string | null
+  /**
+   * True when THIS tab is part of the active recording session (the target
+   * tab or a tab opened from it). Computed per-sender by the background from
+   * its authoritative trackedTabIds set — survives full-document navigation,
+   * which destroys all in-page state.
+   */
+  isTrackedTab?: boolean
+  /**
+   * True while the background's startup session restore is still reading
+   * storage. Such an answer reflects the DEFAULT worker state, not the
+   * absence of a session — never tear the HUD down because of it.
+   */
+  restorePending?: boolean
   liveCoach?: LiveCoachState | null
 }
 
@@ -368,13 +376,34 @@ let targetWebsiteUrl: string | null = null
 let contextInvalidated = false
 
 let autoDismissTimer: ReturnType<typeof setTimeout> | null = null
-let barPoll: ReturnType<typeof setInterval> | null = null
 let barMinimized = false
 let lastState: StateSnapshot | null = null
 
+// ── Session reconciliation state ──────────────────────────────────────────────
+// The recorder HUD follows the ACTIVE PROOF SESSION, not any particular
+// navigation. A single persistent watch loop reconciles this document against
+// the background's authoritative state; every navigation-shaped trigger
+// (initial load, background messages, pageshow/BFCache restore, popstate,
+// hashchange) funnels into the same idempotent reconcile function.
+
+/** Periodic reconcile loop — runs only while this tab serves an active session. */
+let sessionWatchTimer: ReturnType<typeof setInterval> | null = null
+/** True once the background has ever confirmed this document's tab as tracked. */
+let everTracked = false
+/**
+ * Consecutive indeterminate "not tracked" answers observed while this document
+ * previously served the session. A freshly restarted service worker answers
+ * GET_STATE with its default state until the async session restore completes;
+ * tearing down on the first such answer permanently removed the HUD.
+ */
+let notTrackedStrikes = 0
+const MAX_NOT_TRACKED_STRIKES = 8
+const SESSION_WATCH_INTERVAL_MS = 1000
+
 // ── Dashboard upload-progress poll ────────────────────────────────────────────
-// On VeriBridge internal pages (e.g. /dashboard/profile) the floating bar is
-// suppressed, so barPoll never runs.  Without it the panel has no periodic
+// On the VeriBridge proof-builder tab the floating bar is absent (the tab is
+// not session-tracked), so the HUD's state feed never runs there.  Without it
+// the panel has no periodic
 // extension-state feed and only learns about upload events if the background's
 // one-shot broadcast arrives in time — which on fast local uploads it often
 // doesn't.  This lightweight poll fills that gap: it runs only when we are on an
@@ -490,16 +519,16 @@ function safePageUrl(): string {
 }
 
 /**
- * Returns true when the current page belongs to the same origin as the session's
- * target website URL. Always true when no target is configured (backward compat).
+ * Returns true when this tab should run capture + show the recorder HUD for
+ * the state snapshot `s`. The background's per-sender `isTrackedTab` answer is
+ * authoritative: it is true exactly for the target tab and tabs opened from
+ * it, regardless of which origin the user has navigated to. This replaces the
+ * former exact-origin match against targetWebsiteUrl, which wrongly hid the
+ * HUD after any cross-origin navigation (e.g. www.wikipedia.org →
+ * en.wikipedia.org) and could leak it into unrelated same-origin tabs.
  */
-function isOnTargetPage(): boolean {
-  if (!targetWebsiteUrl) return true
-  try {
-    return new URL(targetWebsiteUrl).origin === location.origin
-  } catch {
-    return false
-  }
+function isSessionTab(s: StateSnapshot | null): boolean {
+  return s?.isTrackedTab === true
 }
 
 /**
@@ -565,8 +594,8 @@ function handleContextInvalidated(): void {
   contextInvalidated = true
   console.warn("VeriBridge extension was updated. Refresh this page and retry recorder initialization for the same proof session.")
 
-  // Stop bar poll, dashboard poll, and auto-dismiss timer immediately
-  if (barPoll) { clearInterval(barPoll); barPoll = null }
+  // Stop the session watch, dashboard poll, and auto-dismiss timer immediately
+  stopSessionWatch()
   stopVbDashboardPoll()
   if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null }
 
@@ -680,6 +709,11 @@ function schedulePostActionSnapshot(
 // ── Event capture ─────────────────────────────────────────────────────────────
 
 function emit(event: WorkflowEvent): void {
+  // Same evidence exclusion the DOM-snapshot path applies: the HUD may follow
+  // the session tab onto VeriBridge-internal app pages, but no workflow event
+  // from those pages is ever recorded. Evaluated per event because SPA route
+  // changes move a document across this boundary without reloading it.
+  if (isVeriBridgeInternal()) return
   void safeSendMessage({ type: "WORKFLOW_EVENT", payload: event })
 }
 
@@ -907,24 +941,25 @@ function stopCapture(): void {
 
 chrome.runtime.onMessage.addListener((msg: { type: string; payload?: unknown }) => {
   if (msg.type === "START_CAPTURING") {
-    void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-      if (!s?.isRecording) return
-      if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
-      startCapture()
-      if (!targetWebsiteUrl || isOnTargetPage()) {
-        showFloatingBar()
-      }
-      // On VeriBridge internal pages (dashboard) the bar is suppressed, so start
-      // a lightweight silent poll to keep the Website Proof modal in sync.
-      startVbDashboardPoll()
-    })
+    // "Reconcile now": the background nudges its session tabs on every
+    // navigation-shaped event. The reconciler decides capture + HUD from
+    // authoritative state; unrelated tabs converge to no recorder UI.
+    void reconcileRecorderState()
+    // On the VeriBridge proof-builder tab (never session-tracked) the HUD is
+    // absent, so start the lightweight silent poll that keeps the Website
+    // Proof modal in sync while recording is active.
+    if (isVeriBridgeInternal()) {
+      void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+        if (s?.isRecording || s?.status === "uploading") startVbDashboardPoll()
+      })
+    }
   } else if (msg.type === "RECORDER_STREAM_STARTED") {
     dbgVE("RECORDER_STREAM_STARTED — recorder tab active")
   } else if (msg.type === "RECORDER_STREAM_STOPPED") {
     if (barHost) fetchAndRender()
   } else if (msg.type === "STOP_CAPTURING") {
     stopCapture()
-    refreshBar()
+    void reconcileRecorderState()
   } else if (msg.type === "PROOF_UPLOAD_STARTED") {
     publishProofUploadStarted((msg.payload ?? {}) as Partial<StateSnapshot>)
     // Also (re-)start dashboard poll so the modal catches the uploading state even
@@ -962,10 +997,15 @@ function detectSessionFromUrl(): void {
 
 detectSessionFromUrl()
 
-// Every external page content script offers a readiness attachment. The
-// background accepts it only from the exact tab it opened for the current
-// session/revision, so historical tabs and unrelated pages are harmless.
-if (!isVeriBridgeAppOrigin()) {
+// EVERY page content script offers a readiness attachment — including pages on
+// veribridgeai.com, because the student may explicitly target the VeriBridge
+// public site itself. The background accepts the attachment only from the
+// exact tab it opened for the current session/revision AND only when the page
+// origin matches the configured target, so the proof-builder tab, historical
+// tabs, and unrelated pages are all rejected harmlessly. (v1.0.0 skipped this
+// offer on all VeriBridge app origins, which left a veribridgeai.com target
+// stuck at "Waiting for the recorder content script…" forever.)
+{
   const targetReadyRetryMs = [0, 250, 750, 1500, 3000] as const
   for (const delayMs of targetReadyRetryMs) {
     window.setTimeout(() => {
@@ -1012,17 +1052,40 @@ window.addEventListener("message", (event: MessageEvent) => {
   })
 })
 
-// On init, check if recording is already active (handles page navigation during a session).
-void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-  if (s?.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
-  dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)")
-  if (s?.isRecording) {
-    startCapture()
-    if (!targetWebsiteUrl || isOnTargetPage()) {
-      showFloatingBar()
-    }
+// On init, reconcile against the authoritative session (handles page
+// navigation during a session — full-document navigation destroys the previous
+// content script, so this rehydration is what makes the HUD follow the user
+// across pages). Retried on the same backoff schedule as the target-readiness
+// offer: a single attempt silently loses the HUD forever when it races an MV3
+// service-worker wake (null answer) or the worker's async session restore
+// (default-state answer).
+{
+  const initReconcileRetryMs = [0, 250, 750, 1500, 3000] as const
+  for (const delayMs of initReconcileRetryMs) {
+    window.setTimeout(() => {
+      void reconcileRecorderState()
+      // The VeriBridge app tab (proof builder) reloading mid-session still
+      // needs its silent state feed for the Website Proof modal.
+      if (isVeriBridgeInternal()) {
+        void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
+          if (s?.isRecording || s?.status === "uploading") startVbDashboardPoll()
+        })
+      }
+    }, delayMs)
   }
-})
+}
+
+// Navigation-shaped triggers that MUST reconcile the recorder HUD:
+//  - pageshow with event.persisted: this document was restored from the
+//    Back/Forward Cache — no content-script re-injection, no load events; the
+//    restored DOM and timers may be arbitrarily stale.
+//  - popstate / hashchange: same-document history traversal (SPA back/forward)
+//    can cross recorder-eligibility boundaries without any full navigation.
+// All funnel into the same idempotent reconciler; on pages that never touch a
+// recording session each costs at most one GET_STATE round-trip.
+window.addEventListener("pageshow", () => { void reconcileRecorderState() })
+window.addEventListener("popstate", () => { void reconcileRecorderState() })
+window.addEventListener("hashchange", () => { void reconcileRecorderState() })
 
 // ── Manual test hook (dev builds only) ────────────────────────────────────────
 // Call window.__VERIBRIDGE_CAPTURE_VISIBLE_EVIDENCE_TEST__() from DevTools to
@@ -1293,7 +1356,10 @@ async function onBarStopAndSend(): Promise<void> {
 }
 
 function shouldSkipRender(s: StateSnapshot): boolean {
-  if (s.status !== "uploaded") return false
+  // Only terminal bars can be dismissed. The session watch re-renders every
+  // tick, so without honoring dismissal here a dismissed upload-failed bar
+  // would immediately reappear.
+  if (s.status !== "uploaded" && s.status !== "upload_failed" && s.status !== "error") return false
   const sid = s.sessionId
   if (!sid) return false
   // Local flag: works even when background messaging is unavailable.
@@ -1308,47 +1374,134 @@ function shouldSkipRender(s: StateSnapshot): boolean {
   return false
 }
 
-function fetchAndRender(): void {
-  if (contextInvalidated) return
-  // If the host page removed our overlay element, re-attach it to the DOM
-  // so it becomes visible again without waiting for the next showFloatingBar call.
-  if (barHost && !document.contains(barHost)) {
-    ;(document.body ?? document.documentElement).appendChild(barHost)
-    positionBarHost()
+/**
+ * True when the session snapshot still needs recorder UI in this tab:
+ * recording, uploading, stopped-awaiting-send, or a terminal state whose bar
+ * has not been dismissed yet.
+ */
+function isSessionUiActive(s: StateSnapshot): boolean {
+  if (s.isRecording) return true
+  if (s.status === "recording" || s.status === "uploading" || s.status === "stopped") return true
+  if (
+    (s.status === "uploaded" || s.status === "upload_failed" || s.status === "error") &&
+    !shouldSkipRender(s)
+  ) {
+    return true
   }
-  void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
-    if (contextInvalidated || !s) return
+  return false
+}
+
+/**
+ * True when the snapshot cannot be trusted as an authoritative "no session":
+ * the background is mid-restore after a service-worker restart, or the worker
+ * answered before any session context loaded (default state).
+ */
+function isIndeterminateSnapshot(s: StateSnapshot): boolean {
+  if (s.restorePending === true) return true
+  return !s.isRecording && s.status === "idle"
+}
+
+function startSessionWatch(): void {
+  if (contextInvalidated || sessionWatchTimer) return
+  sessionWatchTimer = setInterval(() => { void reconcileRecorderState() }, SESSION_WATCH_INTERVAL_MS)
+}
+
+function stopSessionWatch(): void {
+  if (sessionWatchTimer) { clearInterval(sessionWatchTimer); sessionWatchTimer = null }
+}
+
+/**
+ * THE central recorder reconciler. Asks the background (authoritative session
+ * state) what this document should look like and converges the DOM to it:
+ * exactly one HUD while the session needs one here, none otherwise. Safe to
+ * call from any trigger, any number of times, in any order.
+ */
+async function reconcileRecorderState(): Promise<void> {
+  if (contextInvalidated) return
+  const s = await safeSendMessage<StateSnapshot>({ type: "GET_STATE" })
+  // An unreachable/waking service worker is not an authoritative answer —
+  // keep the current DOM; a later trigger or watch tick converges.
+  if (contextInvalidated || !s) return
+  applySessionState(s)
+}
+
+function applySessionState(s: StateSnapshot): void {
+  // The page bridge is same-origin, so any page could listen for it. Only
+  // session tabs (the site the user chose to record) and VeriBridge app pages
+  // may observe recorder state — never unrelated browsing tabs.
+  if (isSessionTab(s) || isVeriBridgeInternal()) {
     publishExtensionState(s)
+  }
 
-    // Keep targetWebsiteUrl in sync with background state
-    if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
+  // Keep targetWebsiteUrl in sync with background state
+  if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
 
-    // On non-target tabs when a target is configured: hide bar entirely
-    if (targetWebsiteUrl && !isOnTargetPage()) {
-      hideFloatingBar()
+  if (!isSessionTab(s)) {
+    // Grace window: a document that HAS served this session ignores
+    // indeterminate answers from a restarting worker for a few ticks instead
+    // of destroying the HUD it may never get back.
+    if (everTracked && isIndeterminateSnapshot(s) && notTrackedStrikes < MAX_NOT_TRACKED_STRIKES) {
+      notTrackedStrikes++
+      startSessionWatch()  // keep converging until the answer is definitive
       return
     }
+    // Authoritative: this tab is not part of the session (or no session
+    // exists). Remove recorder UI, capture, and the watch loop.
+    stopCapture()
+    hideFloatingBar()
+    stopSessionWatch()
+    return
+  }
 
-    if (shouldSkipRender(s)) {
+  everTracked = true
+  notTrackedStrikes = 0
+
+  // Capture reconciliation: evidence collection runs only while recording.
+  // (DOM snapshots and workflow events remain excluded on VeriBridge-internal
+  // pages inside the capture path itself.)
+  if (s.isRecording) startCapture()
+  else stopCapture()
+
+  // The VeriBridge proof-builder modal needs its silent state feed whenever
+  // this internal page participates in an active session.
+  if (isVeriBridgeInternal() && (s.isRecording || s.status === "uploading")) {
+    startVbDashboardPoll()
+  }
+
+  if (!isSessionUiActive(s)) {
+    // Session finished (and any terminal bar was dismissed) — converge to no
+    // HUD and stop watching. A future session re-triggers via messages.
+    hideFloatingBar()
+    stopSessionWatch()
+    return
+  }
+
+  startSessionWatch()
+
+  if (shouldSkipRender(s)) {
+    hideFloatingBar()
+    return
+  }
+
+  ensureFloatingBar()
+  renderBar(s)
+
+  // Auto-dismiss bar 5 seconds after a successful upload.
+  if (s.status === "uploaded" && !autoDismissTimer) {
+    const sessionId = s.sessionId ?? ""
+    autoDismissTimer = setTimeout(() => {
+      dbgVE("auto-dismissing success bar")
+      if (sessionId) setLocallyDismissed(sessionId)
       hideFloatingBar()
-      return
-    }
+      autoDismissTimer = null
+      // Notify background best-effort.
+      void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS", payload: { sessionId } })
+    }, 5000)
+  }
+}
 
-    renderBar(s)
-
-    // Auto-dismiss bar 5 seconds after a successful upload.
-    if (s.status === "uploaded" && !autoDismissTimer) {
-      const sessionId = s.sessionId ?? ""
-      autoDismissTimer = setTimeout(() => {
-        dbgVE("auto-dismissing success bar")
-        if (sessionId) setLocallyDismissed(sessionId)
-        hideFloatingBar()
-        autoDismissTimer = null
-        // Notify background best-effort.
-        void safeSendMessage({ type: "DISMISS_UPLOAD_SUCCESS", payload: { sessionId } })
-      }, 5000)
-    }
-  })
+function fetchAndRender(): void {
+  void reconcileRecorderState()
 }
 
 function positionBarHost(): void {
@@ -1374,7 +1527,14 @@ function positionBarHost(): void {
   }
 }
 
-function showFloatingBar(): void {
+/**
+ * Ensure exactly one HUD host exists in this document. Idempotent: reuses the
+ * stable-ID host (including one left by a previous content-script execution or
+ * restored by BFCache), re-attaches it if the page removed it, and only resets
+ * the minimized state when mounting fresh so reconcile ticks never fight the
+ * user's minimize choice.
+ */
+function ensureFloatingBar(): void {
   if (contextInvalidated) return
   if (!barHost) {
     // Reuse a leftover host from a previous content script execution in this tab
@@ -1389,27 +1549,23 @@ function showFloatingBar(): void {
       ;(document.body ?? document.documentElement).appendChild(host)
       barHost = host
       barShadow = host.attachShadow({ mode: "open" })
+      barMinimized = false
     }
+    positionBarHost()
+  } else if (!document.contains(barHost)) {
+    // The host page removed our overlay element — re-attach it.
+    ;(document.body ?? document.documentElement).appendChild(barHost)
+    positionBarHost()
   }
-
-  positionBarHost()
 
   if (!vpListenersAttached && window.visualViewport) {
     window.visualViewport.addEventListener("resize", positionBarHost)
     window.visualViewport.addEventListener("scroll", positionBarHost)
     vpListenersAttached = true
   }
-
-  barMinimized = false
-  fetchAndRender()
-
-  if (!barPoll) {
-    barPoll = setInterval(fetchAndRender, 1000)
-  }
 }
 
 function hideFloatingBar(): void {
-  if (barPoll) { clearInterval(barPoll); barPoll = null }
   if (autoDismissTimer) { clearTimeout(autoDismissTimer); autoDismissTimer = null }
   if (vpListenersAttached && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", positionBarHost)
