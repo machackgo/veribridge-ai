@@ -9,7 +9,7 @@
  */
 
 export const WEBSITE_PROOF_RECORDER_SCHEMA_VERSION = 1 as const
-export const WEBSITE_PROOF_RECORDER_BUILD_VERSION = "1.0.0" as const
+export const WEBSITE_PROOF_RECORDER_BUILD_VERSION = "1.0.1" as const
 
 /**
  * Oldest extension build the web app accepts. Store-distributed extensions
@@ -234,6 +234,29 @@ const TRUSTED_APP_PATH_PREFIXES = [
   "/admin",
   "/vbr",
 ] as const
+
+/**
+ * True when a page location is an authenticated/internal VeriBridge APP
+ * surface (student dashboard, passport, admin, report studio). The recorder
+ * must never capture DOM evidence or screenshots from these pages, because
+ * they can expose session metadata, private reports, and account state.
+ *
+ * This is deliberately PATH-scoped on the production domain: public
+ * veribridgeai.com pages (landing, /privacy, marketing) are ordinary
+ * recordable web pages when the student explicitly targets them, while the
+ * app routes below stay excluded. On localhost the same app paths are
+ * excluded so local development mirrors production behavior.
+ */
+export function isVeriBridgeInternalAppLocation(
+  location: { hostname: string; pathname: string },
+): boolean {
+  const onVeriBridgeHost =
+    isProductionVeriBridgeHostname(location.hostname) ||
+    location.hostname === "localhost" ||
+    location.hostname === "127.0.0.1"
+  if (!onVeriBridgeHost) return false
+  return TRUSTED_APP_PATH_PREFIXES.some(prefix => location.pathname.startsWith(prefix))
+}
 
 /**
  * True when a page location belongs to the trusted VeriBridge app surface that

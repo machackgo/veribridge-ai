@@ -36,7 +36,10 @@ function config(overrides: Partial<WebsiteProofRecorderConfig> = {}): WebsitePro
 
 test("schema and extension build versions are explicit", () => {
   assert.equal(WEBSITE_PROOF_RECORDER_SCHEMA_VERSION, 1)
-  assert.equal(WEBSITE_PROOF_RECORDER_BUILD_VERSION, "1.0.0")
+  assert.equal(WEBSITE_PROOF_RECORDER_BUILD_VERSION, "1.0.1")
+  // MIN stays 1.0.0: pages that have not been redeployed must keep accepting
+  // the 1.0.1 store rollout, and 1.0.0 installs keep working until Chrome
+  // auto-updates them.
   assert.equal(WEBSITE_PROOF_RECORDER_MIN_BUILD_VERSION, "1.0.0")
 })
 

@@ -93,6 +93,12 @@ export interface ExtensionState {
   // Tab tracking — IDs of tabs currently being recorded in this session.
   trackedTabIds: number[]
   originalTabId: number | null
+  /**
+   * Per-sender flag added to GET_STATE responses only: true when the asking
+   * tab is part of the active session's tracked tab set. Content scripts use
+   * it to gate capture + HUD; extension pages (popup/recorder) receive false.
+   */
+  isTrackedTab?: boolean
   // ── Video upload state (set by recorder tab via RECORDER_VIDEO_UPLOADED) ───
   /** "none" = no recording yet, "uploading" = in progress (recorder tab),
    *  "uploaded" = done, "failed" = error */

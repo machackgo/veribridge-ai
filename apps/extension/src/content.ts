@@ -5,7 +5,7 @@ import type { VisibleEvidenceEvent, FileUploadMeta, LiveCoachState } from "./typ
 import {
   RECORDER_TARGET_READY,
   isTrustedVeriBridgeAppLocation,
-  isProductionVeriBridgeHostname,
+  isVeriBridgeInternalAppLocation,
 } from "../../../packages/shared/websiteProofRecorderContract"
 import { createRecorderBridgeHandler } from "./recorderBridge"
 import { IS_DEV_BUILD } from "./buildChannel"
@@ -124,19 +124,14 @@ function scrubBlock(text: string): string {
 }
 
 /**
- * Returns true when the current page is an internal VeriBridge page.
- * We skip evidence capture there to avoid leaking session metadata or auth tokens.
+ * Returns true when the current page is an internal VeriBridge APP page.
+ * We skip evidence capture there to avoid leaking session metadata or auth
+ * tokens. Path-scoped on the production domain so a student can explicitly
+ * record public veribridgeai.com pages while the authenticated app surfaces
+ * (/student, /dashboard, /passport, /admin, /vbr) remain excluded.
  */
 function isVeriBridgeInternal(): boolean {
-  const { hostname, pathname } = location
-  if (hostname === "localhost") {
-    return (
-      pathname.startsWith("/dashboard") ||
-      pathname.startsWith("/passport") ||
-      pathname.startsWith("/admin")
-    )
-  }
-  return isProductionVeriBridgeHostname(hostname)
+  return isVeriBridgeInternalAppLocation(location)
 }
 
 /**
@@ -290,6 +285,13 @@ interface StateSnapshot {
   captureSurface?: string | null
   /** Target website URL for website proof sessions. */
   targetWebsiteUrl?: string | null
+  /**
+   * True when THIS tab is part of the active recording session (the target
+   * tab or a tab opened from it). Computed per-sender by the background from
+   * its authoritative trackedTabIds set — survives full-document navigation,
+   * which destroys all in-page state.
+   */
+  isTrackedTab?: boolean
   liveCoach?: LiveCoachState | null
 }
 
@@ -490,16 +492,16 @@ function safePageUrl(): string {
 }
 
 /**
- * Returns true when the current page belongs to the same origin as the session's
- * target website URL. Always true when no target is configured (backward compat).
+ * Returns true when this tab should run capture + show the recorder HUD for
+ * the state snapshot `s`. The background's per-sender `isTrackedTab` answer is
+ * authoritative: it is true exactly for the target tab and tabs opened from
+ * it, regardless of which origin the user has navigated to. This replaces the
+ * former exact-origin match against targetWebsiteUrl, which wrongly hid the
+ * HUD after any cross-origin navigation (e.g. www.wikipedia.org →
+ * en.wikipedia.org) and could leak it into unrelated same-origin tabs.
  */
-function isOnTargetPage(): boolean {
-  if (!targetWebsiteUrl) return true
-  try {
-    return new URL(targetWebsiteUrl).origin === location.origin
-  } catch {
-    return false
-  }
+function isSessionTab(s: StateSnapshot | null): boolean {
+  return s?.isTrackedTab === true
 }
 
 /**
@@ -910,13 +912,17 @@ chrome.runtime.onMessage.addListener((msg: { type: string; payload?: unknown }) 
     void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
       if (!s?.isRecording) return
       if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
-      startCapture()
-      if (!targetWebsiteUrl || isOnTargetPage()) {
+      // Only session tabs capture events and show the HUD. Unrelated tabs and
+      // the VeriBridge app (proof builder) tab must never record browsing
+      // activity or display recorder controls.
+      if (isSessionTab(s) && !isVeriBridgeInternal()) {
+        startCapture()
         showFloatingBar()
       }
-      // On VeriBridge internal pages (dashboard) the bar is suppressed, so start
-      // a lightweight silent poll to keep the Website Proof modal in sync.
-      startVbDashboardPoll()
+      // On VeriBridge internal pages (dashboard / proof builder) the bar and
+      // capture are suppressed, so start a lightweight silent poll to keep the
+      // Website Proof modal in sync.
+      if (isVeriBridgeInternal()) startVbDashboardPoll()
     })
   } else if (msg.type === "RECORDER_STREAM_STARTED") {
     dbgVE("RECORDER_STREAM_STARTED — recorder tab active")
@@ -962,10 +968,15 @@ function detectSessionFromUrl(): void {
 
 detectSessionFromUrl()
 
-// Every external page content script offers a readiness attachment. The
-// background accepts it only from the exact tab it opened for the current
-// session/revision, so historical tabs and unrelated pages are harmless.
-if (!isVeriBridgeAppOrigin()) {
+// EVERY page content script offers a readiness attachment — including pages on
+// veribridgeai.com, because the student may explicitly target the VeriBridge
+// public site itself. The background accepts the attachment only from the
+// exact tab it opened for the current session/revision AND only when the page
+// origin matches the configured target, so the proof-builder tab, historical
+// tabs, and unrelated pages are all rejected harmlessly. (v1.0.0 skipped this
+// offer on all VeriBridge app origins, which left a veribridgeai.com target
+// stuck at "Waiting for the recorder content script…" forever.)
+{
   const targetReadyRetryMs = [0, 250, 750, 1500, 3000] as const
   for (const delayMs of targetReadyRetryMs) {
     window.setTimeout(() => {
@@ -1012,15 +1023,20 @@ window.addEventListener("message", (event: MessageEvent) => {
   })
 })
 
-// On init, check if recording is already active (handles page navigation during a session).
+// On init, check if recording is already active (handles page navigation during
+// a session — full-document navigation destroys the previous content script, so
+// this rehydration is what makes the HUD follow the user across pages).
 void safeSendMessage<StateSnapshot>({ type: "GET_STATE" }).then((s) => {
   if (s?.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
   dbgVE("recording active", s?.isRecording ?? false, "| session_id:", s?.sessionId ?? "(none)")
-  if (s?.isRecording) {
+  if (s?.isRecording && isSessionTab(s) && !isVeriBridgeInternal()) {
     startCapture()
-    if (!targetWebsiteUrl || isOnTargetPage()) {
-      showFloatingBar()
-    }
+    showFloatingBar()
+  }
+  // The VeriBridge app tab (proof builder) reloading mid-session still needs
+  // its silent state feed for the Website Proof modal.
+  if (isVeriBridgeInternal() && (s?.isRecording || s?.status === "uploading")) {
+    startVbDashboardPoll()
   }
 })
 
@@ -1323,8 +1339,10 @@ function fetchAndRender(): void {
     // Keep targetWebsiteUrl in sync with background state
     if (s.targetWebsiteUrl !== undefined) targetWebsiteUrl = s.targetWebsiteUrl ?? null
 
-    // On non-target tabs when a target is configured: hide bar entirely
-    if (targetWebsiteUrl && !isOnTargetPage()) {
+    // The HUD only ever renders on session tabs. If the background no longer
+    // tracks this tab (or the session ended and tracking was cleared), remove
+    // the bar and its listeners entirely.
+    if (!isSessionTab(s)) {
       hideFloatingBar()
       return
     }
