@@ -107,6 +107,25 @@ def test_fresh_user_can_create_extension_proof_session(client: TestClient, mem_s
     assert set(_users(mem_store)) == {FRESH_USER}  # only the caller's own row
 
 
+def test_fresh_user_can_create_skill_evidence(client: TestClient, mem_store: dict) -> None:
+    # Website Proof "Start proof" creates skill evidence BEFORE the extension
+    # session — this is the flow's true first write for a fresh account.
+    res = client.post(
+        "/api/v1/student/skill-evidence",
+        json={
+            "skill_name": "React",
+            "evidence_type": "private website (extension proof)",
+            "evidence_url": "https://example.com",
+            "evidence_description": "Walkthrough of the deployed project demo.",
+            "metadata": {"proof_kind": "extension_proof"},
+        },
+    )
+    assert res.status_code == 201
+    assert res.json()["user_id"] == FRESH_USER
+    assert FRESH_USER in _users(mem_store)
+    assert set(_users(mem_store)) == {FRESH_USER}
+
+
 def test_fresh_user_can_submit_document_proof_text(client: TestClient, mem_store: dict) -> None:
     res = client.post(
         "/api/v1/student/document-proofs",
@@ -313,6 +332,11 @@ def test_provisioning_never_touches_other_tenants(client: TestClient, mem_store:
 
 _WRITE_ROOTS = [
     ("post", "/api/v1/student/extension-proof/sessions", {"skill_evidence_id": "e-1"}),
+    (
+        "post",
+        "/api/v1/student/skill-evidence",
+        {"skill_name": "React", "evidence_type": "website", "evidence_url": "https://example.com"},
+    ),
     ("post", "/api/v1/student/document-proofs", {"source_type": "document", "raw_text": "x"}),
     ("post", "/api/v1/student/github-proofs", {"repo_url": "https://github.com/a/b"}),
     ("post", "/api/v1/student/vbr/projects", {"title": "t", "repo_url": "https://github.com/a/b"}),
