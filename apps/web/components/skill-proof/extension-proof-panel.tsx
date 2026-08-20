@@ -7936,8 +7936,28 @@ export function ExtensionProofPanel({
         if (process.env.NODE_ENV === "development") {
           console.info("[WebsiteProofProgress] upload success event received")
         }
-        transitionWebsiteProofProgress({ type: "upload_succeeded" })
-        transitionRecorderLifecycle("UPLOAD_ACCEPTED")
+        // The extension claims this session's upload finished. Never render
+        // "Proof uploaded" from a window message alone — confirm against the
+        // backend first (the session row is the single source of truth). This
+        // both prevents an unfounded upload-complete display before the
+        // backend has accepted anything, and resyncs the page when it missed
+        // the recording transition (e.g. a transient /start failure while the
+        // recorder was already capturing).
+        void getExtensionProofSession(activeSessionId)
+          .then((confirmed) => {
+            const uploadedStatuses: ExtensionProofSessionStatus[] = [
+              "uploaded_pending_analysis", "analyzing", "completed",
+            ]
+            if (!uploadedStatuses.includes(confirmed.status)) return
+            setSession((current) =>
+              current && current.id === activeSessionId ? confirmed : current)
+            transitionWebsiteProofProgress({ type: "upload_succeeded" })
+            transitionRecorderLifecycle("UPLOAD_ACCEPTED")
+          })
+          .catch(() => {
+            // Transient — the next extension state broadcast or session poll
+            // retries the confirmation; the UI simply keeps its current state.
+          })
       } else if (payload.status === "upload_failed") {
         transitionWebsiteProofProgress({ type: "upload_failed" })
         transitionRecorderLifecycle("RETRYABLE_FAILURE", "evidence_upload_failed")
@@ -8285,7 +8305,29 @@ export function ExtensionProofPanel({
         setError(recorderFailureMessage(startFailure))
         return
       }
-      const updated = await startExtensionProofSession(session.id)
+      // The recorder has ALREADY acknowledged capture (its START ACK precedes
+      // this call), so a transient backend failure here must never split-brain
+      // the page into "start failed" while the extension records. The endpoint
+      // is idempotent for an already-recording session: retry once, then
+      // reconcile against the session's actual server state — a lost response
+      // (observed live: transport ReadError after the status UPDATE committed)
+      // means the transition may have applied even though the call errored.
+      let updated: ExtensionProofSessionResponse
+      try {
+        updated = await startExtensionProofSession(session.id)
+      } catch (startErr) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 900))
+        try {
+          updated = await startExtensionProofSession(session.id)
+        } catch {
+          const actual = await getExtensionProofSession(session.id).catch(() => null)
+          const startedStatuses: ExtensionProofSessionStatus[] = [
+            "recording", "uploaded_pending_analysis", "analyzing", "completed",
+          ]
+          if (!actual || !startedStatuses.includes(actual.status)) throw startErr
+          updated = actual
+        }
+      }
       setSession(updated)
       transitionRecorderLifecycle("RECORDING_STARTED")
       transitionWebsiteProofProgress({ type: "recording_started" })

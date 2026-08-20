@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+from typing import Any
 
 try:
     from supabase import Client, create_client
@@ -113,6 +114,53 @@ def create_service_role_client() -> "Client":
         supabase_url=settings.supabase_url,
         supabase_key=settings.supabase_service_role_key.get_secret_value(),
     )
+
+
+def is_transient_transport_error(exc: Exception) -> bool:
+    """True for socket/transport-level failures of the SHARED sync httpx
+    transport inside the process-wide cached Supabase client.
+
+    Requests racing that single transport (or hitting a stale keepalive/HTTP2
+    connection) surface ``httpx/httpcore ReadError: [Errno 11/35] Resource
+    temporarily unavailable`` and similar — the request may or may not have
+    reached PostgREST, but the CLIENT never saw a response. Retrying once on a
+    fresh client is safe for reads and for idempotent absolute-value writes.
+
+    (Verified in production 2026-08-20: POST /student/extension-proof/
+    sessions/{id}/start returned 503 from exactly this ReadError while the
+    underlying status UPDATE had actually committed — a lost response.)
+    """
+    text = f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
+    return any(
+        marker in text
+        for marker in (
+            "httpx.", "httpcore.", "ReadError", "WriteError",
+            "Resource temporarily unavailable", "ConnectionTerminated",
+            "RemoteProtocolError", "ConnectError",
+        )
+    )
+
+
+def run_with_transient_retry(db: "Client | Any", fn: Any, *, op: str = "db operation") -> Any:
+    """Run ``fn(db)``; on a transient transport race, retry ONCE on a fresh
+    service-role client. ``fn`` must be a read or an idempotent write (absolute
+    values, ownership-scoped filters) — the original attempt may have already
+    been applied server-side when the response was lost.
+
+    Dict-backed test stores run ``fn`` directly (no transport to race).
+    """
+    if isinstance(db, dict):
+        return fn(db)
+    try:
+        return fn(db)
+    except Exception as exc:
+        if not is_transient_transport_error(exc):
+            raise
+        logger.warning(
+            "%s hit a transient Supabase transport error; retrying once on a "
+            "fresh client: %s", op, exc,
+        )
+        return fn(create_service_role_client())
 
 
 @lru_cache(maxsize=1)

@@ -291,13 +291,23 @@ class ExtensionProofSessionService:
                 raise ExtensionProofSessionNotFoundError(session_id)
             return row
 
-        result = (
-            self._client.table(_TABLE)
-            .select("*")
-            .eq("user_id", user_id)
-            .eq("id", session_id)
-            .maybe_single()
-            .execute()
+        # The process-wide Supabase client shares ONE sync httpx transport;
+        # a transport race there must not surface as a user-facing 503 for a
+        # plain owner-scoped read — retry once on a fresh client.
+        from app.db.supabase import run_with_transient_retry
+
+        def _read(client: Any) -> Any:
+            return (
+                client.table(_TABLE)
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("id", session_id)
+                .maybe_single()
+                .execute()
+            )
+
+        result = run_with_transient_retry(
+            self._client, _read, op=f"extension-proof session read ({session_id})",
         )
         if result is None or not getattr(result, "data", None):
             raise ExtensionProofSessionNotFoundError(session_id)
@@ -315,12 +325,25 @@ class ExtensionProofSessionService:
             self._client.setdefault(_TABLE, {})[session_id] = updated
             return updated
 
-        result = (
-            self._client.table(_TABLE)
-            .update(updates)
-            .eq("user_id", user_id)
-            .eq("id", session_id)
-            .execute()
+        # Retry-once on transient transport races. Safe: every update this
+        # service issues writes ABSOLUTE values behind owner-scoped filters, so
+        # re-applying a lost-response update is idempotent. This is the exact
+        # failure observed live on POST /sessions/{id}/start (2026-08-20): the
+        # status UPDATE committed but the response read failed, and the lack of
+        # a retry turned an already-successful transition into a client 503.
+        from app.db.supabase import run_with_transient_retry
+
+        def _update(client: Any) -> Any:
+            return (
+                client.table(_TABLE)
+                .update(updates)
+                .eq("user_id", user_id)
+                .eq("id", session_id)
+                .execute()
+            )
+
+        result = run_with_transient_retry(
+            self._client, _update, op=f"extension-proof session update ({session_id})",
         )
         rows = getattr(result, "data", []) or []
         if not rows:

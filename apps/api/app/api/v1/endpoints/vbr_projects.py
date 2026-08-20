@@ -286,12 +286,22 @@ def list_projects(
         rows.sort(key=lambda row: row.get("created_at", ""), reverse=True)
         return [_to_project_response(row) for row in rows]
 
-    result = (
-        db.table(_PROJECTS_TABLE)
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .execute()
+    # Owner-scoped pure read: retry once on a transient race of the shared
+    # sync httpx transport (observed live 2026-08-20 as an unhandled 500,
+    # httpx.ReadError [Errno 11], during interactive Website Proof testing —
+    # this list feeds the proof completion flow's attach-project UI).
+    from app.db.supabase import run_with_transient_retry
+
+    result = run_with_transient_retry(
+        db,
+        lambda client: (
+            client.table(_PROJECTS_TABLE)
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        ),
+        op="vbr project list read",
     )
     rows = getattr(result, "data", []) or []
     return [_to_project_response(row) for row in rows]
