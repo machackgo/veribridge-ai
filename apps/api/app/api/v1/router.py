@@ -38,7 +38,9 @@ from app.api.v1.endpoints import (
     recruiter_connections,
     recruiter_hiring_briefs,
     recruiter_interviews,
+    recruiter_saved_searches,
     recruiter_search,
+    recruiter_talent_pools,
     skill_evidence,
     skill_evidence_timeline,
     skill_evidence_profile,
@@ -259,6 +261,16 @@ api_router.include_router(
     recruiter_interviews.router,
     prefix="/recruiter/briefs",
     tags=["recruiter-interviews"],
+)
+api_router.include_router(
+    recruiter_talent_pools.router,
+    prefix="/recruiter/pools",
+    tags=["recruiter-talent-pools"],
+)
+api_router.include_router(
+    recruiter_saved_searches.router,
+    prefix="/recruiter/saved-searches",
+    tags=["recruiter-saved-searches"],
 )
 api_router.include_router(
     extension_proof.router,

@@ -30,13 +30,22 @@ import {
   TOKEN,
 } from "../../../../components/passport/shared"
 import {
+  AddToBriefButton,
+  AddToPoolButton,
+} from "../../../../components/recruiter/AddToListButtons"
+import {
   EvidenceItemBlock,
   RequirementRow,
 } from "../../../../components/recruiter/EvidenceProofDrawer"
+import { RecruiterNav } from "../../../../components/recruiter/RecruiterNav"
 import {
   listConnections,
   saveCandidate,
 } from "@/lib/recruiter-connections-api"
+import {
+  createSavedSearch,
+  type SavedSearchListItem,
+} from "@/lib/recruiter-saved-searches-api"
 import {
   searchCandidates,
   type AvailabilityFilter,
@@ -291,6 +300,8 @@ function ResultCard({
               query={query}
               initiallySaved={initiallySaved}
             />
+            <AddToPoolButton candidateSlug={candidate.public_slug} source="search" />
+            <AddToBriefButton candidateSlug={candidate.public_slug} />
           </div>
         </div>
 
@@ -697,6 +708,216 @@ function SectionHeader({
   )
 }
 
+/**
+ * "Save search" — persist the executed query as a Saved Search that keeps
+ * watching published evidence. The panel restates exactly what will be
+ * tracked (the structured interpretation, residual-term honesty included);
+ * a search with no hard requirements is savable but honestly untracked.
+ * Keyed on the executed query by the caller, so a new search resets it.
+ */
+function SaveSearchSection({
+  query,
+  interp,
+  evidence,
+  availability,
+}: {
+  query: string
+  interp: QueryInterpretation
+  evidence: EvidenceFilter[]
+  availability: AvailabilityFilter | ""
+}) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState<SavedSearchListItem | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const tracked = interp.required.length > 0 || interp.evidence.length > 0
+
+  const defaultName = (() => {
+    if (interp.role) return [interp.seniority, interp.role].filter(Boolean).join(" ")
+    if (interp.required.length > 0) {
+      return interp.required.map((chip) => chip.display).join(", ").slice(0, 120)
+    }
+    return query.length > 60 ? `${query.slice(0, 57)}…` : query
+  })()
+
+  const save = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      const item = await createSavedSearch({
+        q: query,
+        name: name.trim() || null,
+        filters: { evidence, availability: availability || null },
+      })
+      setSaved(item)
+      setOpen(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save the search.")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (saved) {
+    return (
+      <p
+        data-testid="search-save-success"
+        style={{ fontSize: 12.5, color: TOKEN.emerald, margin: 0, fontWeight: 600 }}
+      >
+        Saved “{saved.name}”.{" "}
+        <Link
+          href={`/recruiters/saved-searches/${encodeURIComponent(saved.id)}`}
+          style={{ color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}
+        >
+          View saved search →
+        </Link>
+      </p>
+    )
+  }
+
+  if (!open) {
+    return (
+      <div>
+        <button
+          type="button"
+          data-testid="search-save-search"
+          onClick={() => {
+            setName(defaultName)
+            setOpen(true)
+          }}
+          style={{
+            padding: "7px 14px",
+            borderRadius: 8,
+            border: `1px solid ${TOKEN.line}`,
+            background: "#fff",
+            color: TOKEN.indigo,
+            fontSize: 12.5,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Save search
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <Card style={{ padding: 16 }}>
+      <div
+        data-testid="search-save-panel"
+        style={{ display: "flex", flexDirection: "column", gap: 10 }}
+      >
+        <h2 style={{ fontSize: 14.5, color: TOKEN.ink, margin: 0, fontWeight: 700 }}>
+          Save this search
+        </h2>
+        <input
+          data-testid="search-save-name"
+          type="text"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          maxLength={120}
+          aria-label="Saved search name"
+          placeholder="Name this saved search"
+          style={{
+            padding: "9px 12px",
+            borderRadius: 8,
+            border: `1px solid ${TOKEN.line}`,
+            fontSize: 13,
+            color: TOKEN.ink,
+            background: "#fff",
+          }}
+        />
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, fontWeight: 700 }}>
+            This saved search will track:
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {interp.required.map((chip) => (
+              <Badge key={`save-req-${chip.display}`} tone="indigo">
+                {chip.display}
+              </Badge>
+            ))}
+            {interp.evidence.map((chip) => (
+              <Badge key={`save-ev-${chip.key}`} tone="emerald">
+                {chip.display}
+              </Badge>
+            ))}
+            {evidence.map((key) => (
+              <Badge key={`save-filter-${key}`} tone="emerald">
+                Filter: {key.replace(/_/g, " ")}
+              </Badge>
+            ))}
+            {availability && <Badge tone="slate">{availability.replace(/_/g, " ")}</Badge>}
+            {interp.preferred.map((chip) => (
+              <Badge key={`save-pref-${chip.display}`} tone="slate">
+                Preferred: {chip.display}
+              </Badge>
+            ))}
+          </div>
+          {interp.residual_terms.length > 0 && (
+            <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0 }}>
+              Not understood (never silently used): {interp.residual_terms.join(", ")}
+            </p>
+          )}
+          {!tracked && (
+            <p
+              data-testid="search-save-untracked-note"
+              style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}
+            >
+              This search has no required skills or evidence, so it will not
+              track new candidates.
+            </p>
+          )}
+        </div>
+        {error && (
+          <p role="alert" style={{ fontSize: 12, color: TOKEN.rose, margin: 0 }}>
+            {error}
+          </p>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            data-testid="search-save-submit"
+            onClick={() => void save()}
+            disabled={saving}
+            style={{
+              padding: "8px 16px",
+              borderRadius: 8,
+              border: "none",
+              background: TOKEN.indigo,
+              color: "#fff",
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: saving ? "wait" : "pointer",
+            }}
+          >
+            {saving ? "Saving…" : "Save search"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            style={{
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: `1px solid ${TOKEN.line}`,
+              background: "#fff",
+              color: TOKEN.muted,
+              fontSize: 12.5,
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
 function MicIcon({ active }: { active: boolean }) {
   return (
     <svg
@@ -901,53 +1122,7 @@ export function RecruiterSearchView() {
         </p>
       </div>
 
-      <nav style={{ display: "flex", gap: 8 }} aria-label="Recruiter sections">
-        <a
-          data-testid="search-nav-workspace"
-          href="/recruiters/workspace"
-          style={{
-            padding: "7px 14px",
-            borderRadius: 999,
-            border: `1px solid ${TOKEN.line}`,
-            background: "#fff",
-            color: TOKEN.muted,
-            fontSize: 12.5,
-            fontWeight: 600,
-            textDecoration: "none",
-          }}
-        >
-          Saved candidates
-        </a>
-        <span
-          aria-current="page"
-          style={{
-            padding: "7px 14px",
-            borderRadius: 999,
-            background: TOKEN.indigo,
-            color: "#fff",
-            fontSize: 12.5,
-            fontWeight: 700,
-          }}
-        >
-          Search
-        </span>
-        <Link
-          data-testid="search-nav-briefs"
-          href="/recruiters/briefs"
-          style={{
-            padding: "7px 14px",
-            borderRadius: 999,
-            border: `1px solid ${TOKEN.line}`,
-            background: "#fff",
-            color: TOKEN.muted,
-            fontSize: 12.5,
-            fontWeight: 600,
-            textDecoration: "none",
-          }}
-        >
-          Hiring Briefs
-        </Link>
-      </nav>
+      <RecruiterNav active="search" testidPrefix="search" />
 
       <form
         onSubmit={(event) => {
@@ -1182,6 +1357,17 @@ export function RecruiterSearchView() {
               <InterpretationPanel interp={interpretation} />
             </div>
           )}
+          {activeQuery.trim() && interpretation && (
+            <div style={{ marginBottom: 12 }}>
+              <SaveSearchSection
+                key={activeQuery}
+                query={activeQuery}
+                interp={interpretation}
+                evidence={evidence}
+                availability={availability}
+              />
+            </div>
+          )}
           <EmptyState
             icon="🔍"
             title={hasActiveRefinement ? "No candidates match this search" : "No discoverable candidates yet"}
@@ -1206,6 +1392,15 @@ export function RecruiterSearchView() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {structured && interpretation && <InterpretationPanel interp={interpretation} />}
+          {activeQuery.trim() && interpretation && (
+            <SaveSearchSection
+              key={activeQuery}
+              query={activeQuery}
+              interp={interpretation}
+              evidence={evidence}
+              availability={availability}
+            />
+          )}
           <p data-testid="search-result-count" style={{ fontSize: 12.5, color: TOKEN.muted, margin: 0 }}>
             {structured && showSections ? (
               <>

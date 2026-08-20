@@ -55,6 +55,8 @@ const AUTH_REQUIRED_PATH_PREFIXES = [
   "/api/v1/admin",
   "/api/v1/recruiter/connections",
   "/api/v1/recruiter/search",
+  "/api/v1/recruiter/pools",
+  "/api/v1/recruiter/saved-searches",
 ]
 
 function isAuthRequiredPath(path: string): boolean {
