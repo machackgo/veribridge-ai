@@ -291,6 +291,44 @@ _REQUIRES_CODE_EVIDENCE: frozenset[str] = frozenset({
 })
 
 
+# Keywords that mark a claimed skill as software/code-oriented even when it is
+# directly observable in the browser (frontend frameworks, general programming).
+# Used ONLY to decide whether GitHub/source-code guidance is contextually
+# appropriate — a Website Proof of a non-code workflow (research, operations,
+# navigating a public site) must not be told it needs a repository.
+_SOFTWARE_ORIENTED_KEYWORDS: tuple[str, ...] = (
+    "javascript", "typescript", "react", "vue", "angular", "svelte", "node",
+    "next.js", "nextjs", "html", "css", "tailwind", "frontend", "front-end",
+    "backend", "back-end", "full stack", "fullstack", "full-stack",
+    "programming", "coding", "software", "code", "api", "sql", "database",
+    "web development", "web dev", "app development", "mobile development",
+    "java", "c++", "c#", "rust", "golang", "swift", "kotlin", "php",
+    "ruby", "open source", "github", "git",
+)
+
+# Word-boundary matcher so "rapid" never matches "api" and "logo" never
+# matches "go"-style tokens. Multi-word phrases match as phrases.
+_SOFTWARE_ORIENTED_RE = re.compile(
+    r"(?<![a-z0-9+#.])(?:"
+    + "|".join(re.escape(kw) for kw in _SOFTWARE_ORIENTED_KEYWORDS)
+    + r")(?![a-z0-9])"
+)
+
+
+def _is_software_oriented_skill(skill: str) -> bool:
+    """True when a (canonical or raw) skill name indicates code/software work."""
+    lower = skill.strip().lower()
+    if not lower:
+        return False
+    if lower in _REQUIRES_CODE_EVIDENCE:
+        return True
+    return _SOFTWARE_ORIENTED_RE.search(lower) is not None
+
+
+def _has_software_oriented_claim(skills: list[str]) -> bool:
+    return any(_is_software_oriented_skill(s) for s in skills)
+
+
 # ── OCR frame evidence: page-context detection ────────────────────────────────
 # These keyword sets are used to classify what type of content is shown in
 # video keyframe OCR text (homepage vs training UI vs prediction output).
@@ -3611,21 +3649,31 @@ def _determine_missing_evidence(
     frame_ocr_evidence_summary = frame_ocr_evidence_summary or {}
 
     is_local = url_type in ("localhost_url", "local_network_url")
+    code_evidence_skills = [
+        s for s in weakly if skill_obs.get(s) == "requires_code_evidence"
+    ]
+    # GitHub/source-code guidance is contextual: it applies when the claimed
+    # skills are code/software-oriented or the recording targets the student's
+    # own locally-running app. A generic Website Proof (research, operations,
+    # navigating a public site) is never told it is missing a repository —
+    # absence of GitHub evidence is not absence of skill.
+    software_oriented = (
+        is_local
+        or bool(code_evidence_skills)
+        or _has_software_oriented_claim(claimed_skills)
+    )
 
     if is_local:
         missing.append(
             "Live deployed URL — recruiters cannot access the app independently from a localhost recording"
         )
     if not github_url:
-        missing.append("GitHub repository URL for source code evidence")
+        if software_oriented:
+            missing.append("GitHub repository URL for source code evidence")
     elif not supporting_visited_urls:
         missing.append(
             "GitHub repository was not visited during the recording session"
         )
-
-    code_evidence_skills = [
-        s for s in weakly if skill_obs.get(s) == "requires_code_evidence"
-    ]
     if code_evidence_skills:
         skills_str = ", ".join(code_evidence_skills[:3])
         missing.append(
@@ -4011,7 +4059,13 @@ def _build_suggestions(
             f"Add a public GitHub repository URL — back-end/code skill(s) {skills_str} cannot "
             "be verified from the browser recording alone and require repository analysis"
         )
-    elif not github_url:
+    elif not github_url and (
+        url_type in ("localhost_url", "local_network_url")
+        or _has_software_oriented_claim([*supported, *weakly, *unsupported])
+    ):
+        # Contextual only: suggest a repository when the proof is actually
+        # about code/software the student built — never for generic website
+        # workflows that have no source-code dimension.
         suggestions.append(
             "Add a GitHub repository URL to allow code-level verification of your implementation"
         )
