@@ -161,6 +161,13 @@ class ProjectDefenseAnalysisResponse(BaseModel):
         description="Overall weighted defense score (0–100).",
     )
 
+    # ── Candidate ownership stance (attribution integrity) ────────────────────
+    # Detected from the candidate's own words (see candidate_attribution_service):
+    # "affirmed" | "denied" | "mixed" | "none". An explicit denial is honest
+    # ownership clarification — it is never scored or flagged as a contradiction.
+    ownership_stance: str = "none"
+    authorship_denied: bool = False
+
     risk_flags: list[str] = Field(default_factory=list)
     recruiter_summary: str = ""
     recommended_improvements: list[str] = Field(default_factory=list)

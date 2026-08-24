@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.canonical_evidence import ClaimEvidenceMap
+from app.schemas.canonical_evidence import CandidateAttribution, ClaimEvidenceMap
 from app.schemas.defense_answer_evidence import (
     DefenseAnswerEvidenceCard,
     ProjectDefenseInspectionCard,
@@ -1474,6 +1474,13 @@ class VBRStudentProjectReportResponse(BaseModel):
     # name, an honest per-skill relevance + limitation. Never on the public
     # projection (the public builder whitelists fields and omits this one).
     website_skill_evidence: list[WebsiteProofSkillEvidence] = Field(default_factory=list)
+
+    # ── Candidate ↔ project ownership (attribution integrity) ────────────────
+    # ``candidate_ownership`` — the raw assessment (state machine output; owner
+    # view input to claim synthesis). ``candidate_attribution`` — the renderable
+    # relationship block (closed templates only; also on the public projection).
+    candidate_ownership: dict[str, Any] | None = None
+    candidate_attribution: CandidateAttribution | None = None
 
     project_defense_analysis: VBRReportProjectDefenseAnalysis | None = None
     defense_questions: list[VBRReportQuestionSummary] = Field(default_factory=list)

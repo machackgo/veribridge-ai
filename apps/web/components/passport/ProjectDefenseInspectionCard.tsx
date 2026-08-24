@@ -38,6 +38,9 @@ function isPlayableUrl(url: string | null | undefined): url is string {
 }
 
 function badgeLabel(card: ProjectDefenseInspectionCardData): { label: string; tone: "indigo" | "amber" | "slate" } {
+  // An explicit ownership denial is honest clarification evidence — it is
+  // labelled as exactly that, never as authorship-suggesting explanation.
+  if (card.ownership_stance === "denied") return { label: "Ownership clarification", tone: "indigo" }
   const corroborates = card.corroborates_github || card.corroborates_website || card.corroborates_document
   if (corroborates) return { label: "Corroborating defense", tone: "indigo" }
   return { label: "Explanation evidence", tone: "amber" }
@@ -130,6 +133,11 @@ export function ProjectDefenseInspectionCard({
             <div data-testid="pdi-connection" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               {card.qualitative_status && (
                 <Badge tone={explained ? "emerald" : "slate"}>{card.qualitative_status}</Badge>
+              )}
+              {card.ownership_stance === "denied" && (
+                <span data-testid="pdi-ownership-denied">
+                  <Badge tone="indigo">Did not build this project (candidate-stated)</Badge>
+                </span>
               )}
               {card.project_title && <span style={{ fontSize: 11, color: TOKEN.muted }}>Project: {card.project_title}</span>}
             </div>

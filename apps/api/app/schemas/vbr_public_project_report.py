@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.schemas.canonical_evidence import CandidateAttribution
 from app.schemas.defense_answer_evidence import (
     PublicDefenseAnswerEvidence,
     PublicProjectDefenseInspectionCard,
@@ -76,6 +77,12 @@ class PublicVBRProjectReportResponse(BaseModel):
     # A public deployed app URL, when the candidate provided one. Safe to link.
     deployed_url: str | None = None
     claimed_skills: list[str] = Field(default_factory=list)
+
+    # Candidate↔project relationship (attribution integrity): the explicit
+    # ownership/contribution block — closed-template sentences + deterministic
+    # basis reasons only — so a recruiter never has to infer ownership from
+    # technical evidence.
+    candidate_attribution: CandidateAttribution | None = None
 
     evidence_package: VBRReportEvidencePackageSummary
 

@@ -33,8 +33,9 @@ function makeClaim(overrides: Partial<CanonicalSkillClaim> = {}): CanonicalSkill
     project_id: "p1",
     skill_id: "machine-learning",
     skill_name: "Machine Learning",
-    claim_text: `Machine Learning was implemented and demonstrated in ${BOSTON}.`,
+    claim_text: `Machine Learning is demonstrated in the project ${BOSTON}.`,
     claim_scope: "project",
+    claim_subject: "project",
     feature_ids: [],
     qualitative_status: "Partially demonstrated",
     strongest_evidence_tier: "Primary implementation",
@@ -93,9 +94,57 @@ describe("ClaimEvidenceMapSection", () => {
   it("renders the claim with its qualitative status and strongest tier", () => {
     render(<ClaimEvidenceMapSection map={makeMap()} />)
     expect(screen.getByTestId("claim-evidence-map")).toBeInTheDocument()
-    expect(screen.getByText(`Machine Learning was implemented and demonstrated in ${BOSTON}.`)).toBeInTheDocument()
+    expect(screen.getByText(`Machine Learning is demonstrated in the project ${BOSTON}.`)).toBeInTheDocument()
     expect(within(screen.getByTestId("cem-claim-status")).getByText("Partially demonstrated")).toBeInTheDocument()
     expect(screen.getByText(/Strongest evidence: Primary implementation/)).toBeInTheDocument()
+  })
+
+  it("renders the candidate attribution beneath a claim — denial is explicit", () => {
+    render(
+      <ClaimEvidenceMapSection
+        map={makeMap({
+          claims: [
+            makeClaim({
+              candidate_attribution: {
+                state: "denied_by_candidate",
+                label: "Contribution explicitly not claimed",
+                candidate_claim_text:
+                  "The candidate explicitly stated they did not build or contribute to this project — implementation is not attributed to the candidate.",
+                understanding_demonstrated: true,
+                usage_demonstrated: false,
+                basis: [],
+                limitations: [],
+              },
+            }),
+          ],
+        })}
+      />
+    )
+    const attribution = screen.getByTestId("cem-claim-attribution")
+    expect(within(attribution).getByText("Contribution explicitly not claimed")).toBeInTheDocument()
+    expect(within(attribution).getByText(/not attributed to the candidate/)).toBeInTheDocument()
+  })
+
+  it("renders the map-level project relationship banner", () => {
+    render(
+      <ClaimEvidenceMapSection
+        map={makeMap({
+          project_relationship: {
+            state: "claimed_contributor",
+            label: "Contribution claimed (unverified)",
+            candidate_claim_text:
+              "The candidate describes contributing to this project; this self-description is not independently verified.",
+            understanding_demonstrated: false,
+            usage_demonstrated: false,
+            basis: ["The candidate affirmatively described their own contribution during the Project Defense."],
+            limitations: [],
+          },
+        })}
+      />
+    )
+    const banner = screen.getByTestId("candidate-attribution")
+    expect(banner.getAttribute("data-attribution-state")).toBe("claimed_contributor")
+    expect(within(banner).getByText("Contribution claimed (unverified)")).toBeInTheDocument()
   })
 
   it("renders an exact GitHub citation: file, lines, symbol, commit, excerpt, link", () => {

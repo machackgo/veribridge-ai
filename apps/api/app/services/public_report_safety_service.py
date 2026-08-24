@@ -1380,6 +1380,7 @@ _ALLOWED_CLAIM_TYPES = frozenset(
 _ALLOWED_EVIDENCE_ROLES = frozenset(
     {
         "candidate_explanation",
+        "ownership_clarification",
         "implementation_explanation_context",
         "runtime_behavior_explanation_context",
         "document_corroboration_context",
@@ -1389,6 +1390,8 @@ _ALLOWED_EVIDENCE_ROLES = frozenset(
         "insufficient_or_generic",
     }
 )
+# Ownership stance labels (closed; see canonical_evidence.OWNERSHIP_STANCES).
+_ALLOWED_OWNERSHIP_STANCES = frozenset({"affirmed", "denied", "mixed", "none"})
 _ALLOWED_ANSWER_STATUSES = frozenset(
     {
         "Explained with evidence",
@@ -1438,6 +1441,8 @@ def _withheld_answer_evidence_card(item: dict[str, Any], index: int) -> dict[str
         "corroborates_github": False,
         "corroborates_website": False,
         "corroborates_document": False,
+        # A withheld card leaks nothing — including the ownership stance.
+        "ownership_stance": "none",
         "limitation": DEFENSE_ANSWER_WITHHELD_MESSAGE,
         # Fixed neutral value — never the raw/internal status string.
         "privacy_status": _DEFENSE_PRIVACY_WITHHELD_STATUS,
@@ -1477,6 +1482,12 @@ _PUBLIC_ANSWER_GENERIC_WORDING = (
     "The answer was generic, so it is treated as project context only."
 )
 
+_PUBLIC_ANSWER_DENIAL_WORDING = (
+    "The candidate explicitly clarified that they did not build or contribute to "
+    "this project — this answer is understanding/analysis evidence, never "
+    "implementation or authorship evidence."
+)
+
 
 def _public_answer_summary(
     kind: str,
@@ -1485,16 +1496,21 @@ def _public_answer_summary(
     corroborates_github: bool,
     corroborates_website: bool,
     corroborates_document: bool,
+    ownership_stance: str = "none",
 ) -> str:
     """Fixed, derived public summary for one clean answer evidence card.
 
-    Composed ONLY from the deterministic taxonomy + corroboration flags — no
-    transcript/answer-derived text ever reaches this string.
+    Composed ONLY from the deterministic taxonomy + stance + corroboration
+    flags — no transcript/answer-derived text ever reaches this string.
     """
     parts: list[str] = []
     base = _PUBLIC_ANSWER_KIND_WORDING.get(kind, _PUBLIC_ANSWER_KIND_WORDING["unknown_or_generic"])
     if mapped_skill and kind == "skill_explanation":
         base = f"The candidate explained their {mapped_skill} skill claim in a targeted defense answer."
+    if ownership_stance == "denied":
+        # An explicit denial must never be dressed up as a contribution
+        # description ("described their personal contribution").
+        base = _PUBLIC_ANSWER_DENIAL_WORDING
     parts.append(base)
     if status in ("Generic explanation", "Not explained"):
         parts.append(_PUBLIC_ANSWER_GENERIC_WORDING)
@@ -1556,6 +1572,9 @@ def public_safe_defense_answer_evidence(
         corroborates_github = bool(item.get("corroborates_github"))
         corroborates_website = bool(item.get("corroborates_website"))
         corroborates_document = bool(item.get("corroborates_document"))
+        ownership_stance = _safe_vocab(
+            item.get("ownership_stance"), _ALLOWED_OWNERSHIP_STANCES, "none"
+        )
         out.append(
             {
                 "evidence_id_safe": f"defense-answer-{index}",
@@ -1582,6 +1601,7 @@ def public_safe_defense_answer_evidence(
                     corroborates_github,
                     corroborates_website,
                     corroborates_document,
+                    ownership_stance,
                 ),
                 "evidence_basis_chips": [
                     chip
@@ -1591,6 +1611,9 @@ def public_safe_defense_answer_evidence(
                 "corroborates_github": corroborates_github,
                 "corroborates_website": corroborates_website,
                 "corroborates_document": corroborates_document,
+                # Stance label only (closed vocabulary, never answer content):
+                # an explicit denial stays recruiter-visible by design.
+                "ownership_stance": ownership_stance,
                 "limitation": scrub_public_text(item.get("limitation")),
                 "privacy_status": "clean",
             }
@@ -1659,6 +1682,8 @@ def _withheld_inspection_card(item: dict[str, Any], index: int) -> dict[str, Any
         "corroborates_github": False,
         "corroborates_website": False,
         "corroborates_document": False,
+        # A withheld card leaks nothing — including the ownership stance.
+        "ownership_stance": "none",
         "corroboration_summary": "",
         "what_this_demonstrates": "",
         "limitation": _INSPECTION_LIMITATION,
@@ -1735,6 +1760,9 @@ def public_safe_project_defense_inspection(
         claim_type = _safe_vocab(
             item.get("claim_type"), _ALLOWED_CLAIM_TYPES, "project_architecture"
         )
+        ownership_stance = _safe_vocab(
+            item.get("ownership_stance"), _ALLOWED_OWNERSHIP_STANCES, "none"
+        )
 
         # Clip locator: label + numeric seconds only (never the chip summary).
         clip_available = bool(item.get("clip_available"))
@@ -1778,6 +1806,7 @@ def public_safe_project_defense_inspection(
                     corroborates_github,
                     corroborates_website,
                     corroborates_document,
+                    ownership_stance,
                 ),
                 "evidence_basis_chips": [
                     chip
@@ -1791,13 +1820,15 @@ def public_safe_project_defense_inspection(
                 "corroborates_github": corroborates_github,
                 "corroborates_website": corroborates_website,
                 "corroborates_document": corroborates_document,
+                # Stance label only (closed vocabulary, never answer content).
+                "ownership_stance": ownership_stance,
                 # Re-derived from the fixed taxonomy + flags — never the owner's
                 # (or an attacker-shaped) free text.
                 "corroboration_summary": _derive_corroboration_summary(
                     corroborates_github, corroborates_website, corroborates_document
                 ),
                 "what_this_demonstrates": _derive_what_this_demonstrates(
-                    claim_type, mapped_skill, qualitative_status
+                    claim_type, mapped_skill, qualitative_status, ownership_stance
                 ),
                 "limitation": scrub_public_text(item.get("limitation")) or _INSPECTION_LIMITATION,
                 "public_safe": True,

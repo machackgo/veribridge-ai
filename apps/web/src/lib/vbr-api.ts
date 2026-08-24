@@ -74,6 +74,10 @@ export type ProjectDefenseInspectionCard = {
   corroborates_github?: boolean
   corroborates_website?: boolean
   corroborates_document?: boolean
+  /** Candidate ownership stance of this answer: affirmed | denied | mixed | none.
+   *  A denial is honest ownership clarification — rendered, never hidden. */
+  ownership_stance?: string
+  contradiction_flag?: boolean
   corroboration_summary?: string
   what_this_demonstrates?: string
   limitation?: string
@@ -1946,6 +1950,20 @@ export type CanonicalSourceCounts = {
   unsupported_sources: string[]
 }
 
+/** Candidate ↔ project attribution — the separately-evidenced candidate side
+ *  of a PROJECT-scoped claim. `state` is the closed ownership vocabulary
+ *  (verified_author | verified_contributor | claimed_contributor | unknown |
+ *  denied_by_candidate | conflicted); sentences are closed backend templates. */
+export type CandidateAttribution = {
+  state: string
+  label: string
+  candidate_claim_text: string
+  understanding_demonstrated: boolean
+  usage_demonstrated: boolean
+  basis: string[]
+  limitations: string[]
+}
+
 export type CanonicalSkillClaim = {
   id: string
   project_id?: string | null
@@ -1953,10 +1971,15 @@ export type CanonicalSkillClaim = {
   skill_name: string
   claim_text: string
   claim_scope: string
+  /** Subject of claim_text — always "project"; candidate-level statements live
+   *  only inside candidate_attribution with their own evidence bar. */
+  claim_subject?: string
   feature_ids: string[]
   /** Closed qualitative ladder — never a numeric score. */
   qualitative_status: string
   strongest_evidence_tier: string
+  /** The candidate side of the claim (ownership state + honest sentence). */
+  candidate_attribution?: CandidateAttribution | null
   /** Honest per-bucket source counts for THIS claim. */
   source_counts?: CanonicalSourceCounts
   limitations: string[]
@@ -2067,6 +2090,8 @@ export type ClaimEvidenceMap = {
   scope: "skill_report" | "project_report" | string
   skill_name?: string | null
   project_id?: string | null
+  /** Map-level candidate↔project relationship (project_report scope). */
+  project_relationship?: CandidateAttribution | null
   claims: CanonicalSkillClaim[]
   features: CanonicalProjectFeature[]
   citations: CanonicalEvidenceCitation[]
@@ -2246,6 +2271,14 @@ export type VBRStudentProjectReportResponse = {
    */
   suggested_evidence?: ProofAttachmentEntry[]
 
+  /**
+   * Candidate↔project relationship (attribution integrity): the explicit
+   * ownership/contribution block. Absent on legacy payloads.
+   */
+  candidate_attribution?: CandidateAttribution | null
+  /** Raw ownership assessment (owner view only). */
+  candidate_ownership?: Record<string, unknown> | null
+
   limitations: string[]
   next_actions: string[]
 
@@ -2391,6 +2424,13 @@ export type PublicVBRProjectReport = {
   repo_full_name: string | null
   deployed_url?: string | null
   claimed_skills: string[]
+
+  /**
+   * Candidate↔project relationship (attribution integrity): explicit
+   * ownership/contribution block so recruiters never infer ownership from
+   * technical evidence. Absent on legacy payloads.
+   */
+  candidate_attribution?: CandidateAttribution | null
 
   evidence_package: VBRReportEvidencePackageSummary
 

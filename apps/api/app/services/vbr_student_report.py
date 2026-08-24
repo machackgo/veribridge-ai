@@ -274,6 +274,58 @@ def _answer_summary_privacy_flagged(item: dict[str, Any], summary_text: str) -> 
     return False
 
 
+def _repo_analysis_row(db: Any, project_ids: list[str]) -> dict[str, Any] | None:
+    """The project's stored ``vbr_repo_analyses`` row, if any.
+
+    The only candidate↔artifact attribution evidence the platform stores
+    (``authorship_match_pct`` / ``fork`` / ``facts``) — the placeholder
+    ingestion writes ``None`` values, so ownership stays statement-derived
+    until real, identity-verified ingestion exists. Best-effort: any lookup
+    problem returns ``None`` (ownership then derives from statements alone).
+    """
+    for project_id in project_ids or []:
+        try:
+            if isinstance(db, dict):
+                row = next(
+                    (
+                        r
+                        for r in db.get("vbr_repo_analyses", {}).values()
+                        if str(r.get("project_id") or "") == str(project_id)
+                    ),
+                    None,
+                )
+            else:
+                result = (
+                    db.table("vbr_repo_analyses")
+                    .select("project_id, fork, authorship_match_pct, computed_at")
+                    .eq("project_id", str(project_id))
+                    .limit(1)
+                    .execute()
+                )
+                rows = getattr(result, "data", []) or []
+                row = rows[0] if rows else None
+        except Exception:  # pragma: no cover - attribution lookup is additive
+            row = None
+        if isinstance(row, dict):
+            return row
+    return None
+
+
+def _answer_ownership_stance(item: dict[str, Any]) -> str:
+    """Closed-vocabulary ownership stance for one stored answer item.
+
+    A stored stance passes through; a historical item (no stance stored) is
+    detected deterministically from its safe summary — the denial phrases
+    appear early in an answer, so the bounded summary is a faithful signal.
+    """
+    stance = str(item.get("ownership_stance") or "").strip().lower()
+    if stance in ("affirmed", "denied", "mixed", "none"):
+        return stance
+    from app.services.candidate_attribution_service import detect_ownership_stance
+
+    return detect_ownership_stance(item.get("safe_answer_summary"))
+
+
 def _report_safe_answer_evidence(items: Any) -> list[dict[str, Any]]:
     """Project stored ``telemetry.defense_answer_evidence`` to owner-safe cards.
 
@@ -321,6 +373,12 @@ def _report_safe_answer_evidence(items: Any) -> list[dict[str, Any]]:
                 "corroborates_website": bool(item.get("corroborates_website")),
                 "corroborates_document": bool(item.get("corroborates_document")),
                 "contradiction_flag": bool(item.get("contradiction_flag")),
+                # Closed-vocabulary ownership stance (candidate attribution input).
+                # Historical items (stored before the stance existed) fall back
+                # to deterministic detection over the safe summary so an old
+                # explicit denial still blocks candidate implementation claims
+                # without requiring defense reanalysis.
+                "ownership_stance": _answer_ownership_stance(item),
                 "limitation": _trace_text(str(item.get("limitation") or "")),
                 "public_shareable": bool(item.get("public_shareable")),
                 "privacy_status": str(item.get("privacy_status") or "unknown"),
@@ -2755,6 +2813,23 @@ def build_student_vbr_report(
         is_owner_view=True,
     )
 
+    # ── Candidate ↔ project ownership (attribution integrity) ────────────────
+    # Assessed ONLY from candidate↔artifact relationship evidence: the
+    # candidate's own defense ownership stances plus any stored candidate-
+    # specific repo attribution (vbr_repo_analyses). Artifact evidence (code
+    # detected, behaviour recorded, documents) contributes nothing by design —
+    # PROJECT EVIDENCE != CANDIDATE OWNERSHIP.
+    from app.services.candidate_attribution_service import (
+        assess_project_ownership,
+        build_candidate_attribution,
+    )
+
+    candidate_ownership = assess_project_ownership(
+        answer_items=defense_answer_evidence,
+        repo_analysis=_repo_analysis_row(db, project_group_ids),
+    )
+    candidate_attribution = build_candidate_attribution(ownership=candidate_ownership)
+
     questions: list[dict[str, Any]] = []
     chunk_count = 0
     answer_excerpts: dict[str, str] = {}
@@ -3196,6 +3271,11 @@ def build_student_vbr_report(
         "documents": documents,
         "website_proofs": website_proofs,
         "website_skill_evidence": website_skill_evidence,
+        # Candidate↔project relationship: the assessment (owner/private input to
+        # claim synthesis) and the renderable attribution block (closed
+        # templates only; also projected onto the public report).
+        "candidate_ownership": candidate_ownership,
+        "candidate_attribution": candidate_attribution,
         "project_defense_analysis": _report_safe_analysis(analysis),
         "defense_questions": defense_questions,
         "defense_answer_evidence": defense_answer_evidence,

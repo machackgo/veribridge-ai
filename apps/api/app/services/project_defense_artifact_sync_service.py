@@ -172,6 +172,12 @@ def _confidence_for_skill(analysis: dict[str, Any]) -> int:
 
 
 def _ownership_signals(analysis: dict[str, Any]) -> list[str]:
+    # An explicit authorship denial overrides every keyword-derived ownership
+    # signal: the honest state is recorded, and "Described personal
+    # implementation" can never be emitted for a project the candidate said
+    # they did not build.
+    if analysis.get("authorship_denied") or str(analysis.get("ownership_stance") or "") == "denied":
+        return ["Candidate explicitly stated they did not build or contribute to this project"]
     score = int(analysis.get("ownership_signal_score") or 0)
     if score >= 60:
         return ["First-person explanation", "Described personal implementation"]

@@ -89,6 +89,10 @@ class DefenseAnalysisResponse(BaseModel):
     ownership_signal_score: int = 0
     technical_depth_score: int = 0
     overall_defense_score: int = 0
+    # Candidate ownership stance ("affirmed" | "denied" | "mixed" | "none") —
+    # an explicit denial is honest ownership clarification, never a penalty.
+    ownership_stance: str = "none"
+    authorship_denied: bool = False
     risk_flags: list[str] = Field(default_factory=list)
     recruiter_summary: str = ""
     recommended_improvements: list[str] = Field(default_factory=list)
