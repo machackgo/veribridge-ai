@@ -70,6 +70,12 @@ export async function proxy(request: NextRequest) {
     pathname === "/apple-icon.png" ||
     // Static Keystone V brand assets (favicon/social/og images)
     pathname.startsWith("/brand/") ||
+    // Static marketing media (launch film + poster) served from the Vercel
+    // CDN. MUST stay public: the proxy matcher runs on /media/* (only
+    // _next/static, _next/image, favicon.ico and api/ are excluded), so
+    // without this entry the landing-page <video> src would 307 to /login
+    // and the film would never play for a logged-out visitor.
+    pathname.startsWith("/media/") ||
     pathname === "/extension" ||
     pathname.startsWith("/extension/") ||
     pathname.startsWith("/auth/") ||

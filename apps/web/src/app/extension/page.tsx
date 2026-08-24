@@ -33,7 +33,8 @@ export default function ExtensionInstallHelpPage() {
         <a
           href={RECORDER_EXTENSION_STORE_URL}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
+          aria-label="Install the VeriBridge Website Proof Recorder from the Chrome Web Store — opens in a new tab"
           style={{
             display: "inline-block",
             background: "#4f46e5",

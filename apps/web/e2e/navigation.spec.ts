@@ -17,7 +17,7 @@ test.describe("Landing page — navigation", () => {
   });
 
   test("navbar logo links to /", async ({ page }) => {
-    const logo = page.getByRole("link", { name: /VeriBridge home/i });
+    const logo = page.getByRole("link", { name: /VeriBridge AI home/i });
     await expect(logo).toHaveAttribute("href", "/");
   });
 

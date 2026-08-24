@@ -72,7 +72,7 @@ export function RecruitersEntryView() {
           }}
         >
           Search candidates who published a Verified Work Passport, and access
-          candidates you have saved from VeriBridge Passports — real people, real
+          candidates you have saved from VeriBridge AI Passports — real people, real
           evidence, saved by you from a QR scan, a shared link, or search.
         </p>
         <div

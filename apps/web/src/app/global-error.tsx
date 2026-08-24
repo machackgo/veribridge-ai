@@ -24,7 +24,7 @@ export default function GlobalError({
         }}
       >
         <div style={{ fontSize: 40 }}>⚠️</div>
-        <h1 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>VeriBridge hit an unexpected error</h1>
+        <h1 style={{ fontSize: 20, fontWeight: 800, margin: 0 }}>VeriBridge AI hit an unexpected error</h1>
         <p style={{ fontSize: 14, color: "#4b5563", margin: 0 }}>
           Your data is safe.{error.digest ? ` Reference: ${error.digest}` : ""}
         </p>

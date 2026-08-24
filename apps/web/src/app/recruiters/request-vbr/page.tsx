@@ -15,7 +15,7 @@ import { Card, CardHeader, TOKEN } from "../../../../components/passport/shared"
 
 const CANDIDATE_MESSAGE = `Hi! As part of our process, we'd like to see verified evidence of a project you've built.
 
-Please create a free VeriBridge Verified Build Report (VBR) for one project — it walks you through attaching your GitHub repo, a live demo or website walkthrough, supporting documents, and a short recorded project defense. Then publish your Verified Work Passport and send us the public link.
+Please create a free VeriBridge AI Verified Build Report (VBR) for one project — it walks you through attaching your GitHub repo, a live demo or website walkthrough, supporting documents, and a short recorded project defense. Then publish your Verified Work Passport and send us the public link.
 
 It usually takes under an hour, and it lets us review real evidence instead of just a résumé.`
 
@@ -60,7 +60,7 @@ export default function RequestVbrPage() {
           Request a VBR from your candidates
         </h1>
         <p style={{ fontSize: 14, color: TOKEN.muted, margin: "0 auto", maxWidth: 560, lineHeight: 1.6 }}>
-          Ask applicants to generate a VeriBridge Verified Build Report for one project — and screen on
+          Ask applicants to generate a VeriBridge AI Verified Build Report for one project — and screen on
           evidence of what they actually built.
         </p>
       </div>
@@ -116,7 +116,7 @@ export default function RequestVbrPage() {
       <p style={{ fontSize: 12, color: TOKEN.muted, textAlign: "center", margin: 0 }}>
         A VBR is never an employment certification or background check — it is inspectable evidence.{" "}
         <a href="/recruiters" style={{ color: TOKEN.indigo, textDecoration: "none" }}>
-          See how VeriBridge works →
+          See how VeriBridge AI works →
         </a>
       </p>
     </div>

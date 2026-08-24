@@ -3,11 +3,11 @@ import { LandingV2 } from "../../components/landing-v2/LandingV2";
 import "./landing-v2.css";
 
 export const metadata: Metadata = {
-  title: "VeriBridge — Don't just claim your skills. Prove them.",
+  title: "VeriBridge AI — Don't just claim your skills. Prove them.",
   description:
-    "VeriBridge turns real projects into a Verified Work Passport — published evidence recruiters can search, inspect, and act on. Evidence-based hiring infrastructure for candidates and recruiters.",
+    "VeriBridge AI turns real projects into a Verified Work Passport — published evidence recruiters can search, inspect, and act on. Evidence-based hiring infrastructure for candidates and recruiters.",
   openGraph: {
-    title: "VeriBridge — Don't just claim your skills. Prove them.",
+    title: "VeriBridge AI — Don't just claim your skills. Prove them.",
     description:
       "Real projects become a Verified Work Passport: GitHub code, live sites, documents, recorded project defenses. Recruiters search evidence, inspect proof, and save candidates.",
     url: "https://veribridgeai.com",
@@ -16,7 +16,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary",
-    title: "VeriBridge — Don't just claim your skills. Prove them.",
+    title: "VeriBridge AI — Don't just claim your skills. Prove them.",
     description:
       "Real projects become a Verified Work Passport. Recruiters search evidence, inspect proof, and save candidates.",
     images: ["/brand/social-avatar-1024.png"],

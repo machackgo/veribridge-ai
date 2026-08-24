@@ -54,6 +54,8 @@ import {
   type RecorderHandshakeFailure,
 } from "@/lib/api"
 import { RecorderInstallGate, recorderGateReasonFor } from "./recorder-install-gate"
+import { RecorderConnectionRecovery, isRecorderConnectionFailure } from "./recorder-connection-recovery"
+import { RecorderReadyBadge } from "./recorder-ready-badge"
 import { probeRecorderExtension } from "@/lib/website-proof-recorder"
 import { workflowAnalysisReviewLabel } from "@/lib/analysis-review-labels"
 import { coherentOverallDefenseScore } from "@/lib/defense-score"
@@ -8508,6 +8510,9 @@ export function ExtensionProofPanel({
             continuing={false}
           />
         )}
+        {/* Positive counterpart of the gate: confirm readiness before the
+            student invests time in the form. Self-hides until detected. */}
+        {!recorderMissingOnMount && !error && <RecorderReadyBadge />}
         {error && recorderGateReasonFor(recorderDiagnosticCode) !== null && (
           <RecorderInstallGate
             reason={recorderGateReasonFor(recorderDiagnosticCode)!}
@@ -8515,11 +8520,22 @@ export function ExtensionProofPanel({
             continuing={starting}
           />
         )}
-        {error && recorderGateReasonFor(recorderDiagnosticCode) === null && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
-            {error}
-          </div>
-        )}
+        {error &&
+          recorderGateReasonFor(recorderDiagnosticCode) === null &&
+          isRecorderConnectionFailure(recorderDiagnosticCode) && (
+            <RecorderConnectionRecovery
+              message={error}
+              onRetry={handleStart}
+              retrying={starting}
+            />
+          )}
+        {error &&
+          recorderGateReasonFor(recorderDiagnosticCode) === null &&
+          !isRecorderConnectionFailure(recorderDiagnosticCode) && (
+            <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
+              {error}
+            </div>
+          )}
 
         <div style={{ display: "grid", gap: 12 }}>
           {/* Explicit project relationship — canonical evidence architecture. */}
@@ -8805,11 +8821,22 @@ export function ExtensionProofPanel({
             continuing={starting}
           />
         )}
-        {error && recorderGateReasonFor(recorderDiagnosticCode) === null && (
-          <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
-            {error}
-          </div>
-        )}
+        {error &&
+          recorderGateReasonFor(recorderDiagnosticCode) === null &&
+          isRecorderConnectionFailure(recorderDiagnosticCode) && (
+            <RecorderConnectionRecovery
+              message={error}
+              onRetry={handleStart}
+              retrying={starting}
+            />
+          )}
+        {error &&
+          recorderGateReasonFor(recorderDiagnosticCode) === null &&
+          !isRecorderConnectionFailure(recorderDiagnosticCode) && (
+            <div role="alert" style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", borderRadius: 10, padding: "8px 12px", fontSize: 12 }}>
+              {error}
+            </div>
+          )}
 
         {/* Status-aware message card */}
         {!isExpired && !workflowProgressOverridesRecordingUi && (

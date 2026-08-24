@@ -261,7 +261,7 @@ function EmailStep({
           marginBottom: 8,
         }}
       >
-        Sign in to VeriBridge
+        Sign in to VeriBridge AI
       </h1>
       <p
         style={{
