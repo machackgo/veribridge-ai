@@ -15,16 +15,23 @@ import * as fs from "fs";
  * for the extension while the app's detection path runs for real.
  */
 
-const SCRATCH = process.env.QA_SCRATCH!;
+const SCRATCH = process.env.QA_SCRATCH;
 const BASE = "https://veribridgeai.com";
 const OFFICIAL_LISTING =
   "https://chromewebstore.google.com/detail/veribridge-website-proof/gdogdgnaioldjldljniffcmkcdpdjlme";
 const SCHEMA_VERSION = 1;
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { student: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_ext_session.json`, "utf8"),
-);
+
+// Needs a throwaway student session minted for the run. Skip rather than throw
+// at import time, so this spec cannot break a whole-directory prod run.
+const FIXTURE = SCRATCH ? `${SCRATCH}/qa_ext_session.json` : "";
+const hasFixture = Boolean(FIXTURE) && fs.existsSync(FIXTURE);
+test.skip(!hasFixture, "requires a minted QA student session at $QA_SCRATCH/qa_ext_session.json");
+
+const qa: { student: Session; cookie_name: string } = hasFixture
+  ? JSON.parse(fs.readFileSync(FIXTURE, "utf8"))
+  : { student: { email: "", user_id: "", access_token: "", refresh_token: "" }, cookie_name: "" };
 
 function cookiesFor(s: Session) {
   const value =
