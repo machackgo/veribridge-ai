@@ -19,7 +19,11 @@ from app.schemas.recruiter_talent_pools import (
     AddPoolCandidatesResponse,
     CreateTalentPoolRequest,
     PoolCandidateResponse,
+    PoolComparisonRequest,
+    PoolComparisonResponse,
+    PoolFilterResponse,
     PoolMembershipsResponse,
+    RecruiterTagsResponse,
     RemovePoolCandidateResponse,
     TalentPoolDeleteResponse,
     TalentPoolDetailResponse,
@@ -28,14 +32,18 @@ from app.schemas.recruiter_talent_pools import (
     UpdatePoolCandidateRequest,
     UpdateTalentPoolRequest,
 )
+from app.services.recruiter_comparison_service import ComparisonError
 from app.services.recruiter_talent_pool_service import (
     PoolError,
     PoolNotFound,
     add_pool_candidates,
     create_pool,
     delete_pool,
+    filter_pool_candidates,
     list_pool_candidates,
     list_pools,
+    list_recruiter_tags,
+    pool_comparison,
     pool_memberships,
     remove_pool_candidate,
     update_pool,
@@ -52,6 +60,13 @@ def _not_found() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail={"code": "pool_not_found", "message": "This Talent Pool was not found."},
+    )
+
+
+def _comparison_error(exc: ComparisonError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail={"code": exc.code, "message": exc.message},
     )
 
 
@@ -115,6 +130,21 @@ def pool_memberships_route(
     return PoolMembershipsResponse(
         memberships=pool_memberships(db, str(user_id), wanted)
     )
+
+
+# Static route — MUST be declared before /{pool_id}.
+@router.get(
+    "/tags",
+    response_model=RecruiterTagsResponse,
+    summary="The caller's private candidate-tag vocabulary",
+)
+def recruiter_tags_route(
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> RecruiterTagsResponse:
+    """Tags are the RECRUITER's own shorthand about candidates — never
+    evidence, never candidate-visible, never another recruiter's."""
+    return RecruiterTagsResponse(tags=list_recruiter_tags(db, str(user_id)))
 
 
 @router.get(
@@ -227,6 +257,8 @@ def update_pool_candidate_route(
             student_user_id,
             note=payload.note if "note" in sent else ...,
             clear_note=payload.clear_note,
+            status=payload.status if "status" in sent else ...,
+            tags=payload.tags if "tags" in sent else ...,
         )
     except PoolNotFound:
         raise _not_found()
@@ -249,6 +281,79 @@ def remove_pool_candidate_route(
     if not remove_pool_candidate(db, str(user_id), pool_id, student_user_id):
         raise _not_found()
     return RemovePoolCandidateResponse(removed=True)
+
+
+@router.get(
+    "/{pool_id}/filter",
+    response_model=PoolFilterResponse,
+    summary="Filter this pool's members by published evidence and/or workflow metadata",
+)
+def filter_pool_route(
+    pool_id: str,
+    # No max_length: an over-long query is TRUNCATED by the service (the
+    # same MAX_QUERY_LENGTH contract global search uses), never rejected —
+    # a recruiter pasting a job description should get results, not a 422.
+    q: str = Query(default="", description="Natural-language evidence filter."),
+    evidence: str = Query(
+        default="", description="Comma-separated evidence-type gates (github, live_site, …)."
+    ),
+    candidate_status: str = Query(
+        default="", description="Recruiter workflow status to filter by."
+    ),
+    tags: str = Query(default="", description="Comma-separated recruiter tags (AND)."),
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PoolFilterResponse:
+    """Pool-scoped filtering. Evidence predicates run through the SAME engine
+    global recruiter search runs, restricted to this pool — so every returned
+    candidate is explainable from stored evidence and a fuzzy near-miss is
+    never silently promoted into a match."""
+    try:
+        payload = filter_pool_candidates(
+            db,
+            str(user_id),
+            pool_id,
+            q=q,
+            evidence=[e.strip() for e in str(evidence or "").split(",") if e.strip()],
+            status=candidate_status or None,
+            tags=[t.strip() for t in str(tags or "").split(",") if t.strip()],
+        )
+    except PoolNotFound:
+        raise _not_found()
+    except PoolError as exc:
+        raise _pool_error(exc)
+    return PoolFilterResponse(**payload)
+
+
+@router.post(
+    "/{pool_id}/comparison",
+    response_model=PoolComparisonResponse,
+    summary="Evidence matrix for 2–5 members of this pool",
+)
+def pool_comparison_route(
+    pool_id: str,
+    payload: PoolComparisonRequest,
+    user_id: str = Depends(get_current_user_id),
+    db: Any = Depends(get_db),
+) -> PoolComparisonResponse:
+    """Comparison is a LIVE evidence view, never a ranking: cells carry the
+    closed evidence-state vocabulary plus the provenance to walk
+    skill → project → proof, and no candidate is scored."""
+    try:
+        result = pool_comparison(
+            db,
+            str(user_id),
+            pool_id,
+            candidate_user_ids=payload.student_user_ids,
+            q=payload.q,
+        )
+    except PoolNotFound:
+        raise _not_found()
+    except ComparisonError as exc:
+        raise _comparison_error(exc)
+    except PoolError as exc:
+        raise _pool_error(exc)
+    return PoolComparisonResponse(**result)
 
 
 __all__ = ["router"]

@@ -11,13 +11,65 @@
  */
 
 import { fetchAPI } from "@/lib/api"
-import type { BriefCandidateIdentity } from "@/lib/recruiter-briefs-api"
+import type {
+  BriefCandidateIdentity,
+  ComparisonMatrix,
+  RequirementsView,
+} from "@/lib/recruiter-briefs-api"
 import { AuthRequiredError } from "@/lib/recruiter-connections-api"
 
-export type { BriefCandidateIdentity }
+export type { BriefCandidateIdentity, ComparisonMatrix, RequirementsView }
 export { AuthRequiredError }
 
 export type PoolStatus = "active" | "archived"
+
+/**
+ * RECRUITER-PRIVATE workflow stage, scoped to ONE pool.
+ *
+ * This is the recruiter's own process, never a judgement recorded against
+ * the candidate: it changes no evidence, is invisible to the candidate, and
+ * does not travel to another pool, a Hiring Brief, or any public surface.
+ */
+export type PoolCandidateStatus =
+  | "review"
+  | "shortlisted"
+  | "interview"
+  | "hold"
+  | "pass"
+
+export const POOL_CANDIDATE_STATUSES: PoolCandidateStatus[] = [
+  "review",
+  "shortlisted",
+  "interview",
+  "hold",
+  "pass",
+]
+
+export const POOL_STATUS_LABEL: Record<PoolCandidateStatus, string> = {
+  review: "Review",
+  shortlisted: "Shortlisted",
+  interview: "Interview",
+  hold: "Hold",
+  pass: "Pass",
+}
+
+/** Evidence-type gates the engine accepts (recruiter_search_service). */
+export const EVIDENCE_FILTER_KEYS = [
+  "github",
+  "live_site",
+  "documents",
+  "project_defense",
+  "video",
+] as const
+export type EvidenceFilterKey = (typeof EVIDENCE_FILTER_KEYS)[number]
+
+export const EVIDENCE_FILTER_LABEL: Record<EvidenceFilterKey, string> = {
+  github: "GitHub Proof",
+  live_site: "Website Proof",
+  documents: "Document Proof",
+  project_defense: "Project Defense",
+  video: "Video Evidence",
+}
 
 /** 065 connection vocabulary + saved_search — how a candidate entered a pool. */
 export type PoolCandidateSource =
@@ -53,16 +105,98 @@ export interface PoolCandidateEvidence {
 export interface PoolCandidate {
   student_user_id: string
   source: PoolCandidateSource
+  /** ── recruiter-private judgement (never evidence, never candidate-visible) */
+  status: PoolCandidateStatus
   note: string | null
+  tags: string[]
   added_at: string | null
+  updated_at: string | null
+  /** ── VeriBridge evidence domain (consented, live, fail-closed) */
   candidate: BriefCandidateIdentity
   evidence: PoolCandidateEvidence | null
+}
+
+/** One entry in the recruiter's private tag vocabulary. */
+export interface RecruiterTag {
+  tag: string
+  tag_key: string
+  candidate_count: number
 }
 
 export interface TalentPoolDetail {
   pool: TalentPool
   candidates: PoolCandidate[]
   total: number
+  status_counts: Record<string, number>
+  tag_vocabulary: RecruiterTag[]
+}
+
+/**
+ * WHY a candidate survived an evidence filter — reconstructed from the
+ * deterministic evaluation, never a score and never generated prose.
+ * `match_type` is the engine's classification: "exact" (every requirement
+ * evidenced) vs "close" (at least one named in `missing_requirements`).
+ */
+export interface PoolCandidateMatch {
+  match_type: string
+  requirements: Array<Record<string, unknown>>
+  missing_requirements: string[]
+  matched_reasons: Array<Record<string, unknown>>
+  skills: Array<Record<string, unknown>>
+  projects: Array<Record<string, unknown>>
+}
+
+export interface FilteredPoolCandidate extends PoolCandidate {
+  match: PoolCandidateMatch | null
+}
+
+export interface PoolFilterEcho {
+  q: string
+  evidence: string[]
+  status: string | null
+  tags: string[]
+}
+
+/** Exactly what the engine executed — shown back to the recruiter so a
+ * requirement is never applied invisibly. Mirrors the interpretation payload
+ * global recruiter search already returns. */
+export interface PoolFilterInterpretation {
+  required?: Array<{ display: string; concepts: string[] }>
+  preferred?: Array<{ display: string; concepts: string[] }>
+  excluded?: Array<{ display: string; concepts: string[] }>
+  evidence?: Array<{ key: string; display: string }>
+  preferred_evidence?: Array<{ key: string; display: string }>
+  residual_terms?: string[]
+  unrecognized_terms?: string[]
+}
+
+export interface PoolFilterResult {
+  pool: TalentPool
+  candidates: FilteredPoolCandidate[]
+  total: number
+  /** Candidates satisfying SOME but not every requirement — kept out of
+   * `candidates` so a filter means what it says, and surfaced with the gap
+   * already named rather than silently promoted or dropped. */
+  close_candidates: FilteredPoolCandidate[]
+  close_total: number
+  pool_total: number
+  status_counts: Record<string, number>
+  tag_vocabulary: RecruiterTag[]
+  filters: PoolFilterEcho
+  /** "Understood as …" — what the engine actually executed, including terms
+   * it could NOT turn into a requirement. Null when no query was given. */
+  interpretation: PoolFilterInterpretation | null
+  /** Members who could not be evidence-matched because their evidence is no
+   * longer publicly live. Surfaced so the UI says so rather than silently
+   * shrinking the pool. */
+  unavailable_excluded: number
+}
+
+export interface PoolComparisonResult {
+  pool: TalentPool
+  matrix: ComparisonMatrix
+  query: string | null
+  requirements_view: RequirementsView
 }
 
 export interface AddPoolCandidatesResult {
@@ -192,11 +326,23 @@ export async function addPoolCandidates(
   )
 }
 
-/** Update one member's recruiter-private note. */
+/**
+ * Update one member's RECRUITER-PRIVATE workflow metadata — pool-scoped note
+ * and status, plus the recruiter's tags for that candidate. Omitted fields
+ * stay unchanged; `tags` REPLACES the set.
+ *
+ * None of this can alter evidence, verification state, a Work Passport, a
+ * Verified Build Report, or any public surface.
+ */
 export async function updatePoolCandidate(
   poolId: string,
   studentUserId: string,
-  params: { note?: string; clear_note?: boolean },
+  params: {
+    note?: string
+    clear_note?: boolean
+    status?: PoolCandidateStatus
+    tags?: string[]
+  },
 ): Promise<PoolCandidate> {
   const body = await request<{ candidate: PoolCandidate }>(
     `/api/v1/recruiter/pools/${encodeURIComponent(poolId)}/candidates/${encodeURIComponent(studentUserId)}`,
@@ -215,6 +361,62 @@ export async function removePoolCandidate(
     { method: "DELETE" },
     "Failed to remove the candidate from the Talent Pool.",
   )
+}
+
+/**
+ * Filter ONE pool's members by published evidence and/or the recruiter's own
+ * workflow metadata. Evidence predicates run through the SAME engine global
+ * recruiter search runs, restricted to this pool — so every returned
+ * candidate is explainable from stored evidence, and a fuzzy near-miss is
+ * never silently promoted into a match.
+ */
+export async function filterPoolCandidates(
+  poolId: string,
+  params: {
+    q?: string
+    evidence?: string[]
+    status?: PoolCandidateStatus | null
+    tags?: string[]
+  },
+): Promise<PoolFilterResult> {
+  const search = new URLSearchParams()
+  if (params.q?.trim()) search.set("q", params.q.trim())
+  if (params.evidence?.length) search.set("evidence", params.evidence.join(","))
+  if (params.status) search.set("candidate_status", params.status)
+  if (params.tags?.length) search.set("tags", params.tags.join(","))
+  const qs = search.toString()
+  return request<PoolFilterResult>(
+    `/api/v1/recruiter/pools/${encodeURIComponent(poolId)}/filter${qs ? `?${qs}` : ""}`,
+    undefined,
+    "Failed to filter the Talent Pool.",
+  )
+}
+
+/**
+ * The requirement × candidate evidence matrix for 2–5 pool members.
+ * With `q`, the axis is the recruiter's stated requirements; without it, the
+ * axis is derived from the selected candidates' OWN published evidence.
+ * Never a ranking and never a score.
+ */
+export async function comparePoolCandidates(
+  poolId: string,
+  params: { student_user_ids: string[]; q?: string | null },
+): Promise<PoolComparisonResult> {
+  return request<PoolComparisonResult>(
+    `/api/v1/recruiter/pools/${encodeURIComponent(poolId)}/comparison`,
+    { method: "POST", body: JSON.stringify(params) },
+    "Failed to build the comparison.",
+  )
+}
+
+/** The caller's private candidate-tag vocabulary (autocomplete + chips). */
+export async function listRecruiterTags(): Promise<RecruiterTag[]> {
+  const body = await request<{ tags?: RecruiterTag[] }>(
+    "/api/v1/recruiter/pools/tags",
+    undefined,
+    "Failed to load your tags.",
+  )
+  return body.tags ?? []
 }
 
 /** {student_user_id → [pool ids]} across the caller's OWN pools. */

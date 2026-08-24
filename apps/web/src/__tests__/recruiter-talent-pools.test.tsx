@@ -11,8 +11,12 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const routerPush = vi.fn()
+// Pool detail derives its filter + selection state from the URL, so the
+// search params have to be mockable per test.
+let searchParams = new URLSearchParams()
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: routerPush }),
+  useSearchParams: () => searchParams,
 }))
 
 vi.mock("@/lib/recruiter-pools-api", async (importActual) => ({
@@ -20,6 +24,8 @@ vi.mock("@/lib/recruiter-pools-api", async (importActual) => ({
   listPools: vi.fn(),
   createPool: vi.fn(),
   getPool: vi.fn(),
+  filterPoolCandidates: vi.fn(),
+  comparePoolCandidates: vi.fn(),
   updatePool: vi.fn(),
   deletePool: vi.fn(),
   addPoolCandidates: vi.fn(),
@@ -42,6 +48,7 @@ import {
 import {
   createPool,
   deletePool,
+  filterPoolCandidates,
   getPool,
   listPools,
   removePoolCandidate,
@@ -57,6 +64,7 @@ import { PoolDetailView } from "../app/recruiters/pools/[poolId]/PoolDetailView"
 const mockListPools = vi.mocked(listPools)
 const mockCreatePool = vi.mocked(createPool)
 const mockGetPool = vi.mocked(getPool)
+const mockFilterPool = vi.mocked(filterPoolCandidates)
 const mockUpdatePool = vi.mocked(updatePool)
 const mockDeletePool = vi.mocked(deletePool)
 const mockUpdateCandidate = vi.mocked(updatePoolCandidate)
@@ -85,6 +93,9 @@ const ARCHIVED_POOL: TalentPool = {
 const ALPHA: PoolCandidate = {
   student_user_id: "u-alpha",
   source: "search",
+  status: "review" as const,
+  tags: [],
+  updated_at: null,
   note: null,
   added_at: "2026-08-18T00:00:00+00:00",
   candidate: {
@@ -109,6 +120,9 @@ const ALPHA: PoolCandidate = {
 const BRAVO_UNPUBLISHED: PoolCandidate = {
   student_user_id: "u-bravo",
   source: "saved_search",
+  status: "review" as const,
+  tags: [],
+  updated_at: null,
   note: "Met at the career fair",
   added_at: "2026-08-17T00:00:00+00:00",
   candidate: {
@@ -128,6 +142,8 @@ const DETAIL: TalentPoolDetail = {
   pool: POOL,
   candidates: [ALPHA, BRAVO_UNPUBLISHED],
   total: 2,
+  status_counts: { review: 2, shortlisted: 0, interview: 0, hold: 0, pass: 0 },
+  tag_vocabulary: [],
 }
 
 const BRIEF_ITEM: HiringBriefListItem = {
@@ -145,6 +161,22 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockListPools.mockResolvedValue([POOL, ARCHIVED_POOL])
   mockGetPool.mockResolvedValue(DETAIL)
+  searchParams = new URLSearchParams()
+  // The detail view loads through the filter endpoint (an unfiltered call
+  // returns the whole pool), so the fixture is served from there.
+  mockFilterPool.mockResolvedValue({
+    pool: DETAIL.pool,
+    candidates: DETAIL.candidates.map((c) => ({ ...c, match: null })),
+    total: DETAIL.total,
+    close_candidates: [],
+    close_total: 0,
+    pool_total: DETAIL.total,
+    status_counts: DETAIL.status_counts,
+    tag_vocabulary: DETAIL.tag_vocabulary,
+    filters: { q: "", evidence: [], status: null, tags: [] },
+    interpretation: null,
+    unavailable_excluded: 0,
+  })
   mockListBriefs.mockResolvedValue([BRIEF_ITEM])
 })
 

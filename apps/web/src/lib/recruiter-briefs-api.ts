@@ -129,6 +129,12 @@ export interface BriefColumnCounts {
   preferred_proven: number
   preferred_claimed: number
   preferred_total: number
+  /** OBSERVED rows come from the compared candidates' OWN published
+   * evidence rather than from anything the recruiter asked for (Talent Pool
+   * comparison). Counted apart so nothing reports them as required. */
+  observed_proven: number
+  observed_claimed: number
+  observed_total: number
 }
 
 export interface BriefCandidateEvaluation {
@@ -193,11 +199,16 @@ export interface MatrixCell {
   related: string[]
 }
 
+/** Where a comparison row came from: "plan" = the recruiter asked for it,
+ * "observed" = derived from the compared candidates' published evidence. */
+export type MatrixAxisOrigin = "plan" | "observed"
+
 export interface MatrixRequirement {
   key: string
   kind: "concept" | "evidence"
   display: string
   required: boolean
+  origin: MatrixAxisOrigin
   concepts: string[]
 }
 
@@ -213,16 +224,24 @@ export interface MatrixColumn {
   counts: BriefColumnCounts
   missing_required: string[]
   missing_preferred: string[]
+  missing_observed: string[]
   excluded_hits: string[]
   unavailable_note: string | null
   connection: { id: string } | null
   brief_status: BriefCandidateStatus | null
+  /** RECRUITER-PRIVATE workflow metadata — present only when the matrix is
+   * scoped to a Talent Pool. Never folded into cells, counts or summaries:
+   * recruiter judgement is not evidence. */
+  pool_status: string | null
+  pool_note: string | null
+  tags: string[]
 }
 
 export interface RequirementCoverage {
   key: string
   display: string
   required: boolean
+  origin: MatrixAxisOrigin
   proven_count: number
   claimed_count: number
   candidate_total: number

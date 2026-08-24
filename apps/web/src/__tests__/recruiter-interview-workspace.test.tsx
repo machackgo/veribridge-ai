@@ -110,9 +110,9 @@ const WORKSPACE: InterviewWorkspace = {
   pool_status: "shortlisted",
   checklist: {
     requirements: [
-      { key: "concept:python", kind: "concept", display: "Python", required: true, concepts: ["python"] },
-      { key: "evidence:github", kind: "evidence", display: "GitHub-verified project", required: true, concepts: [] },
-      { key: "concept:nlp", kind: "concept", display: "Natural Language Processing", required: false, concepts: ["natural-language-processing"] },
+      { key: "concept:python", kind: "concept", display: "Python", required: true, origin: "plan" as const, concepts: ["python"] },
+      { key: "evidence:github", kind: "evidence", display: "GitHub-verified project", required: true, origin: "plan" as const, concepts: [] },
+      { key: "concept:nlp", kind: "concept", display: "Natural Language Processing", required: false, origin: "plan" as const, concepts: ["natural-language-processing"] },
     ],
     cells: {
       "concept:python": PROVEN_CELL,
@@ -126,6 +126,9 @@ const WORKSPACE: InterviewWorkspace = {
       preferred_proven: 0,
       preferred_claimed: 0,
       preferred_total: 1,
+    observed_proven: 0,
+    observed_claimed: 0,
+    observed_total: 0,
     },
     available: true,
     unavailable_note: null,
@@ -312,6 +315,9 @@ describe("InterviewWorkspaceView", () => {
           preferred_proven: 0,
           preferred_claimed: 0,
           preferred_total: 0,
+    observed_proven: 0,
+    observed_claimed: 0,
+    observed_total: 0,
         },
         available: false,
         unavailable_note: "This candidate's evidence is no longer publicly available.",
