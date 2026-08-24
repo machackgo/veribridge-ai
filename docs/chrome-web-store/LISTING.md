@@ -131,7 +131,9 @@ its content script captures nothing and sends nothing.
 |---|---|---|
 | Store icon | `apps/extension/store-assets/store-icon-128.png` | 128×128 (96px artwork + padding) |
 | Small promo tile | `apps/extension/store-assets/promo-small-440x280.png` | 440×280 |
-| Screenshots (1–5) | `apps/extension/store-assets/screenshot-*.png` | 1280×800 — captured during real-browser QA |
+| Screenshots (1–5) | `apps/extension/store-assets/screenshot-*.png` | 1280×800 — real product UI captured during real-browser QA, framed in the Keystone V story system (intent → evidence → trust) |
+| Large promo tile (optional) | `apps/extension/store-assets/optional/promo-large-920x680.png` | 920×680 |
+| Marquee promo tile (optional) | `apps/extension/store-assets/optional/promo-marquee-1400x560.png` | 1400×560 |
 
 Package icons (in the ZIP): `icons/icon{16,32,48,128}.png`.
 
