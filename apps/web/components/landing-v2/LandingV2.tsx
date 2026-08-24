@@ -1,7 +1,7 @@
 "use client"
 
 /**
- * VeriBridge landing page v2 — Keystone V brand.
+ * VeriBridge AI landing page v2 — Keystone V brand.
  *
  * One idea, performed by the page itself: VERIBRIDGE MAKES WORK INSPECTABLE.
  * Candidate claim → project → evidence → Verified Work Passport → recruiter
@@ -73,7 +73,7 @@ export function LandingV2() {
         {/* ── Navigation ── */}
         <header className="lv-nav">
           <div className="lv-nav-inner">
-            <Link href="/" className="lv-nav-brand" aria-label="VeriBridge home">
+            <Link href="/" className="lv-nav-brand" aria-label="VeriBridge AI home">
               <VeriBridgeWordmark markSize={26} tone="dark" />
             </Link>
             <nav className="lv-nav-links" aria-label="Main">
@@ -122,7 +122,7 @@ export function LandingV2() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.6, delay: 0.16 }}
                 >
-                  VeriBridge turns real projects into a{" "}
+                  VeriBridge AI turns real projects into a{" "}
                   <b>Verified Work Passport</b> — published evidence recruiters
                   can search, inspect, and act on. Not another résumé. The work
                   behind it.
@@ -165,7 +165,7 @@ export function LandingV2() {
             <Reveal className="lv-states-inner">
               <p className="lv-states-lead">
                 Claims are easy. Evidence is inspectable. Every skill on
-                VeriBridge carries its true state:
+                VeriBridge AI carries its true state:
               </p>
               <div className="lv-states-row">
                 <span className="lv-state">
@@ -195,7 +195,8 @@ export function LandingV2() {
                 </>
               }
             >
-              Traditional hiring asks what a candidate claims. VeriBridge shows
+              Traditional hiring asks what a candidate claims. VeriBridge AI
+              shows
               what they&apos;ve actually demonstrated — the project, the code,
               the deployed site, the recorded defense.
             </SectionHead>
@@ -215,7 +216,7 @@ export function LandingV2() {
                 </div>
               </Reveal>
               <Reveal className="lv-problem-card" delay={0.15}>
-                <p className="lv-problem-label" data-tone="green">The same skill on VeriBridge</p>
+                <p className="lv-problem-label" data-tone="green">The same skill on VeriBridge AI</p>
                 <div className="lv-claimtrail">
                   <div className="lv-claimtrail-row">
                     <span className="lv-claimtrail-key">CLAIM</span>
@@ -305,8 +306,8 @@ export function LandingV2() {
                 </>
               }
             >
-              Ask in plain language — typed or spoken. VeriBridge interprets the
-              request, verifies each requirement against published evidence, and
+              Ask in plain language — typed or spoken. VeriBridge AI interprets
+              the request, verifies each requirement against published evidence, and
               lets you inspect the proof itself.
             </SectionHead>
             <Reveal delay={0.1}>
@@ -417,7 +418,7 @@ export function LandingV2() {
         <footer className="lv-footer">
           <div className="lv-footer-inner">
             <div className="lv-footer-brand">
-              <VeriBridgeWordmark markSize={24} tone="dark" withAI />
+              <VeriBridgeWordmark markSize={24} tone="dark" />
               <p>Evidence-based hiring infrastructure.</p>
             </div>
             <nav className="lv-footer-links" aria-label="Footer">

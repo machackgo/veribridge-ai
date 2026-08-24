@@ -18,10 +18,11 @@ import { KeystoneMark } from "../brand"
 export function VeriBridgeWordmark({
   markSize = 28,
   tone = "dark",
-  withAI = false,
+  withAI = true,
 }: {
   markSize?: number
   tone?: "dark" | "light"
+  /** The public brand name is "VeriBridge AI" — opt out only for space-constrained marks. */
   withAI?: boolean
 }) {
   return (

@@ -23,7 +23,7 @@ describe("RecruitersEntryView — signed-out entry", () => {
     render(<RecruitersEntryView />)
     expect(screen.getByTestId("recruiters-hero")).toBeInTheDocument()
     expect(screen.getByRole("heading", { level: 1, name: /recruiter workspace/i })).toBeInTheDocument()
-    expect(screen.getByText(/candidates you have saved from VeriBridge Passports/i)).toBeInTheDocument()
+    expect(screen.getByText(/candidates you have saved from VeriBridge AI Passports/i)).toBeInTheDocument()
   })
 
   it("routes Sign in and Create recruiter account through the existing login flow to the workspace", () => {

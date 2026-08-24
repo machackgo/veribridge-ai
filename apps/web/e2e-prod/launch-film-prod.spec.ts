@@ -20,7 +20,7 @@ test.describe("PROD — launch film", () => {
     await page.goto("/");
     await expect(page).toHaveTitle(/VeriBridge/i);
     await expect(page.getByRole("heading", { level: 1 })).toContainText(/Prove them/i);
-    await expect(page.getByRole("link", { name: /VeriBridge home/i })).toBeVisible();
+    await expect(page.getByRole("link", { name: /VeriBridge AI home/i })).toBeVisible();
     await expect(
       page.getByText(/Don't just claim your skills|Don’t just claim your skills/i).first(),
     ).toBeVisible();

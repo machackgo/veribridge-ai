@@ -1309,6 +1309,15 @@ g:has(.lv-svg-passport) .lv-svg-title {
     padding: 12px 16px;
     gap: 12px;
   }
+  /* "VeriBridge AI" is wider than the old mark — ease the type at phone widths
+     so the lockup and the CTA still share one line without wrapping. */
+  .lv-nav .lv-wordmark {
+    gap: 8px;
+  }
+  .lv-nav .lv-wordmark-text {
+    font-size: 17px;
+    white-space: nowrap;
+  }
   .lv-nav-ctas .lv-btn-ghost {
     display: none;
   }
@@ -1417,5 +1426,16 @@ g:has(.lv-svg-passport) .lv-svg-title {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+@media (max-width: 390px) {
+  /* Smallest phones (320–390px): trim the lockup a little further so the
+     "Create Work Passport" CTA stays fully inside the viewport. */
+  .lv-nav .lv-wordmark {
+    gap: 6px;
+  }
+  .lv-nav .lv-wordmark-text {
+    font-size: 15px;
   }
 }
