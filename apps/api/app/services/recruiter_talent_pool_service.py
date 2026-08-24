@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.core.serialization import make_json_safe
 from app.services.recruiter_comparison_service import (
@@ -127,11 +127,37 @@ def _pool_key(pool_id: str, student_user_id: str) -> str:
     return f"{pool_id}:{student_user_id}"
 
 
+def _addressable_id(db: Any, value: Any) -> str | None:
+    """The id to query with, or None when it could not name a row.
+
+    Against Supabase every id here reaches PostgREST as a ``uuid``
+    comparison, and Postgres answers a MALFORMED one with an invalid-input
+    error rather than an empty result — which surfaced as an unhandled 500
+    for a URL like ``/recruiter/pools/not-a-uuid/filter``. Screening the
+    shape first keeps the ownership contract intact: a malformed id is
+    simply not found, exactly like a well-formed id belonging to someone
+    else.
+
+    Dict-backed stores (hermetic tests) have no such typing, so readable
+    fixture ids like ``"u-alpha"`` stay valid there.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if isinstance(db, dict):
+        return text
+    try:
+        UUID(text)
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return text
+
+
 # ── Storage helpers (dual-mode) ──────────────────────────────────────────────
 
 
 def _pool_row(db: Any, recruiter_user_id: str, pool_id: str) -> dict[str, Any] | None:
-    pool_id = str(pool_id or "").strip()
+    pool_id = _addressable_id(db, pool_id)
     if not pool_id:
         return None
     if isinstance(db, dict):
@@ -273,6 +299,10 @@ def _member_rows_for_pools(db: Any, pool_ids: list[str]) -> list[dict[str, Any]]
 
 
 def _member_row(db: Any, pool_id: str, student_user_id: str) -> dict[str, Any] | None:
+    # A candidate id also arrives straight from the URL — screen its shape
+    # for the same reason _pool_row does (see _addressable_id).
+    if _addressable_id(db, student_user_id) is None:
+        return None
     if isinstance(db, dict):
         return db.setdefault(_POOL_CANDIDATES_TABLE, {}).get(
             _pool_key(str(pool_id), str(student_user_id))
@@ -325,6 +355,8 @@ def _update_member_row(
 
 
 def _delete_member_row(db: Any, pool_id: str, student_user_id: str) -> bool:
+    if _addressable_id(db, student_user_id) is None:
+        return False
     if isinstance(db, dict):
         table = db.setdefault(_POOL_CANDIDATES_TABLE, {})
         key = _pool_key(str(pool_id), str(student_user_id))
@@ -1029,7 +1061,23 @@ def filter_pool_candidates(
         ``interpretation.unrecognized_terms`` — never silently treated as a
         match;
       * no query and no filters returns the pool unchanged, not an empty
-        "no results" state.
+        "no results" state;
+      * only candidates satisfying EVERY requirement are results. Candidates
+        missing at least one come back separately in ``close_candidates``
+        with the gap already named, so a near miss is never silently
+        promoted into a match.
+
+    INHERITED SEMANTICS worth stating plainly, because it is coarser than a
+    recruiter may assume: an evidence requirement is CANDIDATE-level. "machine
+    learning with GitHub proof" asks for a candidate who has published machine
+    learning evidence AND has published GitHub evidence — it does not require
+    that the GitHub proof is what backs the machine learning. This is the
+    shipped V1.5 contract that global search, Hiring Briefs, Saved Searches
+    and comparison all evaluate, and changing it here would fork the engine.
+    It is not fabrication (both facts are published and inspectable), but it
+    IS a coarse reading, so ``interpretation`` returns exactly what was
+    executed and the UI shows it back to the recruiter rather than leaving
+    them to assume a tighter binding.
     """
     pool = _pool_row(db, recruiter_user_id, pool_id)
     if pool is None:
@@ -1138,15 +1186,19 @@ def filter_pool_candidates(
         )
         candidates.append(view)
 
+    # A filter must mean what it says. The engine classifies a candidate who
+    # satisfies EVERY requirement as "exact" and one missing at least one as
+    # "close"; only exact matches are results. Close ones are returned in
+    # their own list, with what they are missing already named, so the
+    # recruiter can widen deliberately — a near miss is never silently
+    # promoted into a match, and an honest empty result beats a padded one.
+    close: list[dict[str, Any]] = []
     if evidence_filtered:
-        # Exact matches (every requirement evidenced) ahead of close ones —
-        # the engine's existing, stated semantics. Not a ranking of people.
-        order = {"exact": 0, "match": 0, "close": 1}
-        candidates.sort(
-            key=lambda c: order.get(
-                str((c.get("match") or {}).get("match_type") or "match"), 1
-            )
-        )
+        exact: list[dict[str, Any]] = []
+        for view in candidates:
+            match_type = str((view.get("match") or {}).get("match_type") or "match")
+            (close if match_type == "close" else exact).append(view)
+        candidates = exact
 
     _record_pool_event(
         db, str(recruiter_user_id), "filter", count=len(candidates)
@@ -1155,6 +1207,8 @@ def filter_pool_candidates(
         "pool": _pool_view(pool, total_members),
         "candidates": candidates,
         "total": len(candidates),
+        "close_candidates": close,
+        "close_total": len(close),
         "pool_total": total_members,
         "status_counts": _status_counts(candidates),
         "tag_vocabulary": list_recruiter_tags(db, recruiter_user_id),

@@ -47,6 +47,7 @@ import {
   updatePoolCandidate,
   type EvidenceFilterKey,
   type FilteredPoolCandidate,
+  type PoolFilterInterpretation,
   type PoolCandidateSource,
   type PoolCandidateStatus,
   type RecruiterTag,
@@ -535,7 +536,10 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({})
   const [tagVocabulary, setTagVocabulary] = useState<RecruiterTag[]>([])
   const [unavailableExcluded, setUnavailableExcluded] = useState(0)
-  const [interpretation, setInterpretation] = useState<Record<string, unknown> | null>(null)
+  const [interpretation, setInterpretation] =
+    useState<PoolFilterInterpretation | null>(null)
+  const [closeCandidates, setCloseCandidates] = useState<FilteredPoolCandidate[]>([])
+  const [closeOpen, setCloseOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -570,6 +574,7 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
       .then((result) => {
         setPool(result.pool)
         setCandidates(result.candidates)
+        setCloseCandidates(result.close_candidates ?? [])
         setPoolTotal(result.pool_total)
         setStatusCounts(result.status_counts)
         setTagVocabulary(result.tag_vocabulary)
@@ -614,8 +619,11 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
 
   // Selection only ever refers to candidates currently on screen.
   const visibleIds = useMemo(
-    () => new Set(candidates.map((c) => c.student_user_id)),
-    [candidates],
+    () =>
+      new Set(
+        [...candidates, ...closeCandidates].map((c) => c.student_user_id),
+      ),
+    [candidates, closeCandidates],
   )
   const selected = useMemo(
     () => urlSelected.filter((id) => visibleIds.has(id)),
@@ -685,11 +693,22 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
     }
   }
 
-  const unrecognized = Array.isArray(
-    (interpretation as { unrecognized_terms?: unknown } | null)?.unrecognized_terms,
-  )
-    ? ((interpretation as { unrecognized_terms: string[] }).unrecognized_terms ?? [])
-    : []
+  const unrecognized = interpretation?.unrecognized_terms ?? []
+  // Every requirement the engine actually executed, listed separately.
+  // Shown because an evidence requirement is CANDIDATE-level: "machine
+  // learning with GitHub proof" asks for someone with published ML evidence
+  // AND published GitHub evidence — it does not assert that the GitHub proof
+  // is what backs the ML. Saying so beats letting the recruiter assume it.
+  const understoodAs: { label: string; kind: "concept" | "evidence" }[] = [
+    ...(interpretation?.required ?? []).map((r) => ({
+      label: r.display,
+      kind: "concept" as const,
+    })),
+    ...(interpretation?.evidence ?? []).map((e) => ({
+      label: e.display,
+      kind: "evidence" as const,
+    })),
+  ]
 
   return (
     <div
@@ -919,7 +938,28 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
               </div>
 
               {filtering && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {understoodAs.length > 0 && (
+                    <div
+                      data-testid="pool-filter-understood"
+                      style={{ display: "flex", flexWrap: "wrap", gap: 5, alignItems: "center" }}
+                    >
+                      <span style={{ fontSize: 11, color: TOKEN.muted, fontWeight: 700, letterSpacing: "0.3px", textTransform: "uppercase" }}>
+                        Understood as
+                      </span>
+                      {understoodAs.map((chip) => (
+                        <Badge key={`${chip.kind}-${chip.label}`} tone={chip.kind === "evidence" ? "sky" : "indigo"}>
+                          {chip.label}
+                        </Badge>
+                      ))}
+                      <span style={{ flexBasis: "100%", fontSize: 11, color: TOKEN.muted, lineHeight: 1.5 }}>
+                        Each is checked separately against published evidence —
+                        a proof-source requirement means the candidate has
+                        published that kind of proof, not that it is what backs
+                        the skill above.
+                      </span>
+                    </div>
+                  )}
                   <p data-testid="pool-filter-summary" style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: 0 }}>
                     Showing {candidates.length} of {poolTotal}{" "}
                     {poolTotal === 1 ? "candidate" : "candidates"} in this pool.
@@ -991,7 +1031,9 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
                 }
                 description={
                   filtering
-                    ? "Nothing here is a judgement about anyone — it only means no member of this pool has published evidence satisfying that filter."
+                    ? closeCandidates.length > 0
+                      ? "No member of this pool satisfies every part of that filter. Nothing here is a judgement about anyone — some candidates match it partially and are listed below."
+                      : "Nothing here is a judgement about anyone — it only means no member of this pool has published evidence satisfying that filter."
                     : "Add candidates from Search or your Saved Candidates — membership is a reference to the person, never a copy of their evidence."
                 }
                 action={
@@ -1053,6 +1095,78 @@ export function PoolDetailView({ poolId }: { poolId: string }) {
                   }}
                 />
               ))}
+            </div>
+          )}
+
+          {/* Close matches are NOT results — a filter means what it says.
+              They are offered separately, with the gap already named, so the
+              recruiter widens deliberately instead of being handed a padded
+              list. */}
+          {closeCandidates.length > 0 && (
+            <div data-testid="pool-close-section" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <button
+                type="button"
+                data-testid="pool-close-toggle"
+                aria-expanded={closeOpen}
+                onClick={() => setCloseOpen((v) => !v)}
+                style={{
+                  alignSelf: "flex-start",
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  border: `1px solid ${TOKEN.line}`,
+                  background: "#fff",
+                  color: TOKEN.inkSoft,
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {closeOpen ? "Hide" : "Show"} {closeCandidates.length}{" "}
+                {closeCandidates.length === 1 ? "candidate" : "candidates"} missing
+                some of this evidence
+              </button>
+              {closeOpen && (
+                <>
+                  <p style={{ fontSize: 12, color: TOKEN.muted, margin: 0, lineHeight: 1.5 }}>
+                    These candidates did not satisfy every requirement, so they are
+                    not results. What each is missing is named on their card —
+                    missing VeriBridge evidence is not evidence of missing ability.
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 340px), 1fr))",
+                      gap: 14,
+                      alignItems: "stretch",
+                    }}
+                  >
+                    {closeCandidates.map((entry) => (
+                      <PoolCandidateCard
+                        key={entry.student_user_id}
+                        poolId={poolId}
+                        entry={entry}
+                        selected={selected.includes(entry.student_user_id)}
+                        selectable={canSelectMore}
+                        onToggleSelect={toggleSelect}
+                        tagVocabulary={tagVocabulary}
+                        onChanged={(updated) =>
+                          setCloseCandidates((current) =>
+                            current.map((c) =>
+                              c.student_user_id === updated.student_user_id ? updated : c,
+                            ),
+                          )
+                        }
+                        onRemoved={(studentUserId) => {
+                          setCloseCandidates((current) =>
+                            current.filter((c) => c.student_user_id !== studentUserId),
+                          )
+                          setPoolTotal((n) => Math.max(0, n - 1))
+                        }}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
             </div>
           )}
         </>

@@ -442,12 +442,67 @@ def test_filter_combines_skill_and_proof_source(client, mem_store):
     )
     assert [c["student_user_id"] for c in res.json()["candidates"]] == ["u-alpha"]
 
-    # bravo has Python but no live site: the proof-source gate excludes them.
+
+def test_a_partial_match_is_not_a_result(client, mem_store):
+    """A filter must mean what it says.
+
+    bravo has Python but no live site. Asking for BOTH must not return them
+    among the results — they come back separately, with the gap named, so the
+    recruiter can widen deliberately instead of being handed a padded list.
+    """
+    _seed(mem_store)
+    pool_id = _pool(client)
+    _fill(client, pool_id)
     res = client.get(
         f"{API}/{pool_id}/filter",
         params={"q": "candidates with Python", "evidence": "live_site"},
     )
-    assert [c["student_user_id"] for c in res.json()["candidates"]] == ["u-alpha"]
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [c["student_user_id"] for c in body["candidates"]] == ["u-alpha"]
+    assert body["total"] == 1
+    # bravo is reported as close, never as a match, and the miss is named.
+    close_ids = [c["student_user_id"] for c in body["close_candidates"]]
+    assert "u-alpha" not in close_ids
+    for entry in body["close_candidates"]:
+        assert entry["match"]["match_type"] == "close"
+        assert entry["match"]["missing_requirements"]
+
+
+def test_close_candidates_are_absent_without_an_evidence_filter(client, mem_store):
+    _seed(mem_store)
+    pool_id = _pool(client)
+    _fill(client, pool_id)
+    body = client.get(f"{API}/{pool_id}/filter").json()
+    assert body["close_candidates"] == []
+    assert body["close_total"] == 0
+
+
+def test_malformed_ids_are_not_found_rather_than_a_server_error(client, mem_store):
+    """A garbage id in the URL must read as "not found", never 500."""
+    _seed(mem_store)
+    pool_id = _pool(client)
+    _fill(client, pool_id, slugs=("alpha",))
+    assert client.get(f"{API}/not-a-uuid").status_code == 404
+    assert client.get(f"{API}/not-a-uuid/filter").status_code == 404
+    assert client.delete(f"{API}/not-a-uuid").status_code == 404
+    res = client.post(
+        f"{API}/not-a-uuid/comparison",
+        json={"student_user_ids": ["u-alpha", "u-bravo"]},
+    )
+    assert res.status_code == 404
+    res = client.delete(f"{API}/{pool_id}/candidates/not-a-uuid")
+    assert res.status_code == 404
+
+
+def test_an_overlong_query_is_truncated_not_rejected(client, mem_store):
+    """A recruiter pasting a job description should get results, not a 422."""
+    _seed(mem_store)
+    pool_id = _pool(client)
+    _fill(client, pool_id)
+    res = client.get(f"{API}/{pool_id}/filter", params={"q": "python " * 200})
+    assert res.status_code == 200, res.text
+    assert len(res.json()["filters"]["q"]) <= 320
 
 
 def test_filter_never_fabricates_a_match(client, mem_store):
@@ -528,6 +583,42 @@ def test_unpublished_members_are_excluded_and_counted_honestly(client, mem_store
     dark = _by_id(res.json())["u-bravo"]
     assert dark["evidence"] is None
     assert dark["candidate"]["is_published"] is False
+
+
+def test_evidence_requirements_are_candidate_level_and_said_so(client, mem_store):
+    """Pin the inherited (coarse) contract so it stays deliberate.
+
+    "machine learning with GitHub proof" means: has published ML evidence AND
+    has published GitHub evidence. It does NOT mean the GitHub proof is what
+    backs the ML. Both facts are published and inspectable, so this is not
+    fabrication — but it is coarser than the phrasing suggests, which is why
+    the response echoes exactly what was executed.
+    """
+    _seed(mem_store)
+    # charlie: Docker via GitHub. Give them ML evidence from a DIFFERENT
+    # proof type, so only the candidate-level reading can match them.
+    charlie = mem_store["recruiter_search_index"]["u-charlie"]
+    charlie["skills"].append(
+        _skill("Machine Learning", "machine-learning", "Demonstrated", ["Document Proof"])
+    )
+    charlie["skill_count"] = len(charlie["skills"])
+    charlie["search_text"] += " machine learning"
+
+    pool_id = _pool(client)
+    _fill(client, pool_id)
+    res = client.get(
+        f"{API}/{pool_id}/filter",
+        params={"q": "Who demonstrated machine learning with GitHub proof?"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [c["student_user_id"] for c in body["candidates"]] == ["u-charlie"]
+
+    # The recruiter is shown the two requirements SEPARATELY — never a claim
+    # that the GitHub proof backs the machine learning.
+    interpretation = body["interpretation"]
+    assert [r["display"] for r in interpretation["required"]] == ["Machine Learning"]
+    assert [e["key"] for e in interpretation["evidence"]] == ["github"]
 
 
 def test_filter_surfaces_unrecognized_terms(client, mem_store):

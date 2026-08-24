@@ -290,7 +290,10 @@ def remove_pool_candidate_route(
 )
 def filter_pool_route(
     pool_id: str,
-    q: str = Query(default="", max_length=320, description="Natural-language evidence filter."),
+    # No max_length: an over-long query is TRUNCATED by the service (the
+    # same MAX_QUERY_LENGTH contract global search uses), never rejected —
+    # a recruiter pasting a job description should get results, not a 422.
+    q: str = Query(default="", description="Natural-language evidence filter."),
     evidence: str = Query(
         default="", description="Comma-separated evidence-type gates (github, live_site, …)."
     ),

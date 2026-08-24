@@ -179,6 +179,11 @@ class PoolFilterResponse(BaseModel):
     pool: TalentPool
     candidates: list[FilteredPoolCandidate] = Field(default_factory=list)
     total: int = 0
+    # Candidates who satisfied SOME but not every requirement. Kept out of
+    # `candidates` so a filter means what it says, and surfaced separately
+    # with the gap already named rather than silently promoted or dropped.
+    close_candidates: list[FilteredPoolCandidate] = Field(default_factory=list)
+    close_total: int = 0
     pool_total: int = 0
     status_counts: dict[str, int] = Field(default_factory=dict)
     tag_vocabulary: list[RecruiterTag] = Field(default_factory=list)

@@ -168,6 +168,8 @@ beforeEach(() => {
     pool: DETAIL.pool,
     candidates: DETAIL.candidates.map((c) => ({ ...c, match: null })),
     total: DETAIL.total,
+    close_candidates: [],
+    close_total: 0,
     pool_total: DETAIL.total,
     status_counts: DETAIL.status_counts,
     tag_vocabulary: DETAIL.tag_vocabulary,

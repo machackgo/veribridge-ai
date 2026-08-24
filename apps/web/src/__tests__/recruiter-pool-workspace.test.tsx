@@ -114,6 +114,8 @@ function filterResult(overrides: Partial<PoolFilterResult> = {}): PoolFilterResu
     pool: POOL,
     candidates: [ALPHA, BRAVO, CHARLIE],
     total: 3,
+    close_candidates: [],
+    close_total: 0,
     pool_total: 3,
     status_counts: { review: 3, shortlisted: 0, interview: 0, hold: 0, pass: 0 },
     tag_vocabulary: [],
@@ -274,6 +276,71 @@ describe("Talent Pool filtering", () => {
     render(<PoolDetailView poolId="pool-1" />)
     expect(await screen.findByTestId("pool-filter-unrecognized")).toHaveTextContent(
       "Not understood as a requirement, so not used to match: wizardry.",
+    )
+  })
+
+  it("keeps close matches out of the results and offers them separately", async () => {
+    searchParams = new URLSearchParams({ q: "FastAPI and Kubernetes" })
+    const close = {
+      ...BRAVO,
+      match: {
+        match_type: "close",
+        requirements: [],
+        missing_requirements: ["Kubernetes"],
+        matched_reasons: [],
+        skills: [],
+        projects: [],
+      },
+    }
+    mockFilter.mockResolvedValue(
+      filterResult({
+        candidates: [ALPHA],
+        total: 1,
+        close_candidates: [close],
+        close_total: 1,
+      }),
+    )
+    render(<PoolDetailView poolId="pool-1" />)
+    await screen.findByText("Alpha Candidate")
+    // A near miss is not a result…
+    expect(screen.getAllByTestId("pool-candidate-card")).toHaveLength(1)
+    expect(screen.getByTestId("pool-filter-summary")).toHaveTextContent(
+      "Showing 1 of 3",
+    )
+    // …but it is offered, with the gap named and no verdict attached.
+    const toggle = screen.getByTestId("pool-close-toggle")
+    expect(toggle).toHaveTextContent("1 candidate missing some of this evidence")
+    fireEvent.click(toggle)
+    expect(screen.getAllByTestId("pool-candidate-card")).toHaveLength(2)
+    const section = screen.getByTestId("pool-close-section")
+    expect(section).toHaveTextContent("Kubernetes: not demonstrated")
+    expect(section).toHaveTextContent(
+      "missing VeriBridge evidence is not evidence of missing ability",
+    )
+  })
+
+  it("shows exactly what the engine executed, requirement by requirement", async () => {
+    searchParams = new URLSearchParams({
+      q: "Who demonstrated machine learning with GitHub proof?",
+    })
+    mockFilter.mockResolvedValue(
+      filterResult({
+        candidates: [ALPHA],
+        total: 1,
+        interpretation: {
+          required: [{ display: "Machine Learning", concepts: ["machine-learning"] }],
+          evidence: [{ key: "github", display: "GitHub evidence" }],
+          unrecognized_terms: [],
+        },
+      }),
+    )
+    render(<PoolDetailView poolId="pool-1" />)
+    const understood = await screen.findByTestId("pool-filter-understood")
+    expect(understood).toHaveTextContent("Machine Learning")
+    expect(understood).toHaveTextContent("GitHub evidence")
+    // The coarse contract is stated, not left to be assumed.
+    expect(understood).toHaveTextContent(
+      "not that it is what backs the skill above",
     )
   })
 

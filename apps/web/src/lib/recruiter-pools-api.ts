@@ -157,17 +157,35 @@ export interface PoolFilterEcho {
   tags: string[]
 }
 
+/** Exactly what the engine executed — shown back to the recruiter so a
+ * requirement is never applied invisibly. Mirrors the interpretation payload
+ * global recruiter search already returns. */
+export interface PoolFilterInterpretation {
+  required?: Array<{ display: string; concepts: string[] }>
+  preferred?: Array<{ display: string; concepts: string[] }>
+  excluded?: Array<{ display: string; concepts: string[] }>
+  evidence?: Array<{ key: string; display: string }>
+  preferred_evidence?: Array<{ key: string; display: string }>
+  residual_terms?: string[]
+  unrecognized_terms?: string[]
+}
+
 export interface PoolFilterResult {
   pool: TalentPool
   candidates: FilteredPoolCandidate[]
   total: number
+  /** Candidates satisfying SOME but not every requirement — kept out of
+   * `candidates` so a filter means what it says, and surfaced with the gap
+   * already named rather than silently promoted or dropped. */
+  close_candidates: FilteredPoolCandidate[]
+  close_total: number
   pool_total: number
   status_counts: Record<string, number>
   tag_vocabulary: RecruiterTag[]
   filters: PoolFilterEcho
   /** "Understood as …" — what the engine actually executed, including terms
    * it could NOT turn into a requirement. Null when no query was given. */
-  interpretation: Record<string, unknown> | null
+  interpretation: PoolFilterInterpretation | null
   /** Members who could not be evidence-matched because their evidence is no
    * longer publicly live. Surfaced so the UI says so rather than silently
    * shrinking the pool. */
