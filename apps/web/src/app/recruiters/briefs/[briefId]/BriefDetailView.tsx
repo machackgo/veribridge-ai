@@ -43,7 +43,6 @@ import {
   type BriefStatus,
   type BriefStatusCounts,
   type HiringBrief,
-  type MatrixCell,
   type RequirementsView,
 } from "@/lib/recruiter-briefs-api"
 import {
@@ -51,6 +50,7 @@ import {
   type RecruiterConnection,
 } from "@/lib/recruiter-connections-api"
 import type { RecruiterSearchResponse } from "@/lib/recruiter-search-api"
+import { ComparisonMatrixView } from "../../../../../components/recruiter/ComparisonMatrix"
 import { BRIEF_STATUS_LABEL } from "../BriefsListView"
 
 export const CANDIDATE_STATUS_LABEL: Record<BriefCandidateStatus, string> = {
@@ -428,132 +428,22 @@ function PoolCandidateCard({
   )
 }
 
-function MatrixCellView({ cell }: { cell: MatrixCell }) {
-  if (cell.state === "proven") {
-    return (
-      <div data-testid="matrix-cell-proven" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        <Badge tone="emerald">Proven</Badge>
-        {cell.note && <span style={{ fontSize: 11, color: TOKEN.muted }}>{cell.note}</span>}
-        {cell.proof_path && (
-          <a
-            data-testid="matrix-cell-proof-link"
-            href={cell.proof_path}
-            style={{ fontSize: 11.5, color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}
-          >
-            View proof →
-          </a>
-        )}
-      </div>
-    )
-  }
-  if (cell.state === "claimed") {
-    return (
-      <div data-testid="matrix-cell-claimed" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-        <Badge tone="amber">Claimed</Badge>
-        <span style={{ fontSize: 11, color: TOKEN.muted }}>{cell.note ?? "Not verified evidence"}</span>
-      </div>
-    )
-  }
-  return (
-    <div data-testid="matrix-cell-none" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-      <Badge tone="slate">No evidence</Badge>
-      {cell.related.length > 0 && (
-        <span style={{ fontSize: 11, color: TOKEN.muted }}>
-          Related (not proof): {cell.related.join(", ")}
-        </span>
-      )}
-    </div>
-  )
-}
-
 function ComparisonSection({ comparison }: { comparison: BriefComparisonResponse }) {
-  const { matrix } = comparison
+  // The matrix itself is the SHARED recruiter comparison component (Talent
+  // Pools render the identical table from the identical engine); the brief
+  // only contributes its ROLE-SCOPED review status into each column header.
   return (
-    <div data-testid="brief-comparison" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {matrix.notes.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {matrix.notes.map((note) => (
-            <p key={note} data-testid="comparison-note" style={{ fontSize: 12.5, color: TOKEN.muted, margin: 0 }}>
-              {note}
-            </p>
-          ))}
-        </div>
-      )}
-      <div style={{ overflowX: "auto", border: `1px solid ${TOKEN.line}`, borderRadius: 12 }}>
-        <table data-testid="comparison-matrix" style={{ borderCollapse: "collapse", width: "100%", minWidth: 640 }}>
-          <thead>
-            <tr>
-              <th style={{ textAlign: "left", padding: "10px 12px", fontSize: 12, color: TOKEN.muted, borderBottom: `1px solid ${TOKEN.line}`, background: TOKEN.bg, minWidth: 170 }}>
-                Requirement
-              </th>
-              {matrix.columns.map((column) => (
-                <th key={column.user_id} style={{ textAlign: "left", padding: "10px 12px", borderBottom: `1px solid ${TOKEN.line}`, background: TOKEN.bg, minWidth: 160 }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                    <span data-testid="comparison-column-name" style={{ fontSize: 13, color: TOKEN.ink, fontWeight: 700 }}>
-                      {column.display_name ?? "Verified candidate"}
-                    </span>
-                    <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      {column.brief_status && (
-                        <Badge tone={CANDIDATE_STATUS_TONE[column.brief_status]}>
-                          {CANDIDATE_STATUS_LABEL[column.brief_status]}
-                        </Badge>
-                      )}
-                      {!column.available && <Badge tone="rose">Unavailable</Badge>}
-                    </span>
-                    <span style={{ fontSize: 11, color: TOKEN.muted, fontWeight: 500 }}>
-                      {column.available
-                        ? `${column.counts.required_proven} of ${column.counts.required_total} required proven`
-                        : column.unavailable_note ?? ""}
-                    </span>
-                    {column.passport_path && (
-                      <a href={column.passport_path} style={{ fontSize: 11.5, color: TOKEN.indigo, fontWeight: 600, textDecoration: "none" }}>
-                        Passport →
-                      </a>
-                    )}
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {matrix.requirements.map((req) => (
-              <tr key={req.key}>
-                <td style={{ padding: "10px 12px", fontSize: 12.5, color: TOKEN.ink, fontWeight: 600, borderBottom: `1px solid ${TOKEN.line}`, verticalAlign: "top" }}>
-                  {req.display}
-                  {!req.required && (
-                    <span style={{ display: "block", fontSize: 10.5, color: TOKEN.muted, fontWeight: 500 }}>
-                      Preferred
-                    </span>
-                  )}
-                </td>
-                {matrix.columns.map((column) => {
-                  const cell = column.cells[req.key]
-                  return (
-                    <td key={column.user_id} style={{ padding: "10px 12px", borderBottom: `1px solid ${TOKEN.line}`, verticalAlign: "top" }}>
-                      {column.available && cell ? (
-                        <MatrixCellView cell={cell} />
-                      ) : (
-                        <span data-testid="matrix-cell-unavailable" style={{ fontSize: 11.5, color: TOKEN.muted }}>
-                          —
-                        </span>
-                      )}
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {matrix.summaries.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          {matrix.summaries.map((summary) => (
-            <p key={summary} data-testid="comparison-summary" style={{ fontSize: 12.5, color: TOKEN.inkSoft, margin: 0, lineHeight: 1.5 }}>
-              {summary}
-            </p>
-          ))}
-        </div>
-      )}
+    <div data-testid="brief-comparison">
+      <ComparisonMatrixView
+        matrix={comparison.matrix}
+        columnAccessory={(column) =>
+          column.brief_status ? (
+            <Badge tone={CANDIDATE_STATUS_TONE[column.brief_status]}>
+              {CANDIDATE_STATUS_LABEL[column.brief_status]}
+            </Badge>
+          ) : null
+        }
+      />
     </div>
   )
 }
