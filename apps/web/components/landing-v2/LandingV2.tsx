@@ -14,6 +14,7 @@ import Link from "next/link"
 import { LazyMotion, domAnimation, m, useReducedMotion } from "framer-motion"
 import { KeystoneMark, ProofDiamond, VeriBridgeWordmark } from "./brand"
 import { HeroKeystone } from "./HeroKeystone"
+import { CareerFairCallout, LaunchFilm } from "./LaunchFilm"
 import { RecruiterDemo } from "./RecruiterDemo"
 import { PassportDemo } from "./PassportDemo"
 
@@ -152,6 +153,12 @@ export function LandingV2() {
               <HeroKeystone />
             </div>
           </section>
+
+          {/* ── Official launch film ── */}
+          <LaunchFilm candidateHref={CANDIDATE_CTA} recruiterHref={RECRUITER_CTA} />
+
+          {/* ── Fall Career Fair callout ── */}
+          <CareerFairCallout candidateHref={CANDIDATE_CTA} />
 
           {/* ── Proof-state strip ── */}
           <section className="lv-states" aria-label="Evidence states">

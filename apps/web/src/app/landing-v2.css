@@ -1089,6 +1089,180 @@ g:has(.lv-svg-passport) .lv-svg-title {
 }
 
 /* ── Responsive ── */
+/* ── Official launch film ────────────────────────────────────────────────
+   The approved 1920×1080 master presented as a true 16:9 centerpiece. The
+   frame is capped at 1080px so the film is never upscaled past its native
+   resolution (upscaling is what makes an otherwise sharp master look soft),
+   and object-fit: contain guarantees no crop at any viewport. ── */
+.lv-film {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 44px 24px 8px;
+}
+.lv-film-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.lv-film-head {
+  max-width: 760px;
+  text-align: center;
+  margin: 0 0 30px;
+}
+.lv-film-head .lv-h2 {
+  margin-bottom: 0;
+}
+.lv-film-stage {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+}
+.lv-film-frame {
+  position: relative;
+  width: 100%;
+  max-width: 1080px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--lv-border);
+  border-radius: 18px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 34px 80px -34px rgba(6, 8, 18, 0.95);
+}
+.lv-film-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* contain — never cover: the film must not be cropped at any aspect ratio */
+  object-fit: contain;
+  background: #000;
+}
+
+/* Poster-state overlay. Present only until the first play, then unmounted so
+   the native controls own the whole surface (nothing ever sits over the
+   control bar, the scrubber, or the film's baked-in captions). */
+.lv-film-play {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  display: flex;
+  /* Lower third: the poster's centred VeriBridge AI brand card must stay
+     legible, and the film's baked-in caption strip sits along the bottom —
+     the play affordance threads between them. Percentage padding resolves
+     against width, so 12% of a 16:9 box ≈ 21% of its height. */
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 12%;
+  gap: 16px;
+  background: rgba(10, 12, 24, 0.2);
+  border: 0;
+  cursor: pointer;
+  color: #fff;
+  font-family: var(--lv-font);
+  transition: background 0.2s ease;
+}
+.lv-film-play:hover {
+  background: rgba(10, 12, 24, 0.34);
+}
+.lv-film-play-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 74px;
+  height: 74px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--lv-indigo);
+  color: #fff;
+  padding-left: 5px;
+  box-shadow: 0 14px 34px -12px rgba(75, 80, 216, 0.9);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.lv-film-play:hover .lv-film-play-mark {
+  transform: scale(1.05);
+  background: #575cdf;
+}
+.lv-film-play-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  text-align: left;
+}
+.lv-film-play-meta {
+  font-family: var(--lv-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lv-text-soft);
+}
+.lv-film-foot {
+  max-width: 720px;
+  text-align: center;
+  margin: 30px 0 0;
+}
+.lv-film-sub {
+  font-size: 16.5px;
+  line-height: 1.65;
+  color: var(--lv-text-soft);
+  margin: 0 0 26px;
+}
+.lv-film-ctas {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* ── Fall Career Fair callout — supporting note, never a second hero ── */
+.lv-fair {
+  max-width: 1080px;
+  margin: 44px auto 0;
+  padding: 0 24px;
+}
+.lv-fair-inner {
+  border: 1px solid var(--lv-border);
+  border-radius: 20px;
+  padding: 28px 32px;
+  background: linear-gradient(160deg, rgba(27, 31, 56, 0.9), rgba(20, 23, 43, 0.9));
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+.lv-fair-copy {
+  flex: 1;
+  min-width: 0;
+}
+.lv-fair-copy .lv-eyebrow {
+  margin-bottom: 12px;
+}
+.lv-fair-h {
+  font-size: 23px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  color: #fff;
+  margin: 0 0 10px;
+}
+.lv-fair-sub {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--lv-text-soft);
+  margin: 0 0 10px;
+}
+.lv-fair-note {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--lv-text-mute);
+  margin: 0;
+}
+.lv-fair-cta {
+  flex: none;
+}
+
 @media (max-width: 1000px) {
   .lv-hero-grid {
     grid-template-columns: 1fr;
@@ -1112,6 +1286,11 @@ g:has(.lv-svg-passport) .lv-svg-title {
   .lv-recruiter-feats {
     grid-template-columns: 1fr;
     max-width: 760px;
+  }
+  .lv-fair-inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 22px;
   }
 }
 @media (max-width: 820px) {
@@ -1145,9 +1324,55 @@ g:has(.lv-svg-passport) .lv-svg-title {
   .lv-hero,
   .lv-problem-grid,
   .lv-honest,
-  .lv-steps {
+  .lv-steps,
+  .lv-film,
+  .lv-fair {
     padding-left: 16px;
     padding-right: 16px;
+  }
+  /* Full-bleed-ish film on phones: keep the 16:9 box, shrink the chrome. */
+  .lv-film-frame {
+    border-radius: 12px;
+  }
+  /* A phone-sized 16:9 box has no clear band between the poster's brand card
+     and its caption strip, so the affordance centres over the frame (the
+     conventional mobile pattern) with a slightly stronger scrim to stay
+     legible. In column flow align-items controls the HORIZONTAL axis — it
+     must be center here, not flex-end. */
+  .lv-film-play {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding-bottom: 0;
+    gap: 10px;
+    background: rgba(10, 12, 24, 0.44);
+  }
+  .lv-film-play:hover {
+    background: rgba(10, 12, 24, 0.54);
+  }
+  .lv-film-play-mark {
+    width: 56px;
+    height: 56px;
+  }
+  .lv-film-play-label {
+    align-items: center;
+    text-align: center;
+    font-size: 14.5px;
+    max-width: 100%;
+  }
+  .lv-film-play-meta {
+    font-size: 9.5px;
+    letter-spacing: 0.07em;
+  }
+  .lv-film-ctas .lv-btn-lg {
+    width: 100%;
+  }
+  .lv-fair-inner {
+    padding: 22px 20px;
+    border-radius: 16px;
+  }
+  .lv-fair-cta {
+    width: 100%;
   }
   .lv-steps {
     grid-template-columns: 1fr;
