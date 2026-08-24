@@ -29,8 +29,7 @@ export function VeriBridgeWordmark({
     <span className="lv-wordmark" data-tone={tone}>
       <KeystoneMark size={markSize} tone={tone} />
       <span className="lv-wordmark-text">
-        VeriBridge
-        {withAI ? <span className="lv-wordmark-ai"> AI</span> : null}
+        {withAI ? "VeriBridge AI" : "VeriBridge"}
       </span>
     </span>
   )

@@ -48,13 +48,12 @@
   letter-spacing: -0.025em;
   font-size: 19px;
   color: #fff;
+  /* "VeriBridge AI" is one name — it never breaks across lines, and "AI" is
+     never styled apart from it (no lighter weight, muted colour, or opacity). */
+  white-space: nowrap;
 }
 .lv-wordmark[data-tone="light"] .lv-wordmark-text {
   color: var(--lv-ink-text);
-}
-.lv-wordmark-ai {
-  font-weight: 500;
-  color: var(--lv-text-mute);
 }
 
 /* ── Buttons ── */
@@ -1293,6 +1292,18 @@ g:has(.lv-svg-passport) .lv-svg-title {
     gap: 22px;
   }
 }
+@media (min-width: 821px) and (max-width: 900px) {
+  /* Tablet band (iPad Pro 11" portrait is 834px): the full "VeriBridge AI"
+     lockup leaves less room for the links, which otherwise drop onto a second
+     line and grow the navbar. Tighten the gaps rather than hide the links. */
+  .lv-nav-inner {
+    gap: 14px;
+  }
+  .lv-nav-links {
+    gap: 14px;
+    margin-left: 0;
+  }
+}
 @media (max-width: 820px) {
   .lv-nav-links {
     display: none;
@@ -1316,7 +1327,6 @@ g:has(.lv-svg-passport) .lv-svg-title {
   }
   .lv-nav .lv-wordmark-text {
     font-size: 17px;
-    white-space: nowrap;
   }
   .lv-nav-ctas .lv-btn-ghost {
     display: none;
