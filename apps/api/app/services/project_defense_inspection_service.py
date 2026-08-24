@@ -302,7 +302,14 @@ def build_project_defense_inspection_cards(
 
         status = str(item.get("qualitative_status") or "Not explained")
         claim_type = str(item.get("claim_type") or "project_architecture")
-        ownership_stance = str(item.get("ownership_stance") or "none")
+        # Stored stance passes through; historical items (no stance stored)
+        # fall back to deterministic detection over the safe summary so an old
+        # explicit denial is still represented without defense reanalysis.
+        ownership_stance = str(item.get("ownership_stance") or "").strip().lower()
+        if ownership_stance not in ("affirmed", "denied", "mixed", "none"):
+            from app.services.candidate_attribution_service import detect_ownership_stance
+
+            ownership_stance = detect_ownership_stance(item.get("safe_answer_summary"))
         contradiction_flag = bool(item.get("contradiction_flag"))
         gh = bool(item.get("corroborates_github"))
         web = bool(item.get("corroborates_website"))

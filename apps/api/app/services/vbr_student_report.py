@@ -311,6 +311,21 @@ def _repo_analysis_row(db: Any, project_ids: list[str]) -> dict[str, Any] | None
     return None
 
 
+def _answer_ownership_stance(item: dict[str, Any]) -> str:
+    """Closed-vocabulary ownership stance for one stored answer item.
+
+    A stored stance passes through; a historical item (no stance stored) is
+    detected deterministically from its safe summary — the denial phrases
+    appear early in an answer, so the bounded summary is a faithful signal.
+    """
+    stance = str(item.get("ownership_stance") or "").strip().lower()
+    if stance in ("affirmed", "denied", "mixed", "none"):
+        return stance
+    from app.services.candidate_attribution_service import detect_ownership_stance
+
+    return detect_ownership_stance(item.get("safe_answer_summary"))
+
+
 def _report_safe_answer_evidence(items: Any) -> list[dict[str, Any]]:
     """Project stored ``telemetry.defense_answer_evidence`` to owner-safe cards.
 
@@ -359,11 +374,11 @@ def _report_safe_answer_evidence(items: Any) -> list[dict[str, Any]]:
                 "corroborates_document": bool(item.get("corroborates_document")),
                 "contradiction_flag": bool(item.get("contradiction_flag")),
                 # Closed-vocabulary ownership stance (candidate attribution input).
-                "ownership_stance": (
-                    str(item.get("ownership_stance"))
-                    if str(item.get("ownership_stance") or "") in ("affirmed", "denied", "mixed", "none")
-                    else "none"
-                ),
+                # Historical items (stored before the stance existed) fall back
+                # to deterministic detection over the safe summary so an old
+                # explicit denial still blocks candidate implementation claims
+                # without requiring defense reanalysis.
+                "ownership_stance": _answer_ownership_stance(item),
                 "limitation": _trace_text(str(item.get("limitation") or "")),
                 "public_shareable": bool(item.get("public_shareable")),
                 "privacy_status": str(item.get("privacy_status") or "unknown"),

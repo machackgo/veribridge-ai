@@ -698,6 +698,53 @@ def test_no_ambiguous_ownership_wording_when_unattributed() -> None:
         assert forbidden not in payload, forbidden
 
 
+# ── Historical data (stored before ownership_stance existed) ──────────────────
+
+
+def test_legacy_answer_items_without_stance_still_detect_denial() -> None:
+    # Stored pre-fix items carry no ownership_stance — the report projection
+    # detects it from the safe summary, so old Excalidraw-style data regenerates
+    # correctly without defense reanalysis.
+    from app.services.vbr_student_report import _report_safe_answer_evidence
+
+    legacy = [
+        {
+            "evidence_id_safe": "defense-answer-1",
+            "question_kind": "contribution_explanation",
+            "question_text": "Walk through the part you personally built.",
+            "claim_type": "personal_contribution",
+            "qualitative_status": "Generic explanation",
+            "safe_answer_summary": DENIAL_SUMMARY,
+            "public_shareable": True,
+            "privacy_status": "clean",
+        }
+    ]
+    [item] = _report_safe_answer_evidence(legacy)
+    assert item["ownership_stance"] == "denied"
+    ownership = assess_project_ownership(answer_items=[item])
+    assert ownership["state"] == "denied_by_candidate"
+
+
+def test_legacy_inspection_cards_detect_denial_from_summary() -> None:
+    [card] = build_project_defense_inspection_cards(
+        answer_evidence=[
+            {
+                "evidence_id_safe": "defense-answer-1",
+                "question_kind": "contribution_explanation",
+                "question_text": "Walk through the part you personally built.",
+                "claim_type": "personal_contribution",
+                "qualitative_status": "Generic explanation",
+                "safe_answer_summary": DENIAL_SUMMARY,
+                "public_shareable": True,
+                "privacy_status": "clean",
+            }
+        ],
+        project_title=EXCALIDRAW,
+    )
+    assert card["ownership_stance"] == "denied"
+    assert "did not build or contribute" in card["what_this_demonstrates"]
+
+
 # ── Persisted claim rows (canonical_evidence_service) ──────────────────────────
 
 
