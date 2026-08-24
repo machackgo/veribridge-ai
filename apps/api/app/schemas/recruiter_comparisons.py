@@ -69,6 +69,9 @@ class MatrixRequirement(BaseModel):
     kind: str  # concept | evidence
     display: str
     required: bool
+    # "plan" (the recruiter asked for it) | "observed" (derived from the
+    # compared candidates' own published evidence — Talent Pool comparison).
+    origin: str = "plan"
     concepts: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -122,6 +125,12 @@ class ColumnCounts(BaseModel):
     preferred_proven: int = 0
     preferred_claimed: int = 0
     preferred_total: int = 0
+    # OBSERVED rows are derived from the compared candidates' own published
+    # evidence rather than from a recruiter requirement (Talent Pool
+    # comparison). Counted apart so nothing reports them as asked-for.
+    observed_proven: int = 0
+    observed_claimed: int = 0
+    observed_total: int = 0
 
     model_config = {"extra": "forbid"}
 
@@ -148,12 +157,19 @@ class MatrixColumn(BaseModel):
     counts: ColumnCounts = Field(default_factory=ColumnCounts)
     missing_required: list[str] = Field(default_factory=list)
     missing_preferred: list[str] = Field(default_factory=list)
+    missing_observed: list[str] = Field(default_factory=list)
     excluded_hits: list[str] = Field(default_factory=list)
     unavailable_note: str | None = None
     connection: ColumnConnection | None = None
     # ROLE-SCOPED review status from the brief's candidate pool
     # (saved | reviewing | shortlisted | archived); None outside a brief.
     brief_status: str | None = None
+    # ── RECRUITER-PRIVATE workflow metadata, present only when the matrix is
+    # scoped to a Talent Pool. Kept in its own keys and never folded into
+    # cells, counts or summaries: recruiter judgement is not evidence.
+    pool_status: str | None = None
+    pool_note: str | None = None
+    tags: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -162,6 +178,9 @@ class RequirementCoverage(BaseModel):
     key: str
     display: str
     required: bool
+    # "plan" (the recruiter asked for it) | "observed" (derived from the
+    # compared candidates' published evidence).
+    origin: str = "plan"
     proven_count: int = 0
     claimed_count: int = 0
     candidate_total: int = 0

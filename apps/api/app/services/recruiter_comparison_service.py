@@ -75,6 +75,15 @@ _PASSPORTS_TABLE = "vbr_work_passports"
 
 MIN_COMPARE_CANDIDATES = 2
 MAX_COMPARE_CANDIDATES = 5
+
+# Where a requirement row came from. Plan rows are what the RECRUITER asked
+# for; observed rows are what the SELECTED CANDIDATES have published — see
+# derive_observed_axis.
+AXIS_PLAN = "plan"
+AXIS_OBSERVED = "observed"
+# How many observed skill rows a query-less comparison may derive. Bounded so
+# the matrix stays readable; the cap is reported honestly to the caller.
+MAX_OBSERVED_CONCEPTS = 10
 _MAX_CELL_PROJECTS = 3
 _MAX_CELL_TRACES = 2
 _MAX_RELATED_HINTS = 2
@@ -146,6 +155,7 @@ def resolve_candidate_user_ids(
     candidate_slugs: list[str] | None = None,
     candidate_user_ids: list[str] | None = None,
     allowed_user_ids: set[str] | None = None,
+    scope_noun: str = "role",
 ) -> list[str]:
     """Resolve the recruiter's selection to stable student user ids.
 
@@ -192,7 +202,7 @@ def resolve_candidate_user_ids(
             if not uid or uid not in allowed:
                 raise ComparisonError(
                     "candidate_not_found",
-                    "One of the selected candidates is not in this role.",
+                    f"One of the selected candidates is not in this {scope_noun}.",
                 )
             if uid not in ordered:
                 ordered.append(uid)
@@ -245,6 +255,7 @@ def _requirement_axis(plan: dict[str, Any]) -> list[dict[str, Any]]:
         if entry["key"] in seen or len(axis) >= MAX_REQUIREMENT_ROWS:
             return
         seen.add(entry["key"])
+        entry.setdefault("origin", AXIS_PLAN)
         axis.append(entry)
 
     for group in plan.get("required_groups") or []:
@@ -426,21 +437,41 @@ def _evidence_cell(row: dict[str, Any], key: str, display: str) -> dict[str, Any
     return cell
 
 
-def _candidate_column(
-    row: dict[str, Any], axis: list[dict[str, Any]], plan: dict[str, Any]
-) -> dict[str, Any]:
-    evidence_map = _candidate_evidence_map(row)
-    cells: dict[str, dict[str, Any]] = {}
-    counts = {
+def _empty_counts() -> dict[str, int]:
+    return {
         "required_proven": 0,
         "required_claimed": 0,
         "required_total": 0,
         "preferred_proven": 0,
         "preferred_claimed": 0,
         "preferred_total": 0,
+        # OBSERVED rows come from the candidates' own published evidence
+        # rather than from anything the recruiter asked for (see
+        # derive_observed_axis). They are counted separately so a column
+        # summary never reports them as "required" or "preferred" — the
+        # recruiter stated no preference at all.
+        "observed_proven": 0,
+        "observed_claimed": 0,
+        "observed_total": 0,
     }
+
+
+def _axis_bucket(req: dict[str, Any]) -> str:
+    origin = str(req.get("origin") or "")
+    if origin == AXIS_OBSERVED:
+        return "observed"
+    return "required" if req["required"] else "preferred"
+
+
+def _candidate_column(
+    row: dict[str, Any], axis: list[dict[str, Any]], plan: dict[str, Any]
+) -> dict[str, Any]:
+    evidence_map = _candidate_evidence_map(row)
+    cells: dict[str, dict[str, Any]] = {}
+    counts = _empty_counts()
     missing_required: list[str] = []
     missing_preferred: list[str] = []
+    missing_observed: list[str] = []
 
     for req in axis:
         if req["kind"] == "concept":
@@ -449,16 +480,18 @@ def _candidate_column(
             cell = _evidence_cell(row, req["concepts"][0], req["display"])
         cells[req["key"]] = cell
 
-        bucket = "required" if req["required"] else "preferred"
+        bucket = _axis_bucket(req)
         counts[f"{bucket}_total"] += 1
         if cell["state"] == CELL_PROVEN:
             counts[f"{bucket}_proven"] += 1
         elif cell["state"] == CELL_CLAIMED:
             counts[f"{bucket}_claimed"] += 1
         else:
-            (missing_required if req["required"] else missing_preferred).append(
-                req["display"]
-            )
+            {
+                "required": missing_required,
+                "preferred": missing_preferred,
+                "observed": missing_observed,
+            }[bucket].append(req["display"])
 
     # NOT-constraints: comparison never hides a candidate the recruiter
     # explicitly selected — it flags the conflict honestly instead.
@@ -480,6 +513,7 @@ def _candidate_column(
         "counts": counts,
         "missing_required": missing_required,
         "missing_preferred": missing_preferred,
+        "missing_observed": missing_observed,
         "excluded_hits": excluded_hits,
         "unavailable_note": None,
     }
@@ -495,16 +529,10 @@ def _unavailable_column(user_id: str, identity: dict[str, Any] | None) -> dict[s
         "availability_label": None,
         "passport_path": None,
         "cells": {},
-        "counts": {
-            "required_proven": 0,
-            "required_claimed": 0,
-            "required_total": 0,
-            "preferred_proven": 0,
-            "preferred_claimed": 0,
-            "preferred_total": 0,
-        },
+        "counts": _empty_counts(),
         "missing_required": [],
         "missing_preferred": [],
+        "missing_observed": [],
         "excluded_hits": [],
         "unavailable_note": "This candidate's evidence is no longer publicly available.",
     }
@@ -530,6 +558,16 @@ def _column_summary(column: dict[str, Any]) -> str:
         parts.append(
             f"{counts['preferred_proven']} of {counts['preferred_total']} preferred"
         )
+    if counts["observed_total"]:
+        # Never "preferred": nobody asked for these. They are the skills the
+        # SELECTED candidates have themselves published evidence for.
+        line = (
+            f"published evidence for {counts['observed_proven']} of "
+            f"{counts['observed_total']} compared skills"
+        )
+        if counts["observed_claimed"]:
+            line += f" (plus {counts['observed_claimed']} claimed — not verified)"
+        parts.append(line)
     if column["missing_required"]:
         parts.append("missing " + ", ".join(column["missing_required"][:4]))
     if column["excluded_hits"]:
@@ -635,21 +673,87 @@ def evaluate_candidate_checklist(
     }
 
 
+def derive_observed_axis(
+    index_rows: list[dict[str, Any]], *, limit: int = MAX_OBSERVED_CONCEPTS
+) -> list[dict[str, Any]]:
+    """Comparison rows derived from the SELECTED CANDIDATES' own evidence.
+
+    A Talent Pool is role-independent: unlike a Hiring Brief it owns no
+    requirement plan, so a recruiter who selects candidates and hits Compare
+    has stated no requirements at all. Rather than showing an empty matrix
+    (or inventing requirements nobody asked for), the axis becomes the union
+    of the skills these candidates have themselves PUBLISHED evidence for —
+    each row is a fact about the corpus, not a judgement about the role.
+
+    Deterministic ordering, no scores: by how many of the selected candidates
+    published evidence for the skill (desc), then by display label. Rows are
+    marked ``origin=observed`` so counts and summaries never call them
+    "required" or "preferred" — see ``_axis_bucket``.
+
+    Only EVIDENCE-BACKED passport skills seed a row. A project technology
+    claim never creates a comparison row (it would manufacture a row out of
+    an unverified claim); claims still surface inside a cell, clearly labeled,
+    when some other candidate's evidence put that row on the axis.
+    """
+    holders: dict[str, set[str]] = {}
+    labels: dict[str, str] = {}
+    for row in index_rows:
+        uid = str(row.get("user_id"))
+        for entry in row.get("skills") or []:
+            name = str(entry.get("skill") or "").strip()
+            slug = str(entry.get("skill_slug") or "") or skill_slug(name)
+            if not slug:
+                continue
+            holders.setdefault(slug, set()).add(uid)
+            labels.setdefault(slug, name or concept_display(slug))
+
+    ranked = sorted(
+        holders.items(),
+        key=lambda item: (-len(item[1]), labels.get(item[0], item[0]).lower()),
+    )
+    return [
+        {
+            "key": f"concept:{slug}",
+            "kind": "concept",
+            "display": labels.get(slug) or concept_display(slug),
+            "required": False,
+            "concepts": [slug],
+            "origin": AXIS_OBSERVED,
+        }
+        for slug, _ in ranked[: max(0, int(limit))]
+    ]
+
+
 def evaluate_matrix(
     db: Any,
     *,
     recruiter_user_id: str,
     candidate_user_ids: list[str],
     plan: dict[str, Any],
+    extra_axis: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Deterministic requirement × candidate evidence matrix.
 
     Re-runs the live fail-closed triple on every call — the matrix can only
     ever show what the candidates' public passports show right now.
+
+    ``extra_axis`` appends rows the plan did not produce (Talent Pool
+    comparison passes ``derive_observed_axis`` output). Plan rows always come
+    first; duplicates and the overall row cap are enforced by the same
+    ``add`` guard the plan rows go through.
     """
     plan = sanitize_plan(plan)
     ordered = [str(u) for u in candidate_user_ids][:MAX_COMPARE_CANDIDATES]
     axis = _requirement_axis(plan)
+    if extra_axis:
+        seen = {row["key"] for row in axis}
+        for row in extra_axis:
+            if len(axis) >= MAX_REQUIREMENT_ROWS:
+                break
+            if row["key"] in seen:
+                continue
+            seen.add(row["key"])
+            axis.append({**row, "origin": row.get("origin") or AXIS_OBSERVED})
 
     valid = live_valid_index_rows(db, ordered)
 
@@ -710,6 +814,7 @@ def evaluate_matrix(
                 "key": req["key"],
                 "display": req["display"],
                 "required": req["required"],
+                "origin": str(req.get("origin") or AXIS_PLAN),
                 "proven_count": supported,
                 "claimed_count": claimed,
                 "candidate_total": len(available_columns),
@@ -718,6 +823,11 @@ def evaluate_matrix(
 
     notes: list[str] = []
     for entry in coverage:
+        if entry["origin"] == AXIS_OBSERVED:
+            # Observed rows exist BECAUSE some selected candidate published
+            # that evidence, so "nobody has it" is impossible and the note
+            # would be nonsense.
+            continue
         if (
             entry["candidate_total"] > 0
             and entry["proven_count"] == 0
@@ -738,6 +848,12 @@ def evaluate_matrix(
             "No requirements yet — describe the role or add requirements to "
             "build the evidence matrix."
         )
+    elif all(str(r.get("origin")) == AXIS_OBSERVED for r in axis):
+        notes.append(
+            "No requirements given — comparing the skills these candidates "
+            "have published evidence for. Filter the pool to compare against "
+            "specific requirements instead."
+        )
 
     return {
         "requirements": axis,
@@ -750,13 +866,17 @@ def evaluate_matrix(
 
 
 __all__ = [
+    "AXIS_OBSERVED",
+    "AXIS_PLAN",
     "CELL_CLAIMED",
     "CELL_NONE",
     "CELL_PROVEN",
     "CELL_UNAVAILABLE",
     "ComparisonError",
     "MAX_COMPARE_CANDIDATES",
+    "MAX_OBSERVED_CONCEPTS",
     "MIN_COMPARE_CANDIDATES",
+    "derive_observed_axis",
     "evaluate_candidate_checklist",
     "evaluate_candidate_summary",
     "evaluate_matrix",

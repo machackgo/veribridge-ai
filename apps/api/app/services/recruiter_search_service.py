@@ -900,14 +900,44 @@ def _result_card(
     }
 
 
-def _fetch_candidate_pool(db: Any, terms: list[str]) -> list[dict[str, Any]]:
+def _fetch_candidate_pool(
+    db: Any, terms: list[str], *, restrict_user_ids: list[str] | None = None
+) -> list[dict[str, Any]]:
     """Pull the bounded candidate pool for ranking.
 
     Supabase mode prefilters with trigram-accelerated ilike ORs across the
     flat search document when the query has terms; dict mode filters in
     Python with the same predicate. Ranking happens in one shared Python
     implementation either way.
+
+    ``restrict_user_ids`` scopes retrieval to an explicit candidate set (a
+    Talent Pool filtering its own members). The term prefilter is then
+    SKIPPED deliberately: it is only a retrieval optimization for the global
+    corpus, and applying it to an already-small explicit set would silently
+    drop a pool member whose flat search document happens not to contain the
+    typed word even though their structured evidence satisfies the plan.
+    Verification and ranking downstream are unchanged either way.
     """
+    if restrict_user_ids is not None:
+        wanted = [str(u) for u in restrict_user_ids if str(u or "").strip()]
+        if not wanted:
+            return []
+        if isinstance(db, dict):
+            rows = _index_rows(db)
+            return [rows[u] for u in wanted if u in rows][:_MAX_CANDIDATE_POOL]
+
+        def _run_restricted(client: Any) -> Any:
+            return (
+                client.table(_INDEX_TABLE)
+                .select("*")
+                .in_("user_id", wanted[:_MAX_CANDIDATE_POOL])
+                .limit(_MAX_CANDIDATE_POOL)
+                .execute()
+            )
+
+        result = _read_with_transient_retry(db, _run_restricted)
+        return list(getattr(result, "data", []) or [])
+
     if isinstance(db, dict):
         rows = list(_index_rows(db).values())
         if terms:
@@ -1412,6 +1442,7 @@ def search_candidates(
     page: int = 1,
     page_size: int = DEFAULT_PAGE_SIZE,
     plan: dict[str, Any] | None = None,
+    restrict_user_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Recruiter search over the public candidate projection.
 
@@ -1429,6 +1460,13 @@ def search_candidates(
     requirement plan instead of free text. The caller MUST pass a
     sanitize_plan() output; a brief plan always has candidate_search
     intent, so the evidence-discovery branch never triggers for it.
+
+    V6: ``restrict_user_ids`` scopes the whole engine to an explicit
+    candidate set — a Talent Pool filtering its own members with the SAME
+    query understanding, the SAME taxonomy contract and the SAME fail-closed
+    privacy re-validation as global search, rather than a second, weaker
+    matcher. The caller is responsible for proving it owns those candidates;
+    restriction NARROWS the corpus and can never widen it.
     """
     if plan is None:
         plan = parse_recruiter_query(q)
@@ -1500,7 +1538,7 @@ def search_candidates(
         else []
     )
     pool_terms = _retrieval_terms(plan) if structured else lexical_terms
-    pool = _fetch_candidate_pool(db, pool_terms)
+    pool = _fetch_candidate_pool(db, pool_terms, restrict_user_ids=restrict_user_ids)
 
     # ── Live privacy re-validation (fail closed) ─────────────────────────────
     user_ids = [str(r.get("user_id")) for r in pool]

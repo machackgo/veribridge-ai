@@ -40,14 +40,28 @@ from uuid import uuid4
 
 from app.core.serialization import make_json_safe
 from app.services.recruiter_comparison_service import (
+    MAX_COMPARE_CANDIDATES,
+    MIN_COMPARE_CANDIDATES,
+    ComparisonError,
     _own_connection_rows,
     _published_passports_by_slugs,
+    derive_observed_axis,
+    evaluate_matrix,
     live_valid_index_rows,
+    resolve_candidate_user_ids,
 )
-from app.services.recruiter_connection_service import _candidate_summary
+from app.services.recruiter_connection_service import (
+    _candidate_summaries,
+    _candidate_summary,
+)
+from app.services.recruiter_query_understanding import parse_recruiter_query
+from app.services.recruiter_requirement_plan import requirements_view, sanitize_plan
 from app.services.recruiter_search_service import (
+    EVIDENCE_FILTERS,
+    MAX_QUERY_LENGTH,
     _read_with_transient_retry,
     record_search_event,
+    search_candidates,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +84,19 @@ POOL_CANDIDATE_SOURCES = {
     "saved_search",
 }
 _DEFAULT_SOURCE = "direct"
+
+# Must stay in sync with the CHECK constraint in migration 072.
+# RECRUITER-PRIVATE workflow stage, scoped to THIS pool — deliberately the
+# same shape as recruiter_hiring_brief_candidates.status (068). It is a
+# property of the recruiter's process, never of the candidate: it changes no
+# evidence, is invisible to the candidate, and does not travel to another
+# pool, another brief, or any public surface.
+POOL_CANDIDATE_STATUSES = ("review", "shortlisted", "interview", "hold", "pass")
+_DEFAULT_STATUS = "review"
+
+_TAGS_TABLE = "recruiter_candidate_tags"
+MAX_TAG_LENGTH = 40
+MAX_TAGS_PER_CANDIDATE = 12
 
 MAX_TALENT_POOLS = 40
 MAX_POOL_CANDIDATES = 200
@@ -318,6 +345,162 @@ def _delete_member_row(db: Any, pool_id: str, student_user_id: str) -> bool:
 # ── Views ────────────────────────────────────────────────────────────────────
 
 
+# ── Recruiter-private tags (RECRUITER JUDGEMENT, NEVER EVIDENCE) ─────────────
+#
+# A tag is the recruiter's own shorthand about a candidate ("Backend",
+# "Career Fair", "Follow up"). Scoped to (recruiter, candidate) rather than
+# to a pool, because it describes how THIS recruiter thinks about that
+# person and should travel with them across every pool they appear in.
+#
+# Tags are never inferred, never derived from evidence, never written to
+# recruiter_search_index or any public projection, and never visible to the
+# candidate or to another recruiter. They organize; they do not verify.
+
+
+def _tag_key(tag: Any) -> str:
+    """Identity of a tag: case- and whitespace-insensitive, so "Back End",
+    "back end" and "Back  End" are ONE tag rather than three."""
+    return " ".join(str(tag or "").strip().lower().split())
+
+
+def _normalize_tag(tag: Any) -> tuple[str, str] | None:
+    """(display, key) for one recruiter-typed tag, or None when it is empty.
+    The recruiter's own casing is preserved for display."""
+    display = " ".join(str(tag or "").strip().split())[:MAX_TAG_LENGTH]
+    key = _tag_key(display)
+    if not key:
+        return None
+    return display, key
+
+
+def _tag_rows(db: Any, recruiter_user_id: str) -> list[dict[str, Any]]:
+    if isinstance(db, dict):
+        return [
+            r
+            for r in db.setdefault(_TAGS_TABLE, {}).values()
+            if str(r.get("recruiter_user_id")) == str(recruiter_user_id)
+        ]
+    result = _read_with_transient_retry(
+        db,
+        lambda client: client.table(_TAGS_TABLE)
+        .select("*")
+        .eq("recruiter_user_id", recruiter_user_id)
+        .execute(),
+    )
+    return list(getattr(result, "data", []) or [])
+
+
+def _tags_by_candidate(
+    db: Any, recruiter_user_id: str, student_user_ids: list[str]
+) -> dict[str, list[str]]:
+    """{student_user_id → [tag displays]} for the caller's OWN tags, in ONE
+    read. Ownership is in the query itself, so another recruiter's tags can
+    never appear."""
+    wanted = {str(u) for u in student_user_ids if str(u or "").strip()}
+    if not wanted:
+        return {}
+    out: dict[str, list[str]] = {}
+    for row in _tag_rows(db, recruiter_user_id):
+        uid = str(row.get("student_user_id"))
+        if uid in wanted:
+            out.setdefault(uid, []).append(str(row.get("tag") or ""))
+    return {uid: sorted(tags, key=str.lower) for uid, tags in out.items()}
+
+
+def _insert_tag_row(db: Any, row: dict[str, Any]) -> None:
+    if isinstance(db, dict):
+        key = (
+            f"{row['recruiter_user_id']}:{row['student_user_id']}:{row['tag_key']}"
+        )
+        db.setdefault(_TAGS_TABLE, {})[key] = row
+        return
+    db.table(_TAGS_TABLE).insert(make_json_safe(row)).execute()
+
+
+def _delete_tag_rows(
+    db: Any, recruiter_user_id: str, student_user_id: str, tag_keys: list[str]
+) -> None:
+    if not tag_keys:
+        return
+    if isinstance(db, dict):
+        store = db.setdefault(_TAGS_TABLE, {})
+        for key in tag_keys:
+            store.pop(f"{recruiter_user_id}:{student_user_id}:{key}", None)
+        return
+    (
+        db.table(_TAGS_TABLE)
+        .delete()
+        .eq("recruiter_user_id", recruiter_user_id)
+        .eq("student_user_id", student_user_id)
+        .in_("tag_key", tag_keys)
+        .execute()
+    )
+
+
+def set_candidate_tags(
+    db: Any, recruiter_user_id: str, student_user_id: str, tags: Any
+) -> list[str]:
+    """Replace the caller's tag set for one candidate; returns the stored
+    displays. Idempotent: an unchanged set writes nothing."""
+    student_user_id = str(student_user_id or "").strip()
+    if not student_user_id:
+        raise PoolError("candidate_not_found", "Unknown candidate.")
+
+    wanted: dict[str, str] = {}
+    for raw in list(tags or [])[: MAX_TAGS_PER_CANDIDATE * 2]:
+        normalized = _normalize_tag(raw)
+        if normalized is None:
+            continue
+        display, key = normalized
+        wanted.setdefault(key, display)
+    if len(wanted) > MAX_TAGS_PER_CANDIDATE:
+        raise PoolError(
+            "too_many_tags",
+            f"Up to {MAX_TAGS_PER_CANDIDATE} tags per candidate.",
+        )
+
+    existing = {
+        str(r.get("tag_key")): str(r.get("tag") or "")
+        for r in _tag_rows(db, recruiter_user_id)
+        if str(r.get("student_user_id")) == student_user_id
+    }
+    _delete_tag_rows(
+        db,
+        str(recruiter_user_id),
+        student_user_id,
+        [k for k in existing if k not in wanted],
+    )
+    for key, display in wanted.items():
+        if key in existing:
+            continue
+        _insert_tag_row(
+            db,
+            {
+                "recruiter_user_id": str(recruiter_user_id),
+                "student_user_id": student_user_id,
+                "tag": display,
+                "tag_key": key,
+                "created_at": _now_iso(),
+            },
+        )
+    return sorted(wanted.values(), key=str.lower)
+
+
+def list_recruiter_tags(db: Any, recruiter_user_id: str) -> list[dict[str, Any]]:
+    """The caller's whole private tag vocabulary with usage counts —
+    autocomplete + pool filter chips. Never another recruiter's."""
+    counts: dict[str, dict[str, Any]] = {}
+    for row in _tag_rows(db, recruiter_user_id):
+        key = str(row.get("tag_key") or "")
+        if not key:
+            continue
+        entry = counts.setdefault(
+            key, {"tag": str(row.get("tag") or ""), "tag_key": key, "candidate_count": 0}
+        )
+        entry["candidate_count"] += 1
+    return sorted(counts.values(), key=lambda e: (-e["candidate_count"], e["tag_key"]))
+
+
 def _pool_view(row: dict[str, Any], candidate_count: int) -> dict[str, Any]:
     return {
         "id": str(row.get("id")),
@@ -328,6 +511,17 @@ def _pool_view(row: dict[str, Any], candidate_count: int) -> dict[str, Any]:
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
     }
+
+
+def _status_counts(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    """How many pool members sit at each workflow stage. A count of the
+    recruiter's own process — not a measure of any candidate."""
+    counts = {status: 0 for status in POOL_CANDIDATE_STATUSES}
+    for entry in candidates:
+        status = str(entry.get("status") or _DEFAULT_STATUS)
+        if status in counts:
+            counts[status] += 1
+    return counts
 
 
 def _evidence_context(index_row: dict[str, Any]) -> dict[str, Any]:
@@ -350,15 +544,39 @@ def _evidence_context(index_row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _member_view(
-    db: Any, row: dict[str, Any], *, index_row: dict[str, Any] | None
+    db: Any,
+    row: dict[str, Any],
+    *,
+    index_row: dict[str, Any] | None,
+    identity: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
 ) -> dict[str, Any]:
+    """One pool member card.
+
+    ``identity`` and ``tags`` are passed in by the batched listing paths so a
+    pool of N candidates costs a constant number of queries; when omitted
+    (single-row paths) they are resolved here.
+
+    The two data domains stay visibly separate in the payload: ``candidate``
+    and ``evidence`` are VeriBridge's consented, live, fail-closed evidence
+    projection, while ``status``, ``note`` and ``tags`` are this recruiter's
+    private judgement and are never derived from — or written back into —
+    anything above.
+    """
     student_user_id = str(row.get("student_user_id"))
     return {
         "student_user_id": student_user_id,
         "source": str(row.get("source") or _DEFAULT_SOURCE),
+        # ── recruiter-private workflow metadata ──
+        "status": str(row.get("status") or _DEFAULT_STATUS),
         "note": row.get("note"),
+        "tags": list(tags) if tags is not None else [],
         "added_at": row.get("added_at"),
-        "candidate": _candidate_summary(db, student_user_id),
+        "updated_at": row.get("updated_at"),
+        # ── VeriBridge evidence domain ──
+        "candidate": identity
+        if identity is not None
+        else _candidate_summary(db, student_user_id),
         # None when the candidate is not live (unpublished / excluded /
         # stale disclosure) — the identity card then carries the
         # "no longer published" treatment; evidence never survives stale.
@@ -612,8 +830,12 @@ def add_pool_candidates(
             "pool_id": str(pool["id"]),
             "student_user_id": uid,
             "source": str(source),
+            # Honest default: a candidate lands in a pool to be looked at,
+            # never pre-judged.
+            "status": _DEFAULT_STATUS,
             "note": None,
             "added_at": _now_iso(),
+            "updated_at": _now_iso(),
         }
         try:
             _insert_member_row(db, row)
@@ -654,17 +876,28 @@ def list_pool_candidates(
 
     members = _member_rows_for_pool(db, str(pool["id"]))
     members = sorted(members, key=lambda r: str(r.get("added_at") or ""), reverse=True)
-    valid = live_valid_index_rows(
-        db, [str(r.get("student_user_id")) for r in members]
-    )
+    member_ids = [str(r.get("student_user_id")) for r in members]
+    # Three batched reads for the whole pool (evidence index, consented
+    # identity, recruiter tags) instead of a per-candidate fan-out.
+    valid = live_valid_index_rows(db, member_ids)
+    identities = _candidate_summaries(db, member_ids)
+    tags = _tags_by_candidate(db, recruiter_user_id, member_ids)
     candidates = [
-        _member_view(db, row, index_row=valid.get(str(row.get("student_user_id"))))
+        _member_view(
+            db,
+            row,
+            index_row=valid.get(str(row.get("student_user_id"))),
+            identity=identities.get(str(row.get("student_user_id"))),
+            tags=tags.get(str(row.get("student_user_id")), []),
+        )
         for row in members
     ]
     return {
         "pool": _pool_view(pool, len(members)),
         "candidates": candidates,
         "total": len(candidates),
+        "status_counts": _status_counts(candidates),
+        "tag_vocabulary": list_recruiter_tags(db, recruiter_user_id),
     }
 
 
@@ -676,9 +909,18 @@ def update_pool_candidate(
     *,
     note: Any = ...,
     clear_note: bool = False,
+    status: Any = ...,
+    tags: Any = ...,
 ) -> dict[str, Any]:
-    """Update one member's recruiter-private note. ``...`` means "leave
-    unchanged"."""
+    """Update one member's RECRUITER-PRIVATE workflow metadata — pool-scoped
+    note and status, plus the recruiter's tags for that candidate.
+    ``...`` means "leave unchanged".
+
+    None of this touches the candidate's evidence, Work Passport, skill
+    verification, Verified Build Reports or any public projection: the write
+    targets only recruiter-owned rows, and the response re-reads the evidence
+    side live and unchanged.
+    """
     pool = _pool_row(db, recruiter_user_id, pool_id)
     if pool is None:
         raise PoolNotFound(pool_id)
@@ -693,13 +935,30 @@ def update_pool_candidate(
         updates["note"] = None
     elif note is not ...:
         updates["note"] = str(note or "")[:MAX_NOTE_LENGTH] or None
+    if status is not ...:
+        candidate_status = str(status or "").strip()
+        if candidate_status not in POOL_CANDIDATE_STATUSES:
+            raise PoolError("invalid_status", "Unknown workflow status.")
+        updates["status"] = candidate_status
     if updates:
+        updates["updated_at"] = _now_iso()
         _update_member_row(db, str(pool["id"]), str(row["student_user_id"]), updates)
 
-    refreshed = _member_row(db, str(pool["id"]), str(row["student_user_id"]))
+    uid = str(row["student_user_id"])
+    stored_tags: list[str] | None = None
+    if tags is not ...:
+        stored_tags = set_candidate_tags(db, recruiter_user_id, uid, tags)
+
+    refreshed = _member_row(db, str(pool["id"]), uid)
     merged = refreshed or {**row, **updates}
-    uid = str(merged.get("student_user_id"))
-    return _member_view(db, merged, index_row=live_valid_index_rows(db, [uid]).get(uid))
+    if stored_tags is None:
+        stored_tags = _tags_by_candidate(db, recruiter_user_id, [uid]).get(uid, [])
+    return _member_view(
+        db,
+        merged,
+        index_row=live_valid_index_rows(db, [uid]).get(uid),
+        tags=stored_tags,
+    )
 
 
 def remove_pool_candidate(
@@ -719,6 +978,274 @@ def remove_pool_candidate(
         )
         _record_pool_event(db, str(recruiter_user_id), "candidate_removed", count=1)
     return removed
+
+
+# ── Pool-scoped evidence filtering + comparison (V6) ─────────────────────────
+#
+# Both reuse the recruiter engine wholesale. There is deliberately NO second
+# matcher and NO second requirement language: the pool filter runs the same
+# deterministic query understanding, the same taxonomy contract (a child
+# skill proves a parent requirement, never the reverse; "related" proves
+# nothing) and the same fail-closed privacy re-validation as global search,
+# only narrowed to this pool's members. Comparison runs the same evidence
+# matrix a Hiring Brief runs.
+
+
+def _pool_member_ids(db: Any, pool: dict[str, Any]) -> list[str]:
+    rows = _member_rows_for_pool(db, str(pool["id"]))
+    rows = sorted(rows, key=lambda r: str(r.get("added_at") or ""), reverse=True)
+    return [str(r.get("student_user_id")) for r in rows]
+
+
+def filter_pool_candidates(
+    db: Any,
+    recruiter_user_id: str,
+    pool_id: str,
+    *,
+    q: Any = None,
+    evidence: list[str] | None = None,
+    status: Any = None,
+    tags: list[str] | None = None,
+) -> dict[str, Any]:
+    """Filter ONE pool's members, by published evidence and/or by the
+    recruiter's own workflow metadata.
+
+    Two filter domains, deliberately applied in this order and reported
+    separately, because they mean different things:
+
+      1. RECRUITER metadata (``status``, ``tags``) — the recruiter's private
+         organization. Applied first, as plain membership predicates.
+      2. VeriBridge EVIDENCE (``q``, ``evidence``) — run through the shared
+         search engine restricted to the surviving members, so every returned
+         candidate is there because their PUBLISHED evidence satisfied the
+         requirement, and the reason is reconstructed from that same
+         evaluation rather than asserted.
+
+    Honest by construction:
+      * a member with no live index row (unpublished / excluded / stale
+        disclosure) can never satisfy an evidence requirement, so they drop
+        out and are counted in ``unavailable_excluded`` for the UI to say so;
+      * terms the parser could not turn into a requirement come back in
+        ``interpretation.unrecognized_terms`` — never silently treated as a
+        match;
+      * no query and no filters returns the pool unchanged, not an empty
+        "no results" state.
+    """
+    pool = _pool_row(db, recruiter_user_id, pool_id)
+    if pool is None:
+        raise PoolNotFound(pool_id)
+
+    query_text = str(q or "").strip()[:MAX_QUERY_LENGTH]
+    evidence_gate = [e for e in (evidence or []) if e in EVIDENCE_FILTERS]
+    status_filter = str(status or "").strip() or None
+    if status_filter and status_filter not in POOL_CANDIDATE_STATUSES:
+        raise PoolError("invalid_status", "Unknown workflow status.")
+    tag_keys = {k for k in (_tag_key(t) for t in (tags or [])) if k}
+
+    members = _member_rows_for_pool(db, str(pool["id"]))
+    members = sorted(members, key=lambda r: str(r.get("added_at") or ""), reverse=True)
+    member_ids = [str(r.get("student_user_id")) for r in members]
+    total_members = len(members)
+
+    # ── 1. recruiter-private predicates ──
+    if status_filter:
+        members = [
+            r for r in members if str(r.get("status") or _DEFAULT_STATUS) == status_filter
+        ]
+    tags_by_candidate = _tags_by_candidate(db, recruiter_user_id, member_ids)
+    if tag_keys:
+        members = [
+            r
+            for r in members
+            if tag_keys
+            <= {
+                _tag_key(t)
+                for t in tags_by_candidate.get(str(r.get("student_user_id")), [])
+            }
+        ]
+
+    surviving_ids = [str(r.get("student_user_id")) for r in members]
+
+    # ── 2. evidence predicates, through the shared engine ──
+    matches: dict[str, dict[str, Any]] = {}
+    interpretation: dict[str, Any] | None = None
+    unavailable_excluded = 0
+    evidence_filtered = bool(query_text or evidence_gate)
+
+    if evidence_filtered and surviving_ids:
+        # sanitize_plan forces candidate_search intent, so a phrase the
+        # classifier would treat as global evidence discovery ("show me proof
+        # of FastAPI") stays a POOL-SCOPED candidate filter and can never
+        # reach outside this pool.
+        plan = sanitize_plan(parse_recruiter_query(query_text)) if query_text else None
+        result = search_candidates(
+            db,
+            q=query_text or None,
+            evidence=evidence_gate,
+            plan=plan,
+            page=1,
+            page_size=MAX_POOL_CANDIDATES,
+            restrict_user_ids=surviving_ids,
+        )
+        interpretation = result.get("interpretation")
+        # Result cards are keyed by public_slug (the engine deliberately does
+        # not emit stable user ids into search payloads), so map back through
+        # the live index rows we already have to hold.
+        live_rows = live_valid_index_rows(db, surviving_ids)
+        uid_by_slug = {
+            str(row.get("public_slug") or ""): uid
+            for uid, row in live_rows.items()
+            if str(row.get("public_slug") or "")
+        }
+        for card in result.get("results") or []:
+            uid = uid_by_slug.get(str(card.get("public_slug") or ""))
+            if uid:
+                matches[uid] = card
+        unavailable_excluded = len([u for u in surviving_ids if u not in live_rows])
+        members = [r for r in members if str(r.get("student_user_id")) in matches]
+
+    # ── 3. build the same pool cards the workspace shows ──
+    kept_ids = [str(r.get("student_user_id")) for r in members]
+    valid = live_valid_index_rows(db, kept_ids)
+    identities = _candidate_summaries(db, kept_ids)
+    candidates = []
+    for row in members:
+        uid = str(row.get("student_user_id"))
+        view = _member_view(
+            db,
+            row,
+            index_row=valid.get(uid),
+            identity=identities.get(uid),
+            tags=tags_by_candidate.get(uid, []),
+        )
+        card = matches.get(uid)
+        # WHY this candidate matched — reconstructed from the deterministic
+        # evaluation, so every reason is inspectable evidence, never prose.
+        view["match"] = (
+            {
+                "match_type": str(card.get("match_type") or "match"),
+                "requirements": list(card.get("requirements") or []),
+                "missing_requirements": list(card.get("missing_requirements") or []),
+                "matched_reasons": list(card.get("matched_reasons") or []),
+                # Proof entry points for the matched skills, straight from the
+                # public projection: the recruiter can open the evidence that
+                # put this candidate in the result.
+                "skills": list(card.get("skills") or []),
+                "projects": list(card.get("projects") or []),
+            }
+            if card is not None
+            else None
+        )
+        candidates.append(view)
+
+    if evidence_filtered:
+        # Exact matches (every requirement evidenced) ahead of close ones —
+        # the engine's existing, stated semantics. Not a ranking of people.
+        order = {"exact": 0, "match": 0, "close": 1}
+        candidates.sort(
+            key=lambda c: order.get(
+                str((c.get("match") or {}).get("match_type") or "match"), 1
+            )
+        )
+
+    _record_pool_event(
+        db, str(recruiter_user_id), "filter", count=len(candidates)
+    )
+    return {
+        "pool": _pool_view(pool, total_members),
+        "candidates": candidates,
+        "total": len(candidates),
+        "pool_total": total_members,
+        "status_counts": _status_counts(candidates),
+        "tag_vocabulary": list_recruiter_tags(db, recruiter_user_id),
+        "filters": {
+            "q": query_text,
+            "evidence": evidence_gate,
+            "status": status_filter,
+            "tags": sorted({t for t in (tags or []) if _tag_key(t)}, key=str.lower),
+        },
+        "interpretation": interpretation,
+        "unavailable_excluded": unavailable_excluded,
+    }
+
+
+def pool_comparison(
+    db: Any,
+    recruiter_user_id: str,
+    pool_id: str,
+    *,
+    candidate_user_ids: list[str],
+    q: Any = None,
+) -> dict[str, Any]:
+    """The requirement x candidate evidence matrix for 2-5 pool members.
+
+    A pool owns no requirement plan (unlike a Hiring Brief it is
+    role-independent), so the axis comes from one of two honest places:
+
+      * ``q`` given -> the recruiter's own words, parsed by the SAME query
+        understanding the pool filter and global search use;
+      * no ``q`` -> the union of skills the SELECTED CANDIDATES have
+        themselves published evidence for (``derive_observed_axis``). Those
+        rows are facts about the corpus, marked ``origin=observed``, and are
+        never counted or described as things the recruiter required.
+
+    Comparison never hides a selected candidate and never ranks them: cells
+    carry the closed evidence-state vocabulary plus the provenance needed to
+    walk skill -> project -> proof, and columns report transparent counts.
+    """
+    pool = _pool_row(db, recruiter_user_id, pool_id)
+    if pool is None:
+        raise PoolNotFound(pool_id)
+
+    member_ids = set(_pool_member_ids(db, pool))
+    ordered = resolve_candidate_user_ids(
+        db,
+        str(recruiter_user_id),
+        candidate_user_ids=[str(u) for u in (candidate_user_ids or [])],
+        allowed_user_ids=member_ids,
+        scope_noun="Talent Pool",
+    )
+
+    query_text = str(q or "").strip()[:MAX_QUERY_LENGTH]
+    plan = sanitize_plan(parse_recruiter_query(query_text)) if query_text else {}
+    extra_axis = None
+    if not query_text:
+        extra_axis = derive_observed_axis(
+            list(live_valid_index_rows(db, ordered).values())
+        )
+
+    matrix = evaluate_matrix(
+        db,
+        recruiter_user_id=str(recruiter_user_id),
+        candidate_user_ids=ordered,
+        plan=plan,
+        extra_axis=extra_axis,
+    )
+
+    # Annotate each column with THIS pool's recruiter-private workflow state
+    # so the recruiter can act (shortlist, note) without leaving comparison.
+    # Kept in its own key: it is never mixed into evidence cells or counts.
+    member_rows = {
+        str(r.get("student_user_id")): r
+        for r in _member_rows_for_pool(db, str(pool["id"]))
+    }
+    tags = _tags_by_candidate(db, recruiter_user_id, ordered)
+    for column in matrix.get("columns") or []:
+        uid = str(column.get("user_id"))
+        row = member_rows.get(uid) or {}
+        column["pool_status"] = str(row.get("status") or _DEFAULT_STATUS)
+        column["pool_note"] = row.get("note")
+        column["tags"] = tags.get(uid, [])
+
+    _record_pool_event(
+        db, str(recruiter_user_id), "comparison", count=len(ordered)
+    )
+    return {
+        "pool": _pool_view(pool, len(member_ids)),
+        "matrix": matrix,
+        "query": query_text or None,
+        "requirements_view": requirements_view(sanitize_plan(plan)),
+    }
 
 
 def pool_memberships(
@@ -741,22 +1268,29 @@ def pool_memberships(
 
 __all__ = [
     "MAX_NOTE_LENGTH",
+    "MAX_TAGS_PER_CANDIDATE",
+    "MAX_TAG_LENGTH",
     "MAX_POOL_CANDIDATES",
     "MAX_POOL_DESCRIPTION",
     "MAX_POOL_NAME",
     "MAX_TALENT_POOLS",
     "POOL_CANDIDATE_SOURCES",
+    "POOL_CANDIDATE_STATUSES",
     "POOL_STATUSES",
     "PoolError",
     "PoolNotFound",
     "add_pool_candidates",
     "create_pool",
     "delete_pool",
+    "filter_pool_candidates",
     "get_pool",
+    "list_recruiter_tags",
     "list_pool_candidates",
     "list_pools",
+    "pool_comparison",
     "pool_memberships",
     "remove_pool_candidate",
+    "set_candidate_tags",
     "update_pool",
     "update_pool_candidate",
 ]
