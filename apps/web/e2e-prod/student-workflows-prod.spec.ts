@@ -183,17 +183,32 @@ test.describe("PROD H — the rest of the authenticated student surface", () => 
   // Note `dfa0aa44` ("per-thread Supabase clients in the passport report
   // thread pool") is ALREADY merged to main, so this is a distinct or
   // regressed fault, not that one.
-  test.fixme("passport endpoints survive the concurrent pair the page actually issues", async ({ browser }) => {
+  // Was test.fixme: the Work Passport page issues these two reads at once,
+  // and both landed on ONE process-wide Supabase client shared across
+  // FastAPI's worker threads — so they raced a single httpx transport and
+  // one could return 500 while the same calls made serially both succeeded
+  // (httpcore.ReadError: [Errno 11] Resource temporarily unavailable).
+  // Fixed at the root by caching a client per THREAD; un-skipped so the
+  // regression can never come back silently.
+  test("passport endpoints survive the concurrent pair the page actually issues", async ({ browser }) => {
     const context = await browser.newContext();
     await auth(context);
     const page = await context.newPage();
-    const results = await page.evaluate(async ({ api, token }) => {
-      const paths = ["/api/v1/student/vbr/passport", "/api/v1/student/vbr/passport/disclosure"];
-      const rs = await Promise.all(
-        paths.map((p) => fetch(api + p, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.status)),
-      );
-      return rs;
-    }, { api: "https://veribridge-api.onrender.com", token: qa.student.access_token });
-    expect(results.filter((s) => s >= 500)).toEqual([]);
+    // Navigate first: the fetches below must originate from the app origin,
+    // or the API's CORS policy rejects them from about:blank and the test
+    // fails with "Load failed" before it can observe anything.
+    await page.goto(`${BASE}/student/vbr/passport`, { waitUntil: "domcontentloaded" });
+    // Several rounds: the failure was probabilistic (~12% per request when
+    // it was live), so a single pair could pass by luck.
+    for (let round = 0; round < 6; round++) {
+      const results = await page.evaluate(async ({ api, token }) => {
+        const paths = ["/api/v1/student/vbr/passport", "/api/v1/student/vbr/passport/disclosure"];
+        const rs = await Promise.all(
+          paths.map((p) => fetch(api + p, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.status)),
+        );
+        return rs;
+      }, { api: "https://veribridge-api.onrender.com", token: qa.student.access_token });
+      expect(results.filter((s) => s >= 500), `round ${round}`).toEqual([]);
+    }
   });
 });

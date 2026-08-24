@@ -29,6 +29,7 @@ from fastapi import (
     status,
 )
 
+from app.db.supabase import run_with_transient_retry
 from app.api.deps import (
     get_current_user_id,
     get_db,
@@ -130,7 +131,21 @@ def get_private_passport_route(
     db: Any = Depends(get_db),
     pipeline_db: Any = Depends(get_pipeline_db),
 ) -> PrivateWorkPassportResponse:
-    return PrivateWorkPassportResponse(**build_private_passport(db, pipeline_db, user_id))
+    # Pure read. The transport race that used to make this 500 whenever the
+    # page's concurrent disclosure call was in flight is fixed at the root
+    # (clients are per-thread now, and the report pool reuses that cache
+    # instead of churning a new client per request). What remains is the
+    # unavoidable case: a keepalive connection the peer closed while idle,
+    # which surfaces as [Errno 11] on first reuse and cannot be prevented
+    # client-side. Retrying a read once on a fresh client is the correct
+    # handling for that — not a mask for the race.
+    return PrivateWorkPassportResponse(
+        **run_with_transient_retry(
+            db,
+            lambda client: build_private_passport(client, pipeline_db, user_id),
+            op="GET /student/vbr/passport",
+        )
+    )
 
 
 @student_router.post(
@@ -346,8 +361,17 @@ def get_disclosure_context_route(
 ) -> DisclosureContextResponse:
     """Owner view of the hierarchical disclosure policy: per-project proof
     aspects, per-document view/download states, the skills tree, and the
-    effective public-access summary — configured AND effective at every node."""
-    return DisclosureContextResponse(**build_disclosure_context(db, pipeline_db, user_id))
+    effective public-access summary — configured AND effective at every node.
+
+    Pure read; retried once on a fresh client for a peer-closed keepalive
+    connection, exactly like the passport endpoint it is issued alongside."""
+    return DisclosureContextResponse(
+        **run_with_transient_retry(
+            db,
+            lambda client: build_disclosure_context(client, pipeline_db, user_id),
+            op="GET /student/vbr/passport/disclosure",
+        )
+    )
 
 
 @student_router.put(

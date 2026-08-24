@@ -118,6 +118,30 @@ def test_reset_drops_this_threads_clients(monkeypatch: Any) -> None:
     assert supabase_module.get_supabase_client() is not first
 
 
+def test_passport_report_pool_reuses_the_per_thread_cache(monkeypatch: Any) -> None:
+    """The report pool must not construct a fresh client per request.
+
+    It previously built up to 8 brand-new clients on EVERY passport build
+    (a ``threading.local()`` created fresh per call), opened new TLS
+    connections for each, and abandoned them — unbounded connection churn
+    per request, and its own source of [Errno 11] under a burst. Now it
+    draws from the process-lifetime per-thread cache, so a worker thread
+    reuses its connection across requests while still never sharing one
+    with a concurrently running request.
+    """
+    from app.services import vbr_work_passport_service as svc
+
+    _install_fake_factory(monkeypatch)
+    assert svc.get_supabase_client is supabase_module.get_supabase_client
+
+    real_db = _FakeClient()
+    first = svc._worker_clients(real_db, real_db, threading.local())[0]
+    # A second passport build on the same thread reuses the same client
+    # rather than constructing another one.
+    second = svc._worker_clients(real_db, real_db, threading.local())[0]
+    assert first is second
+
+
 def test_get_db_dependency_is_per_thread(monkeypatch: Any) -> None:
     """The FastAPI dependency itself — every sync endpoint resolves through it."""
     from app.api.deps import get_db
