@@ -361,3 +361,82 @@ test.describe("PART 7 — accessibility of the discovery surfaces", () => {
     await expect(recheck).toBeFocused()
   })
 })
+
+test.describe("PART 8 — navigation durability of the discovery states", () => {
+  // The regression that lost this UX was invisible on a first page load, so
+  // the states must survive every way a student actually reaches the page:
+  // typing the URL, reloading, and using the browser's history buttons.
+
+  test("State A survives direct navigation, reload, and back/forward", async ({ page }) => {
+    await mockFreshStudentApis(page)
+
+    // Direct navigation — no dashboard hop first.
+    await page.goto("/student/proofs/website")
+    const gate = page.getByTestId("recorder-install-gate")
+    await expect(gate).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByTestId("recorder-gate-install-link")).toHaveAttribute("href", OFFICIAL_LISTING)
+    // The degraded "release under review" box must never appear now that the
+    // listing is published — that box IS the regression this suite guards.
+    await expect(page.getByTestId("recorder-gate-pending-release")).toHaveCount(0)
+
+    // Reload.
+    await page.reload()
+    await expect(gate).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByTestId("recorder-gate-install-link")).toHaveAttribute("href", OFFICIAL_LISTING)
+
+    // Navigate away, then come back with the browser Back button.
+    await page.goto("/student")
+    await expect(page.getByTestId("dashboard-recorder-extension-card")).toBeVisible({ timeout: 20_000 })
+    await page.goBack()
+    await expect(gate).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByTestId("recorder-gate-install-link")).toHaveAttribute("href", OFFICIAL_LISTING)
+
+    // Forward to the dashboard again — its card re-detects too.
+    await page.goForward()
+    await expect(page.getByTestId("dashboard-recorder-extension-card")).toHaveAttribute(
+      "data-recorder-status",
+      "absent",
+      { timeout: 20_000 },
+    )
+  })
+
+  test("State B survives direct navigation, reload, and back/forward", async ({ page }) => {
+    await installRecorderBridgeForAllPages(page)
+    await mockFreshStudentApis(page)
+
+    await page.goto("/student/proofs/website")
+    // Detected: readiness confirmed, and no install prompt anywhere.
+    await expect(page.getByTestId("recorder-ready-badge")).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByTestId("recorder-install-gate")).toHaveCount(0)
+
+    await page.reload()
+    await expect(page.getByTestId("recorder-ready-badge")).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByTestId("recorder-install-gate")).toHaveCount(0)
+
+    await page.goto("/student")
+    await expect(page.getByTestId("dashboard-recorder-extension-card")).toHaveAttribute(
+      "data-recorder-status",
+      "detected",
+      { timeout: 20_000 },
+    )
+    await page.goBack()
+    await expect(page.getByTestId("recorder-ready-badge")).toBeVisible({ timeout: 20_000 })
+    await expect(page.getByTestId("recorder-install-gate")).toHaveCount(0)
+  })
+
+  test("the proof configuration form stays intact in both states", async ({ page }) => {
+    // The restoration must not gate away the existing Website Proof workflow.
+    await mockFreshStudentApis(page)
+    await page.goto("/student/proofs/website")
+    await expect(page.getByTestId("recorder-install-gate")).toBeVisible({ timeout: 20_000 })
+
+    const body = page.locator("body")
+    // Privacy Guard, project relationship, URLs, skills, objective all remain
+    // reachable while the install gate is on screen.
+    await expect(body).toContainText("Privacy Guard")
+    await expect(body).toContainText("Website URL")
+    await expect(body).toContainText("GitHub")
+    await expect(body).toContainText(/Skills/i)
+    await expect(body).toContainText(/objective/i)
+  })
+})
