@@ -34,7 +34,10 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.serialization import make_json_safe
-from app.services.passport_profile_service import public_passport_profile
+from app.services.passport_profile_service import (
+    public_passport_profile,
+    public_passport_profiles,
+)
 from app.services.recruiter_search_service import _read_with_transient_retry
 
 logger = logging.getLogger(__name__)
@@ -220,8 +223,6 @@ def _candidate_summary(db: Any, student_user_id: str) -> dict[str, Any]:
     lookup errors degrade to the passport row's own fields, never to a crash
     of the whole workspace listing."""
     passport = _passport_by_user(db, student_user_id)
-    is_published = bool(passport and passport.get("is_published"))
-    slug = (passport or {}).get("public_slug")
 
     profile: dict[str, Any] = {}
     try:
@@ -232,6 +233,16 @@ def _candidate_summary(db: Any, student_user_id: str) -> dict[str, Any]:
             exc_info=True,
         )
 
+    return _summary_from_parts(passport, profile)
+
+
+def _summary_from_parts(
+    passport: dict[str, Any] | None, profile: dict[str, Any]
+) -> dict[str, Any]:
+    """The ONE consented-identity projection. Both the single-candidate and
+    the batched path build their result here so they can never diverge."""
+    is_published = bool(passport and passport.get("is_published"))
+    slug = (passport or {}).get("public_slug")
     display_name = profile.get("preferred_name") or profile.get("full_name")
     return {
         "display_name": display_name,
@@ -244,6 +255,50 @@ def _candidate_summary(db: Any, student_user_id: str) -> dict[str, Any]:
         # workspace but their passport link goes dark until they re-publish.
         "public_slug": slug if is_published else None,
         "is_published": is_published,
+    }
+
+
+def _candidate_summaries(
+    db: Any, student_user_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Batched :func:`_candidate_summary` — TWO reads for the whole list.
+
+    A recruiter surface that lists candidates (Talent Pool workspace, pool
+    filtering, comparison) used to issue two queries PER candidate through
+    ``_candidate_summary``; a 200-candidate pool meant 400 round trips. This
+    resolves the same consented projection for every candidate at once.
+    Failures degrade the same way the single-candidate path does: missing
+    identity, never a crashed listing.
+    """
+    wanted = [str(u) for u in dict.fromkeys(student_user_ids) if str(u or "").strip()]
+    if not wanted:
+        return {}
+
+    passports: dict[str, dict[str, Any]] = {}
+    try:
+        if isinstance(db, dict):
+            for row in db.setdefault(_PASSPORTS_TABLE, {}).values():
+                uid = str(row.get("user_id"))
+                if uid in set(wanted) and uid not in passports:
+                    passports[uid] = row
+        else:
+            result = (
+                db.table(_PASSPORTS_TABLE).select("*").in_("user_id", wanted).execute()
+            )
+            for row in list(getattr(result, "data", []) or []):
+                passports.setdefault(str(row.get("user_id")), row)
+    except Exception:
+        logger.warning("batched passport lookup failed", exc_info=True)
+
+    try:
+        profiles = public_passport_profiles(db, wanted)
+    except Exception:
+        logger.warning("batched candidate profile projection failed", exc_info=True)
+        profiles = {}
+
+    return {
+        uid: _summary_from_parts(passports.get(uid), profiles.get(uid) or {})
+        for uid in wanted
     }
 
 

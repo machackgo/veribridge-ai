@@ -275,6 +275,40 @@ def _row_to_profile(row: dict[str, Any] | None) -> dict[str, Any]:
     return profile
 
 
+def public_passport_profiles(db: Any, user_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Batched :func:`public_passport_profile` — ONE read for many candidates.
+
+    Same visibility filtering, same projection; only the fetch is batched, so
+    a recruiter surface listing N candidates no longer issues N profile
+    queries. Missing rows are simply absent from the result. Best-effort like
+    the single-row path: a lookup problem degrades to ``{}``.
+    """
+    wanted = [str(u) for u in dict.fromkeys(user_ids) if str(u or "").strip()]
+    if not wanted:
+        return {}
+    try:
+        if isinstance(db, dict):
+            rows = [
+                r
+                for r in db.setdefault(_TABLE, {}).values()
+                if str(r.get("user_id")) in set(wanted)
+            ]
+        else:
+            result = db.table(_TABLE).select("*").in_("user_id", wanted).execute()
+            rows = list(getattr(result, "data", []) or [])
+    except Exception:  # pragma: no cover - profile context is optional
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        uid = str(row.get("user_id"))
+        try:
+            out[uid] = _public_projection(_row_to_profile(row))
+        except Exception:  # pragma: no cover
+            continue
+    return out
+
+
 def get_passport_profile_row(db: Any, user_id: str) -> dict[str, Any] | None:
     """The raw stored row for the owner, or ``None``. Best-effort: a lookup
     problem returns ``None`` so callers degrade gracefully."""
@@ -411,7 +445,11 @@ def public_passport_profile(db: Any, user_id: str) -> dict[str, Any]:
     row = get_passport_profile_row(db, user_id)
     if not row:
         return {}
-    profile = _row_to_profile(row)
+    return _public_projection(_row_to_profile(row))
+
+
+def _public_projection(profile: dict[str, Any]) -> dict[str, Any]:
+    """The visibility-filtered public field set for one parsed profile."""
     public: dict[str, Any] = {
         "full_name": profile["full_name"],
         "preferred_name": profile["preferred_name"],
