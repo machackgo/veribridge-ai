@@ -42,7 +42,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
-from app.db.supabase import create_service_role_client
+from app.db.supabase import get_supabase_client
 from app.services.passport_attachment_intelligence import (
     PUBLIC_UNATTACHED_LIMITATION,
     build_attachment_suggestions,
@@ -1509,21 +1509,32 @@ def _worker_clients(
 ) -> tuple[Any, Any]:
     """Per-worker-thread (db, pipeline_db) for the report thread pool.
 
-    The request-scoped Supabase sync client is NOT safe to share across threads
-    issuing requests concurrently: racing its single httpx transport surfaces
+    A Supabase sync client is NOT safe to share across threads issuing
+    requests concurrently: racing its single httpx transport surfaces
     ``httpx.ReadError: [Errno 11] Resource temporarily unavailable`` and the
     whole passport 500s (deterministically on accounts with many projects).
-    Each worker thread therefore gets its OWN client. Dict stores (tests /
-    dev fallbacks) are plain in-process data and are shared as-is; if a fresh
-    client cannot be constructed we fall back to the shared one rather than
-    fail the passport outright.
+    Each worker thread therefore gets its OWN client.
+
+    That client comes from :func:`get_supabase_client`, which is itself
+    per-thread and PROCESS-LIFETIME. This used to call
+    ``create_service_role_client()`` against a ``threading.local()`` created
+    fresh on every ``_build_report_pairs`` call, so each passport build
+    constructed up to 8 brand-new clients, opened new TLS connections, and
+    then abandoned them — unbounded connection churn per request, which is
+    its own source of ``[Errno 11]`` under a burst. Reusing the per-thread
+    cache keeps the same isolation guarantee while the pool's threads reuse
+    their connections across requests.
+
+    Dict stores (tests / dev fallbacks) are plain in-process data and are
+    shared as-is; if a client cannot be obtained we fall back to the shared
+    one rather than fail the passport outright.
     """
     if isinstance(db, dict):
         return db, pipeline_db
     pair = getattr(thread_local, "vb_client_pair", None)
     if pair is None:
         try:
-            fresh = create_service_role_client()
+            fresh = get_supabase_client()
         except Exception:  # pragma: no cover - defensive fallback
             logger.exception("[VBR] per-thread Supabase client creation failed; sharing request client")
             fresh = None

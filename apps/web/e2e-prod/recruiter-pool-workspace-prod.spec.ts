@@ -85,9 +85,75 @@ async function newRecruiterPage(s: Session) {
 
 let poolUrl = "";
 let poolId = "";
+let candidateUserId = "";
+
+function api(path: string, token: string, init: RequestInit = {}) {
+  return fetch(`${API}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+/**
+ * The pool under test is created through the API in beforeAll rather than
+ * carried between tests in a module variable: a spec whose later assertions
+ * silently depend on an earlier test having run is a spec that reports
+ * harness breakage as product breakage. The UI creation path is still
+ * exercised — by its own dedicated test, on its own pool.
+ */
+test.beforeAll(async () => {
+  const res = await api("/api/v1/recruiter/pools", qa.rec1.access_token, {
+    method: "POST",
+    body: JSON.stringify({
+      name: "V6 prod QA — workspace fixture",
+      description: "Career fair prospects",
+    }),
+  });
+  const body = await res.json();
+  expect(res.status, JSON.stringify(body)).toBe(200);
+  poolId = body.pool.id;
+  poolUrl = `${BASE}/recruiters/pools/${poolId}`;
+
+  // Seed the member and NORMALIZE its recruiter-private state. Without this
+  // the spec is not idempotent: a re-run inherits the previous run's status
+  // and tags, and selectOption("shortlisted") on an already-shortlisted row
+  // fires no change event at all, so the test hangs waiting for a PATCH that
+  // correctly never happens.
+  const add = await api(`/api/v1/recruiter/pools/${poolId}/candidates`, qa.rec1.access_token, {
+    method: "POST",
+    body: JSON.stringify({ candidate_slugs: [CANDIDATE_SLUG], source: "qr_scan" }),
+  });
+  const addBody = await add.json();
+  expect(add.status, JSON.stringify(addBody)).toBe(200);
+  candidateUserId = addBody.candidates[0].student_user_id;
+
+  const reset = await api(
+    `/api/v1/recruiter/pools/${poolId}/candidates/${candidateUserId}`,
+    qa.rec1.access_token,
+    { method: "PATCH", body: JSON.stringify({ status: "review", clear_note: true, tags: [] }) },
+  );
+  expect(reset.status, await reset.text()).toBe(200);
+});
+
+test.afterAll(async () => {
+  // Delete every pool this QA recruiter owns, so repeat runs never leave
+  // orphans behind in production.
+  const res = await api("/api/v1/recruiter/pools", qa.rec1.access_token);
+  if (!res.ok) return;
+  const { pools } = await res.json();
+  for (const pool of pools ?? []) {
+    await api(`/api/v1/recruiter/pools/${pool.id}`, qa.rec1.access_token, {
+      method: "DELETE",
+    });
+  }
+});
 
 test.describe("Recruiter Talent Pool workspace V6 — production", () => {
-  test("create a pool and reach its workspace", async () => {
+  test("create a pool through the UI and reach its workspace", async () => {
     const { browser, page } = await newRecruiterPage(qa.rec1);
     await page.goto(`${BASE}/recruiters/pools`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("pools-create-name")).toBeVisible({ timeout: 60_000 });
@@ -96,11 +162,9 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
       page.getByTestId("pools-empty").or(page.getByTestId("pool-card").first()),
     ).toBeVisible({ timeout: 60_000 });
 
-    await page.getByTestId("pools-create-name").fill("V6 prod QA — Fall 2026 AI / ML");
+    await page.getByTestId("pools-create-name").fill("V6 prod QA — created in the UI");
     await page.getByTestId("pools-create-submit").click();
     await page.waitForURL(/\/recruiters\/pools\/[0-9a-f-]{36}/, { timeout: 60_000 });
-    poolUrl = page.url();
-    poolId = poolUrl.split("/pools/")[1].split("?")[0];
 
     await expect(page.getByTestId("pool-title")).toContainText("V6 prod QA");
     await expect(page.getByTestId("pool-candidates-empty")).toBeVisible({ timeout: 60_000 });
@@ -117,18 +181,7 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
     await browser.close();
   });
 
-  test("add the discoverable candidate; membership survives a reload", async () => {
-    const res = await fetch(`${API}/api/v1/recruiter/pools/${poolId}/candidates`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${qa.rec1.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ candidate_slugs: [CANDIDATE_SLUG], source: "qr_scan" }),
-    });
-    expect(res.status, await res.text()).toBe(200);
-    expect((await res.json()).added).toBe(1);
-
+  test("the seeded candidate renders with live evidence and survives a reload", async () => {
     const { browser, page } = await newRecruiterPage(qa.rec1);
     await page.goto(poolUrl, { waitUntil: "domcontentloaded" });
     const card = page.getByTestId("pool-candidate-card").first();
@@ -144,16 +197,14 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
   });
 
   test("idempotent re-add: no duplicate membership", async () => {
-    const res = await fetch(`${API}/api/v1/recruiter/pools/${poolId}/candidates`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${qa.rec1.access_token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ candidate_slugs: [CANDIDATE_SLUG] }),
-    });
+    const res = await api(
+      `/api/v1/recruiter/pools/${poolId}/candidates`,
+      qa.rec1.access_token,
+      { method: "POST", body: JSON.stringify({ candidate_slugs: [CANDIDATE_SLUG] }) },
+    );
     expect(res.status).toBe(200);
     const body = await res.json();
+    // Already seeded in beforeAll — a re-add must add nothing.
     expect(body.added).toBe(0);
     expect(body.already_in_pool).toBe(1);
 
@@ -233,6 +284,8 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
     await page.goto(poolUrl, { waitUntil: "domcontentloaded" });
     const card = page.getByTestId("pool-candidate-card").first();
     await expect(card).toBeVisible({ timeout: 60_000 });
+    // Known baseline from beforeAll, so the change below is a real change.
+    await expect(card.getByTestId("pool-candidate-status")).toContainText("Review");
 
     const statusPatch = page.waitForResponse(
       (r) => r.url().includes("/candidates/") && r.request().method() === "PATCH",
@@ -294,15 +347,19 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
     const card = page.getByTestId("pool-candidate-card").first();
     await expect(card).toBeVisible({ timeout: 60_000 });
 
-    await card.getByTestId("pool-candidate-select").check();
+    // Selection is URL state (so reload/back/forward reproduce it), which
+    // means the checkbox flips only once the router navigation lands —
+    // check() would require a synchronous flip, so click and await the URL.
+    await card.getByTestId("pool-candidate-select").click();
     await page.waitForURL(/[?&]selected=/, { timeout: 60_000 });
+    await expect(card.getByTestId("pool-candidate-select")).toBeChecked();
     // One selected candidate is not comparable — the control stays disabled
     // rather than producing a single-column "comparison".
     await expect(page.getByTestId("pool-compare")).toBeDisabled();
     await expect(page.getByTestId("pool-compare-bar")).toContainText("1 selected");
 
     // …and the deep link says why instead of erroring.
-    await page.goto(`${BASE}/recruiters/pools/${poolId}/compare?ids=${qa.rec1.user_id}`, {
+    await page.goto(`${BASE}/recruiters/pools/${poolId}/compare?ids=${candidateUserId}`, {
       waitUntil: "domcontentloaded",
     });
     await expect(page.getByTestId("comparison-too-few")).toBeVisible({ timeout: 60_000 });
@@ -311,25 +368,21 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
   });
 
   test("comparison API refuses candidates outside the pool", async () => {
-    const res = await fetch(`${API}/api/v1/recruiter/pools/${poolId}/comparison`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${qa.rec1.access_token}`,
-        "Content-Type": "application/json",
+    const res = await api(
+      `/api/v1/recruiter/pools/${poolId}/comparison`,
+      qa.rec1.access_token,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          student_user_ids: [qa.rec1.user_id, "00000000-0000-4000-8000-000000000999"],
+        }),
       },
-      body: JSON.stringify({
-        student_user_ids: [qa.rec1.user_id, "00000000-0000-4000-8000-000000000999"],
-      }),
-    });
+    );
     expect(res.status).toBe(400);
     expect((await res.json()).detail.code).toBe("candidate_not_found");
   });
 
   test("recruiter isolation: every verb refuses recruiter 2", async () => {
-    const auth = {
-      Authorization: `Bearer ${qa.rec2.access_token}`,
-      "Content-Type": "application/json",
-    };
     const attempts: [string, string, unknown?][] = [
       ["GET", `/api/v1/recruiter/pools/${poolId}`],
       ["GET", `/api/v1/recruiter/pools/${poolId}/filter`],
@@ -339,23 +392,20 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
       ["POST", `/api/v1/recruiter/pools/${poolId}/comparison`, { student_user_ids: ["a", "b"] }],
     ];
     for (const [method, path, body] of attempts) {
-      const res = await fetch(`${API}${path}`, {
+      const res = await api(path, qa.rec2.access_token, {
         method,
-        headers: auth,
         body: body ? JSON.stringify(body) : undefined,
       });
       expect(res.status, `${method} ${path}`).toBe(404);
     }
 
     // Recruiter 2 sees none of recruiter 1's private tag vocabulary.
-    const tags = await fetch(`${API}/api/v1/recruiter/pools/tags`, { headers: auth });
+    const tags = await api("/api/v1/recruiter/pools/tags", qa.rec2.access_token);
     expect(tags.status).toBe(200);
     expect((await tags.json()).tags).toEqual([]);
 
     // Recruiter 1's pool is untouched.
-    const mine = await fetch(`${API}/api/v1/recruiter/pools/${poolId}`, {
-      headers: { Authorization: `Bearer ${qa.rec1.access_token}` },
-    });
+    const mine = await api(`/api/v1/recruiter/pools/${poolId}`, qa.rec1.access_token);
     expect(mine.status).toBe(200);
     const body = await mine.json();
     expect(body.pool.name).toContain("V6 prod QA");
@@ -374,12 +424,11 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
   });
 
   test("malformed ids are not found rather than a server error", async () => {
-    const headers = { Authorization: `Bearer ${qa.rec1.access_token}` };
     for (const path of [
       "/api/v1/recruiter/pools/not-a-uuid",
       "/api/v1/recruiter/pools/not-a-uuid/filter",
     ]) {
-      const res = await fetch(`${API}${path}`, { headers });
+      const res = await api(path, qa.rec1.access_token);
       expect(res.status, path).toBe(404);
     }
   });
@@ -400,25 +449,57 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
     await browser.close();
   });
 
-  test("deleting the pool leaves the candidate and the tag vocabulary alone", async () => {
+  test("deleting a pool leaves the candidate and the tag vocabulary alone", async () => {
+    // Self-contained: this test creates, tags and deletes its OWN pool, so
+    // the invariant it asserts cannot be masked by another test's state.
+    const created = await api("/api/v1/recruiter/pools", qa.rec1.access_token, {
+      method: "POST",
+      body: JSON.stringify({ name: "V6 prod QA — deletion fixture" }),
+    });
+    const { pool } = await created.json();
+    expect(created.status).toBe(200);
+
+    const added = await api(
+      `/api/v1/recruiter/pools/${pool.id}/candidates`,
+      qa.rec1.access_token,
+      { method: "POST", body: JSON.stringify({ candidate_slugs: [CANDIDATE_SLUG] }) },
+    );
+    const addBody = await added.json();
+    expect(added.status).toBe(200);
+    const memberId = addBody.candidates[0].student_user_id;
+
+    const tagged = await api(
+      `/api/v1/recruiter/pools/${pool.id}/candidates/${memberId}`,
+      qa.rec1.access_token,
+      { method: "PATCH", body: JSON.stringify({ tags: ["Survives Deletion"] }) },
+    );
+    expect(tagged.status, await tagged.text()).toBe(200);
+
+    // Delete through the UI, confirming the two-step guard.
     const { browser, page } = await newRecruiterPage(qa.rec1);
-    await page.goto(poolUrl, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE}/recruiters/pools/${pool.id}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("pool-delete")).toBeVisible({ timeout: 60_000 });
     await page.getByTestId("pool-delete").click();
     await expect(page.getByTestId("pool-delete-confirm")).toBeVisible();
+    await expect(page.getByTestId("pool-delete-confirm")).toContainText(
+      "never removes candidates",
+    );
     await page.getByTestId("pool-delete").click();
     await page.waitForURL(/\/recruiters\/pools$/, { timeout: 60_000 });
     await browser.close();
 
-    // The candidate's public passport is untouched by any of this.
+    // The pool is gone…
+    const gone = await api(`/api/v1/recruiter/pools/${pool.id}`, qa.rec1.access_token);
+    expect(gone.status).toBe(404);
+
+    // …the candidate's public passport is untouched…
     const passport = await fetch(`${API}/api/v1/public/p/${CANDIDATE_SLUG}`);
     expect(passport.status).toBe(200);
 
-    // Tags are recruiter-scoped, so they outlive the pool.
-    const tags = await fetch(`${API}/api/v1/recruiter/pools/tags`, {
-      headers: { Authorization: `Bearer ${qa.rec1.access_token}` },
-    });
-    expect((await tags.json()).tags.length).toBeGreaterThan(0);
+    // …and the tag, being recruiter-scoped, outlives the pool it was applied in.
+    const tags = await api("/api/v1/recruiter/pools/tags", qa.rec1.access_token);
+    const vocabulary = (await tags.json()).tags as { tag: string }[];
+    expect(vocabulary.map((t) => t.tag)).toContain("Survives Deletion");
   });
 
   test("no unexplained console or server errors across the run", async () => {

@@ -4,8 +4,11 @@ Racing the shared sync client from ThreadPoolExecutor workers surfaces
 ``httpx.ReadError: [Errno 11] Resource temporarily unavailable`` in production
 (deterministically for accounts with many projects — the whole private passport
 500'd). Each worker thread must build reports with its OWN client from
-``create_service_role_client``; dict stores (tests/dev) are shared as-is; a
-failing factory falls back to the shared client instead of failing the passport.
+``get_supabase_client`` — which is itself per-thread and process-lifetime, so
+the pool's threads reuse their connections across requests instead of
+constructing (and abandoning) up to 8 fresh clients on every passport build.
+Dict stores (tests/dev) are shared as-is; a failing factory falls back to the
+shared client instead of failing the passport.
 """
 
 from __future__ import annotations
@@ -54,7 +57,7 @@ def test_each_worker_thread_gets_its_own_client(monkeypatch, capture_reports):
             created.append(c)
         return c
 
-    monkeypatch.setattr(svc, "create_service_role_client", fake_factory)
+    monkeypatch.setattr(svc, "get_supabase_client", fake_factory)
 
     projects = _projects(6)
     pairs = svc._build_report_pairs(shared, shared, projects, "user-1")
@@ -80,7 +83,7 @@ def test_each_worker_thread_gets_its_own_client(monkeypatch, capture_reports):
 def test_dict_store_is_shared_and_factory_untouched(monkeypatch, capture_reports):
     factory_calls: list[bool] = []
     monkeypatch.setattr(
-        svc, "create_service_role_client", lambda: factory_calls.append(True)
+        svc, "get_supabase_client", lambda: factory_calls.append(True)
     )
 
     store: dict = {"vbr_projects": {}}
@@ -97,7 +100,7 @@ def test_factory_failure_falls_back_to_shared_client(monkeypatch, capture_report
     def broken_factory():
         raise RuntimeError("SUPABASE_URL is not set")
 
-    monkeypatch.setattr(svc, "create_service_role_client", broken_factory)
+    monkeypatch.setattr(svc, "get_supabase_client", broken_factory)
 
     pairs = svc._build_report_pairs(shared, shared, _projects(4), "user-1")
 
@@ -109,7 +112,7 @@ def test_single_project_stays_inline_with_shared_client(monkeypatch, capture_rep
     shared = _FakeClient("shared-request-client")
     monkeypatch.setattr(
         svc,
-        "create_service_role_client",
+        "get_supabase_client",
         lambda: (_ for _ in ()).throw(AssertionError("factory must not be called")),
     )
 
@@ -132,7 +135,7 @@ def test_distinct_pipeline_db_client_also_isolated(monkeypatch, capture_reports)
             created.append(c)
         return c
 
-    monkeypatch.setattr(svc, "create_service_role_client", fake_factory)
+    monkeypatch.setattr(svc, "get_supabase_client", fake_factory)
 
     svc._build_report_pairs(shared_db, shared_pipeline, _projects(4), "user-1")
 
