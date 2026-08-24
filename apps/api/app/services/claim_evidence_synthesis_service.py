@@ -29,6 +29,16 @@ timestamp, page, URL, deployment, or identity. The honesty rules it encodes:
    explicit "Analysis pending" citation that is visible but never counted.
 5. **Qualitative only** — statuses come from the closed ladder in
    ``canonical_evidence.QUALITATIVE_STATES``; no numeric scores exist anywhere.
+6. **Claims are PROJECT-scoped; candidate attribution is separate** — every
+   ``claim_text`` asserts what the project's artifacts show ("<skill> is
+   demonstrated in the project <title>"), never who built it. The candidate
+   side lives in ``SkillClaim.candidate_attribution`` /
+   ``ClaimEvidenceMap.project_relationship`` and derives ONLY from
+   candidate↔artifact relationship evidence (defense ownership stances, stored
+   attribution evidence — see ``candidate_attribution_service``). An explicit
+   denial blocks candidate implementation claims; aggregation of project-level
+   sources can never create candidate-level attribution; corroboration
+   preserves the project subject of the underlying claim.
 """
 
 from __future__ import annotations
@@ -37,6 +47,7 @@ import re
 from typing import Any
 
 from app.schemas.canonical_evidence import (
+    CandidateAttribution,
     ClaimEvidenceMap,
     Contradiction,
     CorroborationGroup,
@@ -46,6 +57,11 @@ from app.schemas.canonical_evidence import (
     ProjectFeature,
     SkillClaim,
     SourceCounts,
+)
+from app.services.candidate_attribution_service import (
+    assess_project_ownership,
+    build_candidate_attribution,
+    detect_ownership_stance,
 )
 from app.services.github_python_evidence_focus import is_countable_code_purpose
 
@@ -293,17 +309,35 @@ def _strongest_tier_label(counted: list[EvidenceCitation], pending: bool) -> str
     if any(c.proof_type == _DOCUMENT for c in counted):
         return "Design documentation"
     if any(c.proof_type in (_DEFENSE, _VIDEO) for c in counted):
-        return "Authorship explanation"
+        # Defense/video is candidate EXPLANATION — an affirmed contribution
+        # description at most, understanding otherwise. Never authorship proof.
+        if any(c.strength == "Contribution explanation" for c in counted):
+            return "Contribution explanation"
+        return "Understanding explanation"
     if pending:
         return "Analysis pending"
     return "None" if not counted else "Context only"
+
+
+def _defense_strength_label(claim_type: str, ownership_stance: str) -> str:
+    """Closed strength label for ONE counted defense citation.
+
+    A denial that still explains the skill counts as UNDERSTANDING evidence —
+    the ownership clarification rides along as a limitation, and the claim's
+    candidate attribution carries the denial. An affirmed personal-contribution
+    answer is a contribution EXPLANATION (self-description, never authorship
+    proof). Everything else demonstrates understanding.
+    """
+    if ownership_stance in ("affirmed", "mixed") and claim_type == "personal_contribution":
+        return "Contribution explanation"
+    return "Understanding explanation"
 
 
 _SOURCE_CONTRIBUTION = {
     _GITHUB: "shows the implementation code at exact cited lines",
     _WEBSITE: "shows the behaviour running at recording time",
     _DOCUMENT: "explains the design/method with a page/section citation",
-    _DEFENSE: "shows the candidate explaining their own work",
+    _DEFENSE: "shows the candidate explaining the project in their own words",
     _VIDEO: "shows a recorded demonstration",
 }
 
@@ -318,7 +352,7 @@ def _counted_rank(c: EvidenceCitation) -> int:
         return 2
     if c.proof_type == _DOCUMENT:
         return 3
-    return 4  # defense / video authorship explanation
+    return 4  # defense / video candidate explanation (understanding/contribution)
 
 
 def compute_source_counts(citations: list[EvidenceCitation]) -> SourceCounts:
@@ -540,8 +574,9 @@ def _build_corroboration(
         independent_sources=True,
         unique_contributions=contributions,
         limitations=[
-            "Corroboration shows the sources agree on this claim; it does not independently verify "
-            "authorship of every artifact."
+            "Corroboration shows the sources agree on this PROJECT-scoped claim; it never "
+            "verifies who built the artifact. Candidate attribution is assessed separately "
+            "from candidate↔artifact relationship evidence and is unchanged by corroboration."
         ],
     )
 
@@ -701,14 +736,28 @@ def build_skill_claim_evidence_map(
         project_title = str(chain.get("project_title") or "Project")
         attached = bool(chain.get("attached"))
         pmeta = meta.get(str(pid)) if pid else None
+        # Candidate↔project ownership for THIS chain: a precomputed assessment
+        # in project_meta wins; otherwise assessed from the chain's own defense
+        # inspection cards (which carry per-answer ownership stances). Project
+        # artifact evidence contributes NOTHING here by design.
+        ownership = (pmeta or {}).get("candidate_attribution")
+        if not isinstance(ownership, dict):
+            ownership = assess_project_ownership(
+                answer_items=chain.get("project_defense_inspection") or [],
+                repo_analysis=(pmeta or {}).get("repo_analysis"),
+            )
         claim = SkillClaim(
             id=_next_id("claim"),
             project_id=str(pid) if pid else None,
             skill_id=str(report.get("skill_slug") or ""),
             skill_name=skill,
             claim_scope="project" if pid else "skill",
+            claim_subject="project",
             claim_text=(
-                f"{skill} was implemented and demonstrated in {project_title}."
+                # PROJECT-scoped by construction: the sentence asserts what the
+                # project's artifacts show. Who built it is a separate claim
+                # carried by ``candidate_attribution`` with its own evidence bar.
+                f"{skill} is demonstrated in the project {project_title}."
                 if pid
                 else f"{skill} is supported by standalone proof in the Proof Vault "
                 "(not attached to a project)."
@@ -1059,7 +1108,15 @@ def build_skill_claim_evidence_map(
         inspection = chain.get("project_defense_inspection") or []
         for card in inspection:
             mapped = str(card.get("mapped_skill") or "")
-            explained = str(card.get("qualitative_status") or "Not explained") != "Not explained"
+            # Only a genuine, targeted explanation counts — "Needs review",
+            # "Generic explanation", and privacy-withheld answers are visible
+            # but never counted (the old `!= "Not explained"` check let a
+            # needs-review denial count as authorship evidence).
+            explained = str(card.get("qualitative_status") or "Not explained") in (
+                "Explained with evidence",
+                "Partially explained",
+            )
+            stance = str(card.get("ownership_stance") or "none")
             counted = bool(mapped) and explained and attached
             feature_id = None
             if card.get("question_text"):
@@ -1091,7 +1148,13 @@ def build_skill_claim_evidence_map(
                 timestamp_end_label=card.get("transcript_excerpt_end_label"),
                 explanation=str(card.get("safe_answer_summary") or ""),
                 relevance=str(card.get("what_this_demonstrates") or ""),
-                strength="Authorship explanation" if counted else "Context only",
+                strength=(
+                    _defense_strength_label(str(card.get("claim_type") or ""), stance)
+                    if counted
+                    else "Ownership clarification"
+                    if stance == "denied"
+                    else "Context only"
+                ),
                 counted_as_direct_evidence=counted,
                 project_relationship=_project_relationship(
                     project_id=str(pid) if pid else None,
@@ -1114,7 +1177,15 @@ def build_skill_claim_evidence_map(
                     source_evidence_id=cit.evidence_id,
                     claim_id=claim.id,
                     feature_id=feature_id,
-                    relation_type="explains_authorship" if counted else "contextual_only",
+                    relation_type=(
+                        "clarifies_ownership"
+                        if stance == "denied"
+                        else "explains_authorship"
+                        if counted and cit.strength == "Contribution explanation"
+                        else "explains_understanding"
+                        if counted
+                        else "contextual_only"
+                    ),
                     reason=str(card.get("what_this_demonstrates") or "Defense answer without a skill mapping."),
                 )
             )
@@ -1220,6 +1291,48 @@ def build_skill_claim_evidence_map(
             context_only=chain_context,
         )
         claim.strongest_evidence_tier = _strongest_tier_label(chain_counted, chain_pending)
+        # Candidate attribution — the separately-evidenced candidate side of
+        # this project-scoped claim. Understanding/usage flags come ONLY from
+        # counted candidate-explanation / runtime citations; the ownership
+        # state comes ONLY from candidate↔artifact relationship evidence.
+        if pid:
+            claim.candidate_attribution = CandidateAttribution(
+                **build_candidate_attribution(
+                    ownership=ownership,
+                    skill_name=skill,
+                    understanding_demonstrated=any(
+                        c.proof_type in (_DEFENSE, _VIDEO) for c in chain_counted
+                    ),
+                    usage_demonstrated=any(c.proof_type == _WEBSITE for c in chain_counted),
+                )
+            )
+            state = claim.candidate_attribution.state
+            if state == "denied_by_candidate":
+                claim.limitations.append(
+                    "The candidate explicitly stated they did not build or contribute to this "
+                    "project — no candidate implementation claim is made."
+                )
+            elif state == "conflicted":
+                claim.limitations.append(
+                    "Ownership evidence for this project conflicts — candidate implementation "
+                    "claims are blocked until resolved."
+                )
+                contradictions.append(
+                    Contradiction(
+                        contradiction_id=_next_id("contra"),
+                        kind="ownership_conflict",
+                        claim_id=claim.id,
+                        description=(
+                            "Ownership statements/evidence for this project conflict. The conflict "
+                            "is surfaced, never auto-resolved in the candidate's favour, and blocks "
+                            "candidate implementation claims."
+                        ),
+                        recommended_action=(
+                            "Review the candidate's defense statements and attribution evidence "
+                            "before relying on any contribution claim."
+                        ),
+                    )
+                )
         if not pid:
             claim.limitations.append(
                 "Standalone vault proof — unattached sources share no confirmed project, so they are "
@@ -1310,6 +1423,17 @@ def build_project_claim_evidence_map(report: dict[str, Any]) -> dict[str, Any]:
         and report.get("project_defense_analysis") is None
     )
 
+    # Candidate↔project ownership for the whole report: the report builder
+    # passes its precomputed assessment; otherwise assess from the report's own
+    # defense answer evidence. Artifact evidence contributes NOTHING here.
+    ownership = report.get("candidate_ownership")
+    if not isinstance(ownership, dict):
+        ownership = assess_project_ownership(
+            answer_items=report.get("defense_answer_evidence") or [],
+            repo_analysis=report.get("repo_analysis"),
+        )
+    ownership_conflict_logged = False
+
     for row in report.get("skill_evidence") or []:
         skill = str(row.get("skill") or "")
         claim = SkillClaim(
@@ -1318,7 +1442,10 @@ def build_project_claim_evidence_map(report: dict[str, Any]) -> dict[str, Any]:
             skill_id=skill.lower().replace(" ", "-"),
             skill_name=skill,
             claim_scope="project",
-            claim_text=f"{skill} was implemented and demonstrated in {project_title}.",
+            claim_subject="project",
+            # PROJECT-scoped by construction — candidate attribution is a
+            # separate claim with its own evidence bar (see below).
+            claim_text=f"{skill} is demonstrated in the project {project_title}.",
         )
         counted: list[EvidenceCitation] = []
         mismatch = False
@@ -1407,6 +1534,44 @@ def build_project_claim_evidence_map(report: dict[str, Any]) -> dict[str, Any]:
             context_only=context_only,
         )
         claim.strongest_evidence_tier = _strongest_tier_label(counted, defense_pending)
+        claim.candidate_attribution = CandidateAttribution(
+            **build_candidate_attribution(
+                ownership=ownership,
+                skill_name=skill,
+                understanding_demonstrated=any(
+                    c.proof_type in (_DEFENSE, _VIDEO) for c in counted
+                ),
+                usage_demonstrated=any(c.proof_type == _WEBSITE for c in counted),
+            )
+        )
+        state = claim.candidate_attribution.state
+        if state == "denied_by_candidate":
+            claim.limitations.append(
+                "The candidate explicitly stated they did not build or contribute to this "
+                "project — no candidate implementation claim is made."
+            )
+        elif state == "conflicted":
+            claim.limitations.append(
+                "Ownership evidence for this project conflicts — candidate implementation "
+                "claims are blocked until resolved."
+            )
+            if not ownership_conflict_logged:
+                ownership_conflict_logged = True
+                contradictions.append(
+                    Contradiction(
+                        contradiction_id=_next_id("contra"),
+                        kind="ownership_conflict",
+                        description=(
+                            "Ownership statements/evidence for this project conflict. The conflict "
+                            "is surfaced, never auto-resolved in the candidate's favour, and blocks "
+                            "candidate implementation claims."
+                        ),
+                        recommended_action=(
+                            "Review the candidate's defense statements and attribution evidence "
+                            "before relying on any contribution claim."
+                        ),
+                    )
+                )
         if mismatch:
             claim.limitations.append(
                 "An attached recording failed the project-identity check and is excluded from this claim."
@@ -1435,6 +1600,12 @@ def build_project_claim_evidence_map(report: dict[str, Any]) -> dict[str, Any]:
     cem = ClaimEvidenceMap(
         scope="project_report",
         project_id=project_id,
+        # The ONE block a recruiter reads to understand the candidate↔project
+        # relationship — built from ownership evidence only, never inferred
+        # from artifact evidence.
+        project_relationship=CandidateAttribution(
+            **build_candidate_attribution(ownership=ownership)
+        ),
         claims=claims,
         features=list(features.values()),
         citations=citations,
@@ -1691,9 +1862,18 @@ def _citation_from_trace(
             )
     elif source_type in (_DEFENSE, _VIDEO):
         answered = bool(trace.get("question_text") and trace.get("answer_excerpt"))
-        counted = answered
-        relation_type = "explains_authorship" if answered else "contextual_only"
-        strength = "Authorship explanation" if answered else "Context only"
+        stance = detect_ownership_stance(trace.get("answer_excerpt"))
+        if stance == "denied":
+            # An explicit ownership denial is visible ownership-clarification
+            # evidence — it never counts as skill evidence and never reads as
+            # an authorship explanation.
+            counted = False
+            relation_type = "clarifies_ownership"
+            strength = "Ownership clarification"
+        else:
+            counted = answered
+            relation_type = "explains_understanding" if answered else "contextual_only"
+            strength = "Understanding explanation" if answered else "Context only"
 
     if not counted:
         flags["context"] = flags["context"] or not flags["mismatch"]

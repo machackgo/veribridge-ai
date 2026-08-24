@@ -384,6 +384,11 @@ class DefenseAnalysisResult:
     ownership_signal_score: int = 0
     technical_depth_score: int = 0
     overall_defense_score: int = 0
+    # Candidate ownership stance detected from the candidate's own words
+    # ("affirmed" | "denied" | "mixed" | "none"). An explicit denial is honest
+    # ownership clarification — recorded, never penalized as a contradiction.
+    ownership_stance: str = "none"
+    authorship_denied: bool = False
     risk_flags: list[str] = field(default_factory=list)
     recruiter_summary: str = ""
     recommended_improvements: list[str] = field(default_factory=list)
@@ -573,16 +578,30 @@ def analyze_defense_transcript(
     result.skills_explained_well = list(dict.fromkeys(skills_explained_well))
     result.skills_missing_from_explanation = skills_missing
 
-    # ── 3. Contradiction check (always, regardless of evidence context) ──────────
-    # Detects language that suggests the student did not author the work.
-    _CONTRADICTION_RE = re.compile(
-        r"\b(?:did not use|never used|did not build|didn't build|not mine|"
-        r"not my work|i did not write|copy[- ]paste[d]?|borrowed code|"
+    # ── 3. Ownership stance + provenance-risk check ───────────────────────────
+    # Two DIFFERENT signals that the old combined regex conflated:
+    #   * Ownership stance — the candidate's explicit statement about their own
+    #     contribution. An honest denial ("I did not build this project") is
+    #     valuable ownership clarification: it is recorded, never penalized, and
+    #     it blocks candidate implementation claims downstream (see
+    #     candidate_attribution_service). Punishing honest non-authorship would
+    #     coach candidates toward false ownership language.
+    #   * Provenance risk — language suggesting the presented work may not be
+    #     what the evidence claims (copied/borrowed code, "never used X"). This
+    #     stays a needs-review contradiction with the score penalty.
+    from app.services.candidate_attribution_service import detect_ownership_stance
+
+    ownership_stance = detect_ownership_stance(text)
+    result.ownership_stance = ownership_stance
+    result.authorship_denied = ownership_stance == "denied"
+
+    _PROVENANCE_RISK_RE = re.compile(
+        r"\b(?:did not use|never used|copy[- ]paste[d]?|borrowed code|"
         r"found online|downloaded from)\b",
         re.IGNORECASE,
     )
     contradiction_found = False
-    if _CONTRADICTION_RE.search(text):
+    if _PROVENANCE_RISK_RE.search(text):
         score = max(0, score - 15)
         contradiction_found = True
         risk_flags.append(
@@ -624,7 +643,19 @@ def analyze_defense_transcript(
     # The overall credit is PROPORTIONAL to the published ownership component
     # so the two can never contradict each other (coherence invariant).
     ownership_matches = sum(1 for p in _OWNERSHIP_RE if p.search(text))
-    if ownership_matches >= 2:
+    if ownership_stance == "denied":
+        # Honest non-authorship: the candidate explicitly delimited their
+        # contribution. The ownership gauge honestly reads "no ownership
+        # claimed", but the candidate is NEVER coached to add false ownership
+        # language and NEVER penalized beyond the gauge itself.
+        result.ownership_signal_score = 10
+        improvements.append(
+            "You clarified that you did not build this project — honest and "
+            "correct. VeriBridge will present this evidence as understanding/"
+            "demonstration, never as implementation ownership. To evidence "
+            "implementation skills, defend a project you personally built."
+        )
+    elif ownership_matches >= 2:
         result.ownership_signal_score = min(100, 50 + ownership_matches * 5)
     elif ownership_matches == 1:
         result.ownership_signal_score = 40
@@ -644,7 +675,7 @@ def analyze_defense_transcript(
             "'my design decision was…' to demonstrate personal contribution."
         )
     score += round(_OWNERSHIP_WEIGHT * result.ownership_signal_score / 100)
-    if ownership_matches == 0:
+    if ownership_matches == 0 and ownership_stance != "denied":
         score = max(0, score - 10)
 
     # ── 5. Technical depth (15 × component/100) ───────────────────────────────

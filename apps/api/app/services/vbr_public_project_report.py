@@ -1280,6 +1280,15 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
         "candidate_display_name": _lookup_display_name(db, owner_id),
         "project_summary": report.get("project_description") or "",
         "student_role": report.get("student_role") or "",
+        # Candidate↔project relationship (attribution integrity): closed-template
+        # sentences + deterministic basis reasons only, safe by construction.
+        # A recruiter must never have to infer ownership from technical
+        # evidence — this block states it explicitly.
+        "candidate_attribution": (
+            report.get("candidate_attribution")
+            if isinstance(report.get("candidate_attribution"), dict)
+            else None
+        ),
         "repo_full_name": (
             report.get("repo_full_name")
             if github_proof_public and github_state == VIEWABLE

@@ -15,6 +15,7 @@ import type {
 } from "@/lib/vbr-api"
 
 import { useAuthorizedMediaUrl } from "./AuthorizedReplayVideo"
+import { ATTRIBUTION_STATE_TONE, CandidateAttributionBanner } from "./CandidateAttributionBanner"
 import { Badge, TOKEN, type BadgeTone } from "./shared"
 
 /**
@@ -487,6 +488,16 @@ function ClaimBlock({
         </span>
         <span style={{ fontSize: 11, color: TOKEN.muted }}>Strongest evidence: {claim.strongest_evidence_tier}</span>
       </div>
+      {claim.candidate_attribution && claim.candidate_attribution.label && (
+        <div data-testid="cem-claim-attribution" style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <Badge tone={ATTRIBUTION_STATE_TONE[claim.candidate_attribution.state] ?? "slate"}>
+            {claim.candidate_attribution.label}
+          </Badge>
+          <span style={{ fontSize: 11, color: TOKEN.muted, lineHeight: 1.5, flex: "1 1 240px" }}>
+            {claim.candidate_attribution.candidate_claim_text}
+          </span>
+        </div>
+      )}
       <SourceCountsRow counts={claim.source_counts} />
       {claim.limitations.map((lim, i) => (
         <p key={i} style={{ margin: 0, fontSize: 11, color: TOKEN.muted }}>{lim}</p>
@@ -537,6 +548,9 @@ export function ClaimEvidenceMapSection({ map }: { map: ClaimEvidenceMap | null 
           own relevance and identity checks — never mere same-project attachment.
         </p>
       </div>
+      {map.project_relationship && (
+        <CandidateAttributionBanner attribution={map.project_relationship} />
+      )}
       {map.source_counts && (
         <div data-testid="cem-map-source-counts" style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           <h4 style={{ margin: 0, fontSize: 12, fontWeight: 700, color: TOKEN.ink }}>Proof sources across this report</h4>

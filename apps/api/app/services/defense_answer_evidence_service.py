@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.services.candidate_attribution_service import detect_ownership_stance
 from app.services.project_defense_evidence_chips import _sanitize_transcript_text
 
 __all__ = [
@@ -44,6 +45,8 @@ __all__ = [
     "ANSWER_STATUS_WITHHELD",
     "DEFENSE_EVIDENCE_ROLE_NOTE",
     "MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION",
+    "OWNERSHIP_DENIAL_LIMITATION",
+    "ROLE_OWNERSHIP_CLARIFICATION",
     "build_defense_answer_evidence",
     "explained_skills_from_answer_evidence",
 ]
@@ -129,6 +132,7 @@ _QUESTION_KIND_TO_CLAIM_TYPE: dict[str, str] = {
 # ── Evidence roles ────────────────────────────────────────────────────────────
 
 ROLE_CANDIDATE_EXPLANATION = "candidate_explanation"
+ROLE_OWNERSHIP_CLARIFICATION = "ownership_clarification"
 ROLE_IMPLEMENTATION_CONTEXT = "implementation_explanation_context"
 ROLE_RUNTIME_BEHAVIOR_CONTEXT = "runtime_behavior_explanation_context"
 ROLE_DOCUMENT_CORROBORATION_CONTEXT = "document_corroboration_context"
@@ -151,6 +155,12 @@ MISSING_IMPLEMENTATION_EVIDENCE_LIMITATION = (
 _NEEDS_REVIEW_LIMITATION = (
     "The answer may not align with the attached evidence; review it before "
     "relying on this explanation."
+)
+OWNERSHIP_DENIAL_LIMITATION = (
+    "The candidate explicitly clarified they did not build or contribute to this "
+    "project. This answer is understanding/analysis evidence only — it is never "
+    "implementation or authorship evidence, and no candidate implementation claim "
+    "may be derived from this project."
 )
 
 # Public-facing card wording is defined here; the fail-closed public projection
@@ -188,12 +198,15 @@ _VAGUE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Language that clearly disclaims authorship / contradicts the claim. Kept
-# conservative: only explicit disclaimers flag an answer, and the outcome is a
-# neutral "Needs review" — never an accusation.
-_CONTRADICTION_RE = re.compile(
-    r"\b(?:did not use|never used|did not build|didn't build|not mine|"
-    r"not my work|i did not write|copy[- ]paste[d]?|borrowed code|"
+# Provenance-RISK language: the answer suggests the presented work may not be
+# what the attached evidence claims (copied/borrowed code, a technology the
+# evidence shows but the student says was never used). The outcome is a neutral
+# "Needs review" — never an accusation. NOTE: an honest AUTHORSHIP DENIAL
+# ("I did not build this project") is deliberately NOT in this list — it is a
+# valuable ownership clarification handled via ``ownership_stance`` (see
+# candidate_attribution_service) and must never be punished as a contradiction.
+_PROVENANCE_RISK_RE = re.compile(
+    r"\b(?:did not use|never used|copy[- ]paste[d]?|borrowed code|"
     r"found online|downloaded from)\b",
     re.IGNORECASE,
 )
@@ -414,9 +427,12 @@ def _limitation(
     status: str,
     contradiction: bool,
     ctx: dict[str, Any],
+    ownership_stance: str = "none",
 ) -> str:
     if contradiction:
         return _NEEDS_REVIEW_LIMITATION
+    if ownership_stance == "denied":
+        return OWNERSHIP_DENIAL_LIMITATION
     # Skill / implementation claims without any attached implementation-style
     # proof (GitHub or Website) stay honest about the missing artifact evidence.
     if (
@@ -487,7 +503,12 @@ def build_defense_answer_evidence(
         answer_text: str,
     ) -> None:
         status = _grade_answer(answer_text, mapped_skill)
-        contradiction = bool(_CONTRADICTION_RE.search(answer_text or ""))
+        # Ownership stance is detected on every answer: an explicit denial is an
+        # honest ownership clarification (valuable evidence, fully shareable),
+        # never a contradiction. Provenance-risk language (copied/borrowed code,
+        # "never used X") stays a separate needs-review signal.
+        ownership_stance = detect_ownership_stance(answer_text)
+        contradiction = bool(_PROVENANCE_RISK_RE.search(answer_text or ""))
         if contradiction:
             status = ANSWER_STATUS_NEEDS_REVIEW
 
@@ -503,6 +524,10 @@ def build_defense_answer_evidence(
             question_kind if status in _EXPLAINED_STATUSES else PURPOSE_UNKNOWN
         )
         role = _evidence_role(question_kind, status, ctx)
+        if ownership_stance == "denied":
+            # An explicit denial is first-class ownership-clarification evidence
+            # regardless of the question it answered.
+            role = ROLE_OWNERSHIP_CLARIFICATION
         items.append(
             {
                 "evidence_id_safe": f"defense-answer-{index}",
@@ -534,7 +559,13 @@ def build_defense_answer_evidence(
                 "corroborates_website": web,
                 "corroborates_document": doc,
                 "contradiction_flag": contradiction,
-                "limitation": _limitation(question_kind, status, contradiction, ctx),
+                # Candidate ownership stance for THIS answer (see
+                # candidate_attribution_service). A denial never blocks sharing
+                # — honest delimitation is evidence the recruiter should see.
+                "ownership_stance": ownership_stance,
+                "limitation": _limitation(
+                    question_kind, status, contradiction, ctx, ownership_stance
+                ),
                 "public_shareable": privacy_clean and not contradiction,
                 "privacy_status": privacy_status,
             }

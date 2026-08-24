@@ -474,7 +474,8 @@ def _build_statements(
     defense_ids = [i for i in defense_ids if i]
     if defense_ids:
         _add(
-            "The candidate explained this work in the Project Defense, evidencing personal understanding.",
+            "The candidate explained this project in the Project Defense, evidencing "
+            "personal understanding (never, by itself, authorship).",
             PROOF_DEFENSE,
             defense_ids,
         )
