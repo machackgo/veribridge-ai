@@ -38,6 +38,7 @@ import {
   type WebsiteProofSummaryResponse,
 } from "@/lib/passport-api"
 import { getSkillGapsOverview, type SkillGapsOverviewResponse } from "@/lib/skill-gaps-api"
+import { RecorderExtensionCard } from "../../../components/student/recorder-extension-card"
 import {
   deriveNextAction,
   isDefenseProject,
@@ -494,6 +495,12 @@ function StudentDashboardInner() {
               </div>
             </div>
           ))}
+        </div>
+
+        {/* Website Proof needs the Chrome recorder — surface it with the
+            proof tiles so a new student learns this before starting. */}
+        <div style={{ marginTop: 12 }}>
+          <RecorderExtensionCard />
         </div>
       </section>
 

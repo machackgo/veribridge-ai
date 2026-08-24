@@ -11,17 +11,13 @@
 // student continues the SAME session with one click; selected project and
 // form state are untouched.
 
-import { useCallback, useEffect, useRef, useState } from "react"
-
-import {
-  probeRecorderExtension,
-  type RecorderExtensionProbe,
-} from "@/lib/website-proof-recorder"
 import {
   RECORDER_EXTENSION_STORE_URL,
   detectRecorderBrowserSupport,
   isRecorderStoreListingLive,
 } from "@/lib/recorder-extension-store"
+import { emitInstallClicked } from "@/lib/recorder-extension-telemetry"
+import { useRecorderExtensionDetection } from "@/lib/use-recorder-extension-detection"
 
 export type RecorderGateReason = "not_installed" | "outdated" | "reload_needed"
 
@@ -67,39 +63,15 @@ export function RecorderInstallGate({
   /** True while the parent is already re-running the handshake. */
   continuing: boolean
 }) {
-  const [probe, setProbe] = useState<RecorderExtensionProbe | null>(null)
-  const [checking, setChecking] = useState(false)
-  const probing = useRef(false)
   const browserSupport = detectRecorderBrowserSupport()
   const storeLive = isRecorderStoreListingLive()
-
-  const runProbe = useCallback(async () => {
-    if (probing.current) return
-    probing.current = true
-    setChecking(true)
-    try {
-      const result = await probeRecorderExtension()
-      setProbe(result)
-    } finally {
-      probing.current = false
-      setChecking(false)
-    }
-  }, [])
-
-  // Silent re-detection while the gate is on screen: interval + when the
-  // student returns from the Chrome Web Store tab.
-  useEffect(() => {
-    void runProbe()
-    const interval = window.setInterval(() => { void runProbe() }, RECHECK_INTERVAL_MS)
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void runProbe()
-    }
-    document.addEventListener("visibilitychange", onVisible)
-    return () => {
-      window.clearInterval(interval)
-      document.removeEventListener("visibilitychange", onVisible)
-    }
-  }, [runProbe])
+  // Shared detection: probes on mount, on tab focus/visibility (the moment a
+  // student returns from the Web Store tab), and on demand. This gate is
+  // blocking, so it also opts into the slow background re-probe.
+  const { probe, checking, recheck, markInstallClicked } = useRecorderExtensionDetection({
+    surface: "website_proof",
+    pollIntervalMs: RECHECK_INTERVAL_MS,
+  })
 
   const detectedAndReady = probe?.ready === true
 
@@ -152,7 +124,7 @@ export function RecorderInstallGate({
               <strong style={{ color: "#1f2937" }}>{point.title}.</strong> {point.body}
             </div>
           ))}
-          <a href="/extension/privacy" target="_blank" rel="noreferrer" style={{ fontSize: 11.5, color: "#4f46e5" }}>
+          <a href="/extension/privacy" target="_blank" rel="noopener noreferrer" style={{ fontSize: 11.5, color: "#4f46e5" }}>
             Read the recorder privacy policy
           </a>
         </div>
@@ -212,7 +184,12 @@ export function RecorderInstallGate({
               data-testid="recorder-gate-install-link"
               href={RECORDER_EXTENSION_STORE_URL}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
+              onClick={() => {
+                markInstallClicked()
+                emitInstallClicked("website_proof", { reason })
+              }}
+              aria-label={`${reason === "outdated" ? "Open the Chrome Web Store listing" : "Install VeriBridge Recorder"} — opens the Chrome Web Store in a new tab`}
               style={{
                 background: "#4f46e5",
                 color: "#fff",
@@ -238,7 +215,7 @@ export function RecorderInstallGate({
           <button
             type="button"
             data-testid="recorder-gate-recheck"
-            onClick={() => { void runProbe() }}
+            onClick={recheck}
             disabled={checking}
             style={{
               background: "#fff",

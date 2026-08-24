@@ -10,7 +10,11 @@ import {
   probeRecorderExtension,
 } from "@/lib/website-proof-recorder"
 import {
+  RECORDER_EXTENSION_STORE_URL,
+  VERIBRIDGE_CHROME_EXTENSION_ID,
+  VERIBRIDGE_CHROME_EXTENSION_URL,
   detectRecorderBrowserSupport,
+  isChromeWebStoreUrl,
   isRecorderStoreListingLive,
 } from "@/lib/recorder-extension-store"
 import {
@@ -142,9 +146,22 @@ describe("recorderGateReasonFor", () => {
 })
 
 describe("recorder-extension-store helpers", () => {
-  it("treats only real Chrome Web Store URLs as a live listing", () => {
-    // Env-driven URL is empty in tests → not live.
-    expect(isRecorderStoreListingLive()).toBe(false)
+  it("resolves the canonical published listing without any env configuration", () => {
+    // The listing URL is built in, so an unset env var can never regress a
+    // live install button back to a "coming soon" state.
+    expect(VERIBRIDGE_CHROME_EXTENSION_ID).toBe("gdogdgnaioldjldljniffcmkcdpdjlme")
+    expect(VERIBRIDGE_CHROME_EXTENSION_URL).toBe(
+      "https://chromewebstore.google.com/detail/veribridge-website-proof/gdogdgnaioldjldljniffcmkcdpdjlme",
+    )
+    expect(RECORDER_EXTENSION_STORE_URL).toBe(VERIBRIDGE_CHROME_EXTENSION_URL)
+    expect(isRecorderStoreListingLive()).toBe(true)
+  })
+
+  it("accepts only genuine Chrome Web Store URLs as overrides", () => {
+    expect(isChromeWebStoreUrl(VERIBRIDGE_CHROME_EXTENSION_URL)).toBe(true)
+    expect(isChromeWebStoreUrl("https://chrome.google.com/webstore/detail/abc")).toBe(true)
+    expect(isChromeWebStoreUrl("https://evil.example.com/detail/abc")).toBe(false)
+    expect(isChromeWebStoreUrl("")).toBe(false)
   })
 
   it("classifies browser support from the user agent", () => {
@@ -165,12 +182,15 @@ describe("recorder-extension-store helpers", () => {
 })
 
 describe("RecorderInstallGate", () => {
-  it("shows the pending-release state (no broken store link) when no listing URL is configured", async () => {
+  it("links the missing-extension state straight to the official store listing", async () => {
     render(
       <RecorderInstallGate reason="not_installed" onContinue={() => undefined} continuing={false} />,
     )
-    expect(await screen.findByTestId("recorder-gate-pending-release")).toBeTruthy()
-    expect(screen.queryByTestId("recorder-gate-install-link")).toBeNull()
+    const link = await screen.findByTestId("recorder-gate-install-link")
+    expect(link.getAttribute("href")).toBe(VERIBRIDGE_CHROME_EXTENSION_URL)
+    expect(link.getAttribute("target")).toBe("_blank")
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer")
+    expect(screen.queryByTestId("recorder-gate-pending-release")).toBeNull()
     expect(screen.getByTestId("recorder-gate-recheck")).toBeTruthy()
   })
 
