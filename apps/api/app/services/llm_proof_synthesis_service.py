@@ -442,8 +442,8 @@ def _group_claim_text(group: str, skill: str, project: str) -> str:
         )
     if group == _UNDERSTANDING:
         return (
-            f"The candidate explained {skill} in their Project Defense for {project}, "
-            "evidencing personal understanding."
+            f"The candidate explained {skill} in the Project Defense for {project}, "
+            "evidencing personal understanding (never, by itself, authorship)."
         )
     if group == _REPO:
         return (
@@ -581,7 +581,13 @@ _SYSTEM_PROMPT = (
     "5. Prefer precise GitHub code as the strongest implementation proof; website, "
     "   defense and video corroborate or explain; repository-level GitHub is weaker.\n"
     "6. NEVER expose raw transcripts, document text, DOM, OCR, provider JSON, "
-    "   storage paths, signed URLs, file paths, emails, or private ids.\n\n"
+    "   storage paths, signed URLs, file paths, emails, or private ids.\n"
+    "7. PROJECT EVIDENCE IS NOT CANDIDATE OWNERSHIP. Never state or imply the "
+    "   candidate implemented, built, authored, or designed anything — evidence "
+    "   here shows what the PROJECT contains and what the candidate EXPLAINED or "
+    "   DEMONSTRATED. Phrase claims about the project ('X is implemented in the "
+    "   project') or about understanding/demonstration ('the candidate explained "
+    "   X'), never about candidate authorship.\n\n"
     "Return ONLY valid JSON (no markdown fences) in this exact shape:\n"
     "{\n"
     '  "claims": [\n'

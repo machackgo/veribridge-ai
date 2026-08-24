@@ -55,6 +55,7 @@ import {
   ReportJumpNav,
   safeDirectLinks,
 } from "../../../../../components/passport/CanonicalReportSections"
+import { CandidateAttributionBanner } from "../../../../../components/passport/CandidateAttributionBanner"
 import { EvidenceTraceList } from "../../../../../components/passport/EvidenceTrace"
 import { ProjectDefenseInspectionSection } from "../../../../../components/passport/ProjectDefenseInspectionCard"
 import styles from "./public-report.module.css"
@@ -453,6 +454,13 @@ export function PublicReportView({ token }: { token: string }) {
             <strong style={{ color: TOKEN.inkSoft }}>Candidate role: </strong>
             {report.student_role}
           </p>
+        )}
+        {/* Candidate ↔ project relationship — explicit, so a recruiter never
+            has to infer ownership from the technical evidence below. */}
+        {report.candidate_attribution && (
+          <div style={{ marginBottom: 10 }}>
+            <CandidateAttributionBanner attribution={report.candidate_attribution} />
+          </div>
         )}
         {/* Repository identity appears ONLY when a GitHub Proof backs it — a
             public repo renders as a link; a scanned private repo is labelled;

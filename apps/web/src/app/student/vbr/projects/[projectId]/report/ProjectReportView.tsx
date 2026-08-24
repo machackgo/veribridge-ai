@@ -36,6 +36,7 @@ import {
   safeDirectLinks,
 } from "../../../../../../../components/passport/CanonicalReportSections"
 import { useAuthorizedMediaUrl } from "../../../../../../../components/passport/AuthorizedReplayVideo"
+import { CandidateAttributionBanner } from "../../../../../../../components/passport/CandidateAttributionBanner"
 import { ClaimEvidenceMapSection } from "../../../../../../../components/passport/ClaimEvidenceMapSection"
 import { DocumentOriginalAccessActions } from "../../../../../../../components/passport/OriginalProofAccess"
 import { EvidenceTraceList } from "../../../../../../../components/passport/EvidenceTrace"
@@ -433,6 +434,14 @@ export function ProjectReportView({ projectId }: { projectId: string }) {
             <strong style={{ color: TOKEN.inkSoft }}>Student role: </strong>
             {report.student_role}
           </p>
+        )}
+        {/* Candidate ↔ project relationship — states explicitly what the
+            evidence supports about YOU (ownership/contribution), separately
+            from what the project's artifacts demonstrate. */}
+        {report.candidate_attribution && (
+          <div style={{ marginBottom: 10 }}>
+            <CandidateAttributionBanner attribution={report.candidate_attribution} />
+          </div>
         )}
         <Mono style={{ fontSize: 11, color: TOKEN.muted, display: "block", marginBottom: 8 }}>
           {report.repo_full_name || report.repo_url}

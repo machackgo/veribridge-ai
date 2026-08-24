@@ -731,7 +731,11 @@ def _upsert_skill_claims_and_links(
                     "project_id": project_id,
                     "skill_key": key,
                     "skill_name": str(skill).strip(),
-                    "claim_text": f"{str(skill).strip()} was implemented and demonstrated in {project_title}.",
+                    # PROJECT-scoped by construction: the sentence asserts what
+                    # the project's artifacts show, never who built it.
+                    # Candidate attribution is a separate claim with its own
+                    # evidence bar (see candidate_attribution_service).
+                    "claim_text": f"{str(skill).strip()} is demonstrated in the project {project_title}.",
                     "claim_state": "claimed",
                     "evidence_status": desired_status if status == "counted" else "not_assessed",
                 }

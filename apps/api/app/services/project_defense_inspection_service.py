@@ -147,10 +147,22 @@ _DEMONSTRATES_NOT_ASSESSED = (
     "claim is not assessed by the defense."
 )
 
+# An explicit ownership denial is honest, valuable evidence: the candidate
+# accurately delimited their contribution. It is presented as exactly that —
+# never as an "authorship explanation" and never as suspicious behaviour.
+_DEMONSTRATES_OWNERSHIP_DENIED = (
+    "The student explicitly clarified that they did not build or contribute to "
+    "this project. This is an honest ownership clarification: the answer can "
+    "demonstrate understanding or analysis of the project, and it blocks any "
+    "candidate implementation or authorship claim for this project."
+)
+
 
 def _what_this_demonstrates(
-    claim_type: str, mapped_skill: str | None, status: str
+    claim_type: str, mapped_skill: str | None, status: str, ownership_stance: str = "none"
 ) -> str:
+    if ownership_stance == "denied":
+        return _DEMONSTRATES_OWNERSHIP_DENIED
     if status not in _EXPLAINED_STATUSES:
         return _DEMONSTRATES_NOT_ASSESSED
     template = _DEMONSTRATES_BY_CLAIM.get(
@@ -290,6 +302,8 @@ def build_project_defense_inspection_cards(
 
         status = str(item.get("qualitative_status") or "Not explained")
         claim_type = str(item.get("claim_type") or "project_architecture")
+        ownership_stance = str(item.get("ownership_stance") or "none")
+        contradiction_flag = bool(item.get("contradiction_flag"))
         gh = bool(item.get("corroborates_github"))
         web = bool(item.get("corroborates_website"))
         doc = bool(item.get("corroborates_document"))
@@ -369,9 +383,15 @@ def build_project_defense_inspection_cards(
                 "corroborates_github": gh,
                 "corroborates_website": web,
                 "corroborates_document": doc,
+                # Candidate ownership stance + provenance-risk flag are carried
+                # through so downstream claim synthesis can never mistake an
+                # explicit denial (or a needs-review answer) for authorship
+                # evidence.
+                "ownership_stance": ownership_stance,
+                "contradiction_flag": contradiction_flag,
                 "corroboration_summary": _corroboration_summary(gh, web, doc),
                 "what_this_demonstrates": _what_this_demonstrates(
-                    claim_type, mapped_skill, status
+                    claim_type, mapped_skill, status, ownership_stance
                 ),
                 "limitation": str(item.get("limitation") or "")
                 or PROJECT_DEFENSE_INSPECTION_LIMITATION,

@@ -45,6 +45,10 @@ class DefenseAnswerEvidenceCard(BaseModel):
     corroborates_website: bool = False
     corroborates_document: bool = False
     contradiction_flag: bool = False
+    # Candidate ownership stance of THIS answer ("affirmed" / "denied" /
+    # "mixed" / "none" — see canonical_evidence.OWNERSHIP_STANCES). An explicit
+    # denial is honest ownership clarification, never a contradiction.
+    ownership_stance: str = "none"
     limitation: str = ""
     public_shareable: bool = False
     privacy_status: str = "unknown"
@@ -76,6 +80,10 @@ class PublicDefenseAnswerEvidence(BaseModel):
     corroborates_github: bool = False
     corroborates_website: bool = False
     corroborates_document: bool = False
+    # Ownership stance is recruiter-relevant metadata (a label, never answer
+    # content): an explicit denial must stay visible on public surfaces so the
+    # candidate/project relationship is unambiguous.
+    ownership_stance: str = "none"
     limitation: str = ""
     privacy_status: str = "clean"
 
@@ -118,6 +126,11 @@ class ProjectDefenseInspectionCard(BaseModel):
     corroborates_github: bool = False
     corroborates_website: bool = False
     corroborates_document: bool = False
+    # Ownership stance + provenance-risk flag ride through from the answer
+    # evidence so claim synthesis can never mistake a denial (or needs-review
+    # answer) for authorship evidence.
+    ownership_stance: str = "none"
+    contradiction_flag: bool = False
     corroboration_summary: str = ""
     what_this_demonstrates: str = ""
     limitation: str = ""
@@ -175,6 +188,9 @@ class PublicProjectDefenseInspectionCard(BaseModel):
     corroborates_github: bool = False
     corroborates_website: bool = False
     corroborates_document: bool = False
+    # Stance label only (never answer content) — a denial stays visible so the
+    # candidate/project relationship is unambiguous to recruiters.
+    ownership_stance: str = "none"
     corroboration_summary: str = ""
     what_this_demonstrates: str = ""
     limitation: str = ""

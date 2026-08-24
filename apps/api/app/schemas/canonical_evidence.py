@@ -42,11 +42,18 @@ QUALITATIVE_STATES = (
 )
 
 # How one piece of evidence relates to a claim / another piece of evidence.
+# ``explains_understanding`` — the candidate explains the project (understanding
+# evidence, never authorship). ``explains_authorship`` — the candidate
+# affirmatively describes their own contribution (still self-assertion, never
+# verified authorship by itself). ``clarifies_ownership`` — the candidate
+# explicitly delimits or denies their contribution (honest scope evidence).
 RELATION_TYPES = (
     "implements",
     "demonstrates_runtime",
     "explains_design",
+    "explains_understanding",
     "explains_authorship",
+    "clarifies_ownership",
     "corroborates",
     "partially_corroborates",
     "contradicts",
@@ -55,6 +62,59 @@ RELATION_TYPES = (
     "mismatched",
     "unrelated",
     "supersedes",
+)
+
+# ── Candidate ↔ project ownership (the subject of every candidate-level claim) ─
+#
+# PROJECT EVIDENCE != CANDIDATE OWNERSHIP. Artifact evidence (code detected in a
+# repository, behaviour recorded at runtime, a document describing a design)
+# proves facts about the PROJECT. A claim about the CANDIDATE (implemented /
+# built / contributed) additionally requires candidate↔artifact relationship
+# evidence. These states describe that relationship:
+#
+#   verified_author       — candidate-specific attribution evidence establishes
+#                           the candidate personally authored the artifact
+#                           (e.g. verified commit-identity match; reserved until
+#                           such evidence exists for the project).
+#   verified_contributor  — candidate-specific attribution evidence establishes
+#                           real contribution (same evidence bar, partial scope).
+#   claimed_contributor   — the candidate affirmatively described their own
+#                           contribution (self-assertion; never auto-elevated
+#                           to verified).
+#   unknown               — no candidate statement or attribution evidence
+#                           either way.
+#   denied_by_candidate   — the candidate explicitly stated they did not build
+#                           or contribute to this project (honest delimitation;
+#                           blocks all candidate implementation claims).
+#   conflicted            — ownership statements/evidence conflict; strong
+#                           candidate claims are blocked until resolved, and the
+#                           conflict is never auto-resolved in the candidate's
+#                           favour.
+OWNERSHIP_STATES = (
+    "verified_author",
+    "verified_contributor",
+    "claimed_contributor",
+    "unknown",
+    "denied_by_candidate",
+    "conflicted",
+)
+
+# Recruiter-readable labels for the ownership states (closed, subject-explicit).
+OWNERSHIP_STATE_LABELS = {
+    "verified_author": "Authorship verified",
+    "verified_contributor": "Contribution verified",
+    "claimed_contributor": "Contribution claimed (unverified)",
+    "unknown": "Contribution not established",
+    "denied_by_candidate": "Contribution explicitly not claimed",
+    "conflicted": "Conflicting ownership evidence",
+}
+
+# Ownership stance of ONE candidate statement (a Project Defense answer).
+OWNERSHIP_STANCES = (
+    "affirmed",  # affirmatively describes their own work ("I built…")
+    "denied",    # explicitly denies building/contributing
+    "mixed",     # delimits scope ("I did not build X, but I implemented Y")
+    "none",      # no ownership statement either way
 )
 
 # GitHub implementation tier (derived from the VALIDATED evidence grade — a bare
@@ -120,12 +180,18 @@ DOCUMENT_BLOCK_TYPES = (
 )
 
 # Strongest-evidence tier labels for a claim (closed, recruiter-readable).
+# Defense/video evidence is candidate EXPLANATION — understanding, an affirmed
+# contribution description, or an explicit ownership clarification. It is never
+# labelled as authorship proof ("Authorship explanation" was retired because it
+# implied authorship even when the candidate explicitly denied it).
 EVIDENCE_TIER_LABELS = (
     "Primary implementation",
     "Supporting implementation",
     "Runtime demonstration",
     "Design documentation",
-    "Authorship explanation",
+    "Contribution explanation",
+    "Understanding explanation",
+    "Ownership clarification",
     "Context only",
     "Analysis pending",
     "None",
@@ -319,10 +385,35 @@ class SourceCounts(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class CandidateAttribution(BaseModel):
+    """What the evidence supports about the CANDIDATE for one claim/project.
+
+    The claim itself argues a PROJECT-scoped fact ("<skill> is demonstrated in
+    <project>"). This block carries the separately-evidenced candidate side:
+    the ownership state (see ``OWNERSHIP_STATES``), the honest candidate-level
+    sentence built from closed templates only, and what the candidate actually
+    demonstrated (understanding via Project Defense, usage via a recorded
+    workflow). Project-level artifact evidence can NEVER change ``state`` —
+    only candidate↔artifact relationship evidence can.
+    """
+
+    state: str = "unknown"
+    label: str = "Contribution not established"
+    candidate_claim_text: str = ""
+    understanding_demonstrated: bool = False
+    usage_demonstrated: bool = False
+    # Why this state was assigned (closed, deterministic reason strings).
+    basis: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class SkillClaim(BaseModel):
-    """One exact claim the report argues ("<skill> was implemented and
+    """One exact PROJECT-scoped claim the report argues ("<skill> is
     demonstrated in <project>"), with a qualitative status derived ONLY from the
-    counted citations below."""
+    counted citations below. The candidate side of the claim lives in
+    ``candidate_attribution`` and is never inferred from project evidence."""
 
     id: str
     project_id: str | None = None
@@ -330,9 +421,14 @@ class SkillClaim(BaseModel):
     skill_name: str = ""
     claim_text: str = ""
     claim_scope: str = "project"  # "project" | "skill" | "portfolio"
+    # The subject the claim_text asserts something about. Always "project" for
+    # artifact-evidence claims; candidate-level statements live ONLY inside
+    # ``candidate_attribution`` with their own evidence bar.
+    claim_subject: str = "project"
     feature_ids: list[str] = Field(default_factory=list)
     qualitative_status: str = "Not assessed"
     strongest_evidence_tier: str = "None"
+    candidate_attribution: CandidateAttribution = Field(default_factory=CandidateAttribution)
     # Honest per-bucket source counts for THIS claim (distinct proof types).
     source_counts: SourceCounts = Field(default_factory=SourceCounts)
     limitations: list[str] = Field(default_factory=list)
@@ -490,6 +586,11 @@ class ClaimEvidenceMap(BaseModel):
     scope: str = "skill_report"  # "skill_report" | "project_report"
     skill_name: str | None = None
     project_id: str | None = None
+    # Map-level candidate↔project relationship (project_report scope): the ONE
+    # block a recruiter reads to understand whether the candidate built this
+    # project. ``None`` for multi-project skill maps (each claim carries its
+    # own ``candidate_attribution`` instead).
+    project_relationship: CandidateAttribution | None = None
     claims: list[SkillClaim] = Field(default_factory=list)
     features: list[ProjectFeature] = Field(default_factory=list)
     citations: list[EvidenceCitation] = Field(default_factory=list)
@@ -508,6 +609,10 @@ class ClaimEvidenceMap(BaseModel):
 __all__ = [
     "QUALITATIVE_STATES",
     "RELATION_TYPES",
+    "OWNERSHIP_STATES",
+    "OWNERSHIP_STATE_LABELS",
+    "OWNERSHIP_STANCES",
+    "CandidateAttribution",
     "GITHUB_EVIDENCE_TIERS",
     "IDENTITY_STATES",
     "PROJECT_RELATIONSHIP_STATES",

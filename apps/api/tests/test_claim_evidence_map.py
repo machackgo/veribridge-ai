@@ -153,7 +153,7 @@ def _defense_card(**overrides) -> dict:
         "question_text": "How did you train and validate the accident-risk model?",
         "project_title": BOSTON,
         "mapped_skill": "Machine Learning",
-        "qualitative_status": "Explained well",
+        "qualitative_status": "Explained with evidence",
         "safe_answer_summary": "Described the training pipeline, features, and validation split.",
         "what_this_demonstrates": "Understanding of the model's training and evaluation choices.",
         "timestamp_label": "02:14",
