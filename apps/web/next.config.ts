@@ -16,6 +16,26 @@ const nextConfig: NextConfig = {
   // real surfaces: the entry page handles auth state, and the workspace is the
   // one production recruiter destination. Temporary (307) redirects so the
   // paths stay reclaimable.
+  // Static launch-film media is content-addressed by filename and never
+  // rewritten in place, so it can be cached hard. Next.js's default for
+  // public/ is `max-age=0, must-revalidate`, which makes every repeat view of
+  // a 70 MB film re-validate — and range requests reuse a partial cache far
+  // better when the response is immutable. Replacing the film means shipping
+  // a new filename, not overwriting this one.
+  async headers() {
+    return [
+      {
+        source: "/media/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+    ];
+  },
+
   async redirects() {
     return [
       {
