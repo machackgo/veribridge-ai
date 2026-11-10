@@ -7,7 +7,7 @@ import * as fs from "fs";
  * (users + pools + tags deleted afterwards).
  *
  * Corpus ground truth in production: exactly ONE discoverable candidate —
- * Mohammed Mubashir Uddin Faraz (ZwC_0l8HutI) with Machine Learning /
+ * the owner's passport (VB_PROD_CANDIDATE_SLUG) with Machine Learning /
  * FastAPI / Python evidence and no NLP evidence. That is enough to prove
  * every workspace behaviour EXCEPT a multi-candidate matrix, and the
  * one-candidate case is asserted as an honest refusal (comparison needs
@@ -18,12 +18,25 @@ import * as fs from "fs";
  *     rec2: {...}, cookie_name: "sb-<ref>-auth-token" }
  */
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/48d1f5f3-10e2-4efc-b5e9-7573056a23e4/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME. The suite is skipped when any is
+// unset (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+// VB_PROD_CANDIDATE_NAME = the candidate's displayed name (first + second
+// name); assertions use it, or its first word, as a substring.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_prod_pool_sessions.json` : "";
+const CANDIDATE_SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+const CANDIDATE_NAME = (process.env.VB_PROD_CANDIDATE_NAME ?? "").trim();
+const CANDIDATE_FIRST_NAME = CANDIDATE_NAME.split(/\s+/)[0] ?? "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    CANDIDATE_SLUG &&
+    CANDIDATE_NAME,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME to run this suite.");
 const BASE = "https://veribridgeai.com";
 const API = "https://veribridge-api.onrender.com";
-const CANDIDATE_SLUG = "ZwC_0l8HutI";
 
 type Session = {
   email: string;
@@ -31,9 +44,9 @@ type Session = {
   access_token: string;
   refresh_token: string;
 };
-const qa: { rec1: Session; rec2: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_prod_pool_sessions.json`, "utf8"),
-);
+const qa: { rec1: Session; rec2: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const consoleErrors: string[] = [];
 const serverErrors: string[] = [];
@@ -186,7 +199,7 @@ test.describe("Recruiter Talent Pool workspace V6 — production", () => {
     await page.goto(poolUrl, { waitUntil: "domcontentloaded" });
     const card = page.getByTestId("pool-candidate-card").first();
     await expect(card).toBeVisible({ timeout: 60_000 });
-    await expect(card.getByTestId("pool-candidate-name")).toContainText("Mohammed");
+    await expect(card.getByTestId("pool-candidate-name")).toContainText(CANDIDATE_FIRST_NAME);
     // LIVE evidence context, not a snapshot.
     await expect(card.getByTestId("pool-candidate-evidence")).toBeVisible();
     await expect(card.getByTestId("pool-candidate-status")).toContainText("Review");

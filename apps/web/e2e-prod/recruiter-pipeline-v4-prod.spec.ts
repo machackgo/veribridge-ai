@@ -9,8 +9,8 @@ import * as fs from "fs";
 // Throwaway QA recruiter session minted for this run (user + briefs +
 // events deleted after; brief deletion cascades interview/marks/activity
 // rows via 069 FKs — deep cleanup runs post-suite). Corpus ground truth
-// (2026-08-19): exactly ONE discoverable candidate — Mohammed Mubashir
-// Uddin Faraz (ZwC_0l8HutI) with Python + FastAPI evidence and NO NLP
+// (2026-08-19): exactly ONE discoverable candidate — the owner's
+// passport (VB_PROD_CANDIDATE_SLUG) with Python + FastAPI evidence and NO NLP
 // evidence, so an "NLP required" brief guarantees both a proven checklist
 // row (proof deep link) and an honest gap row. Production runs with no
 // LLM provider: generated questions must be the deterministic set with
@@ -27,16 +27,29 @@ import * as fs from "fs";
 //   interview-notes-status (/Saved/), interview-decision ("Hired" button),
 //   search-residual-terms — plus the existing V3 brief/search testids.
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/490bf054-308f-41f9-95b8-d657b80a7c6b/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME. The suite is skipped when any is
+// unset (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+// VB_PROD_CANDIDATE_NAME = the candidate's displayed name (first + second
+// name); assertions use it, or its first word, as a substring.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_prod_sessions.json` : "";
+const CANDIDATE_SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+const CANDIDATE_NAME = (process.env.VB_PROD_CANDIDATE_NAME ?? "").trim();
+const CANDIDATE_FIRST_NAME = CANDIDATE_NAME.split(/\s+/)[0] ?? "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    CANDIDATE_SLUG &&
+    CANDIDATE_NAME,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME to run this suite.");
 const BASE = "https://veribridgeai.com";
-const CANDIDATE_SLUG = "ZwC_0l8HutI";
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { rec1: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_prod_sessions.json`, "utf8"),
-);
+const qa: { rec1: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const consoleErrors: string[] = [];
 const serverErrors: string[] = [];
@@ -112,7 +125,7 @@ test.describe("Recruiter Pipeline V4 — production @post-deploy", () => {
     await page.getByTestId("brief-search-submit").click();
     await expect(page.getByTestId("brief-search-totals")).toBeVisible({ timeout: 60_000 });
     const result = page.getByTestId("brief-search-result").first();
-    await expect(result).toContainText("Mohammed");
+    await expect(result).toContainText(CANDIDATE_FIRST_NAME);
     await result.getByTestId("brief-search-add").click();
     await expect(result.getByTestId("brief-search-in-brief")).toBeVisible({ timeout: 60_000 });
     await page.screenshot({ path: `${SCRATCH}/shots-prod/v4p-01-brief.png`, fullPage: true });
@@ -163,7 +176,7 @@ test.describe("Recruiter Pipeline V4 — production @post-deploy", () => {
     await expect(page.getByTestId("brief-stage-pill-interview")).toContainText("1", {
       timeout: 60_000,
     });
-    await expect(page.getByTestId("brief-stage-section-interview")).toContainText("Mohammed");
+    await expect(page.getByTestId("brief-stage-section-interview")).toContainText(CANDIDATE_FIRST_NAME);
 
     await page.reload({ waitUntil: "domcontentloaded" });
     const cardAfter = page.getByTestId("brief-candidate-card").first();
@@ -185,7 +198,7 @@ test.describe("Recruiter Pipeline V4 — production @post-deploy", () => {
 
     const workspace = page.getByTestId("interview-workspace");
     await expect(workspace).toBeVisible({ timeout: 60_000 });
-    await expect(workspace).toContainText("Mohammed");
+    await expect(workspace).toContainText(CANDIDATE_FIRST_NAME);
     await expect(page.getByTestId("interview-summary")).toBeVisible();
 
     // Deterministic checklist: proven rows deep-link to the REAL public
@@ -258,7 +271,7 @@ test.describe("Recruiter Pipeline V4 — production @post-deploy", () => {
     await page.goto(briefUrl, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("brief-stage-bar")).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId("brief-stage-pill-hired")).toContainText("1");
-    await expect(page.getByTestId("brief-stage-section-hired")).toContainText("Mohammed");
+    await expect(page.getByTestId("brief-stage-section-hired")).toContainText(CANDIDATE_FIRST_NAME);
     await page.screenshot({ path: `${SCRATCH}/shots-prod/v4p-05-hired.png`, fullPage: true });
     await browser.close();
   });

@@ -6,10 +6,26 @@ import * as fs from "fs";
 // Uses two pre-minted throwaway QA recruiter sessions (created via the
 // Supabase admin API by scratchpad/mint_qa_sessions.py).
 
-const SCRATCH =
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/aea5d64b-2d85-4a7a-a6b3-837ae0a78bfc/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH and VB_PROD_CANDIDATE_SLUG (plus VB_PROD_OWNER_EMAILS for the
+// privacy check). The suite is skipped when either required value is unset
+// (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+const SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+// Owner email addresses that must never appear in the public payload,
+// comma-separated in VB_PROD_OWNER_EMAILS (not committed).
+const OWNER_EMAILS = (process.env.VB_PROD_OWNER_EMAILS ?? "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_sessions.json` : "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    SLUG,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH, VB_PROD_CANDIDATE_SLUG (and VB_PROD_OWNER_EMAILS) to run this suite.");
 const API = "https://veribridge-api.onrender.com";
-const SLUG = "ZwC_0l8HutI";
 
 type QaUser = {
   email: string;
@@ -19,9 +35,9 @@ type QaUser = {
   cookie_chunks: string[];
 };
 
-const sessions: { users: QaUser[] } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_sessions.json`, "utf8"),
-);
+const sessions: { users: QaUser[] } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({ users: [] } as { users: QaUser[] });
 const [recA, recB] = sessions.users;
 
 function cookiesFor(user: QaUser) {
@@ -171,8 +187,7 @@ test.describe("recruiter passport connection — production", () => {
     const pub = await fetch(`${API}/api/v1/public/p/${SLUG}`);
     expect(pub.status).toBe(200);
     const text = await pub.text();
-    expect(text).not.toMatch(/mohammedmubashir149@gmail\.com/);
-    expect(text).not.toMatch(/mohammedmubashir@wpi\.edu/);
+    for (const email of OWNER_EMAILS) expect(text.toLowerCase()).not.toContain(email);
 
     const anon = await api("GET", "/api/v1/recruiter/connections");
     expect([401, 403]).toContain(anon.status);

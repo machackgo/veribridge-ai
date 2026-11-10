@@ -4,21 +4,34 @@ import * as fs from "fs";
 // Recruiter Hiring Briefs V3 — PRODUCTION verification against
 // veribridgeai.com. Throwaway QA recruiter session minted for this run
 // (user + briefs + events deleted after). Corpus ground truth (2026-08-19):
-// exactly ONE discoverable candidate — Mohammed Mubashir Uddin Faraz
-// (ZwC_0l8HutI) with Machine Learning / FastAPI / Python evidence; NO NLP
+// exactly ONE discoverable candidate — the owner's passport
+// (VB_PROD_CANDIDATE_SLUG) with Machine Learning / FastAPI / Python evidence; NO NLP
 // evidence. Comparison therefore legitimately refuses to run with a
 // 1-candidate pool (2–5 required) — that refusal is asserted, not skipped.
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/490bf054-308f-41f9-95b8-d657b80a7c6b/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME. The suite is skipped when any is
+// unset (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+// VB_PROD_CANDIDATE_NAME = the candidate's displayed name (first + second
+// name); assertions use it, or its first word, as a substring.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_prod_sessions.json` : "";
+const CANDIDATE_SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+const CANDIDATE_NAME = (process.env.VB_PROD_CANDIDATE_NAME ?? "").trim();
+const CANDIDATE_FIRST_NAME = CANDIDATE_NAME.split(/\s+/)[0] ?? "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    CANDIDATE_SLUG &&
+    CANDIDATE_NAME,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME to run this suite.");
 const BASE = "https://veribridgeai.com";
-const CANDIDATE_SLUG = "ZwC_0l8HutI";
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { rec1: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_prod_sessions.json`, "utf8"),
-);
+const qa: { rec1: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const consoleErrors: string[] = [];
 const serverErrors: string[] = [];
@@ -106,7 +119,7 @@ test.describe("Recruiter Hiring Briefs V3 — production", () => {
     await page.getByTestId("brief-search-submit").click();
     await expect(page.getByTestId("brief-search-totals")).toBeVisible({ timeout: 60_000 });
     const result = page.getByTestId("brief-search-result").first();
-    await expect(result).toContainText("Mohammed");
+    await expect(result).toContainText(CANDIDATE_FIRST_NAME);
 
     await result.getByTestId("brief-search-add").click();
     await expect(result.getByTestId("brief-search-in-brief")).toBeVisible({ timeout: 60_000 });

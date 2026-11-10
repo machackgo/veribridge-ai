@@ -4,12 +4,26 @@ import * as fs from "fs";
 // Recruiter Search Intelligence V1.5 — PRODUCTION verification against
 // veribridgeai.com. Uses throwaway QA recruiter sessions minted for this run
 // (deleted after). Corpus ground truth (2026-08-18, post-cleanup): exactly ONE
-// discoverable candidate — Mohammed (ZwC_0l8HutI) with Python / FastAPI /
+// discoverable candidate — the owner's passport (VB_PROD_CANDIDATE_SLUG) with Python / FastAPI /
 // Machine Learning / API Development evidence, NO NLP evidence, no live site.
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/0bd171a1-f6dc-47a8-9e49-72e5dbbb6767/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME. The suite is skipped when any is
+// unset (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+// VB_PROD_CANDIDATE_NAME = the candidate's displayed name (first + second
+// name); assertions use it, or its first word, as a substring.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_prod_sessions.json` : "";
+const CANDIDATE_SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+const CANDIDATE_NAME = (process.env.VB_PROD_CANDIDATE_NAME ?? "").trim();
+const CANDIDATE_FIRST_NAME = CANDIDATE_NAME.split(/\s+/)[0] ?? "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    CANDIDATE_SLUG &&
+    CANDIDATE_NAME,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME to run this suite.");
 const BASE = "https://veribridgeai.com";
 const API = "https://veribridge-api.onrender.com";
 const FAKE = ["Maya Reyes", "Jordan Kim", "Arjun Singh", "Stripe Early Talent", "Maya Chen"];
@@ -19,12 +33,17 @@ const QA_IDENTITIES = [
   "QA-PROOF-TO-BEAM-E2E",
   "Isolation Test",
 ];
-const QA_SLUGS = ["zrvnaFzbdFI", "dDb2X-Gekdc", "p9j9-_vGzCc"];
+// Slugs of the cleaned (unpublished) QA passports, comma-separated in
+// VB_PROD_QA_SLUGS; the 404 check below is a no-op when it is unset.
+const QA_SLUGS = (process.env.VB_PROD_QA_SLUGS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { rec1: Session; rec2: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_prod_sessions.json`, "utf8"),
-);
+const qa: { rec1: Session; rec2: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const consoleErrors: string[] = [];
 const serverErrors: string[] = [];
@@ -91,7 +110,7 @@ test.describe("Recruiter Search V1.5 — production", () => {
     expect(res.status()).toBe(401);
   });
 
-  test("identity cleanliness: one Mohammed, zero QA identities, voice control present", async () => {
+  test("identity cleanliness: one candidate identity, zero QA identities, voice control present", async () => {
     test.setTimeout(180_000);
     const { browser, page } = await newRecruiterPage(qa.rec1);
     await page.goto(`${BASE}/recruiters/search`, { waitUntil: "domcontentloaded" });
@@ -99,8 +118,8 @@ test.describe("Recruiter Search V1.5 — production", () => {
 
     // Exactly one discoverable candidate; the duplicate + QA rows are gone.
     const names = await page.getByTestId("search-result-name").allInnerTexts();
-    const mohammeds = names.filter((n) => n.includes("Mohammed Mubashir"));
-    expect(mohammeds, "duplicate Mohammed identities").toHaveLength(1);
+    const matches = names.filter((n) => n.includes(CANDIDATE_NAME));
+    expect(matches, "duplicate candidate identities").toHaveLength(1);
     await expectCleanContent(page);
 
     // The mic renders in real Chrome (webkitSpeechRecognition available).
@@ -331,13 +350,13 @@ test.describe("Recruiter Search V1.5 — production", () => {
     const browser = await chromium.launch();
     const page = await (await browser.newContext()).newPage();
     watch(page);
-    await page.goto(`${BASE}/p/ZwC_0l8HutI?src=qr`, { waitUntil: "domcontentloaded" });
+    await page.goto(`${BASE}/p/${CANDIDATE_SLUG}?src=qr`, { waitUntil: "domcontentloaded" });
     await expect(page.locator("body")).toContainText(/Work Passport/i, { timeout: 45_000 });
     await expect(page.getByTestId("save-candidate-button")).toBeVisible({ timeout: 30_000 });
     await browser.close();
 
     const { browser: b2, page: p2 } = await newRecruiterPage(qa.rec2);
-    await p2.goto(`${BASE}/p/ZwC_0l8HutI?src=qr`, { waitUntil: "domcontentloaded" });
+    await p2.goto(`${BASE}/p/${CANDIDATE_SLUG}?src=qr`, { waitUntil: "domcontentloaded" });
     await expect(p2.getByTestId("save-candidate-button")).toBeVisible({ timeout: 45_000 });
     await p2.getByTestId("save-candidate-button").click();
     await expect(p2.getByTestId("save-candidate-saved")).toBeVisible({ timeout: 30_000 });

@@ -9,15 +9,21 @@ import * as fs from "fs";
 // rdQygsI3lok and ONLY via Document Proof + VBR Report (no GitHub proof for
 // FastAPI); NO candidate has NLP evidence.
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/e52d8d20-2420-4d65-b7dc-a59d237c9c98/scratchpad";
+// The QA session dir is NOT committed: set QA_SCRATCH to the directory
+// holding qa_rig_sessions.json. The suite is skipped when it is unset/missing.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_rig_sessions.json` : "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE),
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH to run this suite.");
 const BASE = "http://localhost:3000";
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { rec1: Session; rec2: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_rig_sessions.json`, "utf8"),
-);
+const qa: { rec1: Session; rec2: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const consoleErrors: string[] = [];
 const serverErrors: string[] = [];
