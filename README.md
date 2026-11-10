@@ -101,35 +101,45 @@ Status key:
 - **Public surfaces** (passport, report links, Beam links) need no session.
   - Report links use random tokens (`secrets.token_urlsafe(24)`). They stay valid until the owner
     unpublishes, and resolve only while the owner's passport is public.
+  - Disclosure fails closed: if the owner's disclosure settings cannot be read, every public surface
+    treats the passport as private (the report 404s and its `/view` tracker records nothing).
   - Responses are filtered so they never carry storage paths, signed URLs, emails or internal user/auth IDs.
   - Retained artifacts are streamed by the API. Proof-artifact signed URLs last at most 5 minutes;
     defense-recording playback URLs last 30 minutes.
 - **Secrets.** Secrets live only in untracked `.env` files and in the hosting dashboards. The web
   app must never receive `SUPABASE_SERVICE_ROLE_KEY`. In production the API refuses its
   development demo-user fallback.
+- **Deployment guards.** `ENVIRONMENT` is normalised and must be a known value, and a Render process
+  must run as `production`. In production the API refuses to start if the demo fallback is enabled
+  or `CORS_ALLOWED_ORIGINS` is empty or contains a wildcard, `null` or a local/private origin; it
+  does not mount the docs or debug routes, and public report and access tokens are redacted from its logs. The web app
+  sends baseline security headers (`nosniff`, `X-Frame-Options: DENY` with `frame-ancestors 'none'`,
+  Referrer-Policy, Permissions-Policy, HSTS), not a full Content-Security-Policy.
 
 These controls have not been independently audited.
 
 ## Tests
 
-TODO-TESTS: replace the results below with the final numbers for the combined state after all security branches merge.
-
-Results from 2026-11-10 on macOS. Python 3.11.14 with `apps/api/requirements.txt` installed.
+Results for the merged state as of 2026-11-10 (all security branches merged), on macOS. Python 3.11.14 with `apps/api/requirements.txt` installed.
 Node 24.11.1 / npm 11.21.0.
 
 | Suite | Command | Result |
 |---|---|---|
-| API (pytest) | `cd apps/api && pytest` | TODO-TESTS |
-| Web unit (Vitest) | `cd apps/web && npx vitest run` | TODO-TESTS |
+| API (pytest) | `cd apps/api && pytest` | **5,151 passed, 14 skipped**, 0 failed |
+| Web unit (Vitest) | `cd apps/web && npx vitest run` | **1,946 passed** (73 files) |
 | Web types | `cd apps/web && npx tsc --noEmit` | clean |
-| Extension (node test runner) | `cd apps/extension && npm test` | TODO-TESTS |
+| Web production build | `cd apps/web && npm run build` | succeeds |
+| Extension (node test runner) | `cd apps/extension && npm test` | **76 passed** |
 | Extension types | `cd apps/extension && npm run typecheck` | clean |
+| Extension store build | `cd apps/extension && npm run build:release` | succeeds |
 
 Notes:
 
 - API tests use an in-memory store and make no Supabase calls. Some semantic-verification tests
   download the `all-MiniLM-L6-v2` model on first run. Tests for optional backends (Tesseract and
-  other local OCR/vision providers) are skipped when those packages are not installed.
+  other local OCR/vision providers) are skipped when those packages are not installed: the 14 skips
+  are 11 OCR tests that need `pytesseract` and 3 opt-in smoke tests that need
+  `VISUAL_REASONING_ENABLED=true`.
 - Playwright suites exist in `apps/web/e2e` (mocked), `apps/web/e2e-local` (local stack) and
   `apps/web/e2e-prod` (the live site; it needs QA sessions and `VB_PROD_REPORT_TOKEN_*`). None of
   them were part of the results above, and the production suites cannot run while the API is suspended.
