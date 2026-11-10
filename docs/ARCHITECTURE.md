@@ -24,7 +24,7 @@ flowchart LR
 
   subgraph Supabase
     AUTH["Auth<br/>(email OTP, Google OAuth)"]
-    DB[("Postgres<br/>73 SQL migrations, RLS on all tables")]
+    DB[("Postgres<br/>73 SQL migrations, RLS on every migrated table")]
     S3[("Storage<br/>vbr-media, proof-artifacts")]
   end
 
@@ -66,7 +66,8 @@ flowchart LR
 - **Supabase.**
   - Auth issues the JWTs.
   - Postgres holds all application data. The schema is `apps/api/app/db/migrations/` (`001` to `073`),
-    applied in order.
+    applied in order. A fresh database currently needs the workarounds listed under
+    [Local setup](../README.md#1-database-supabase) in the README.
   - Storage holds recorded media and retained proof artifacts. Buckets are private; the API streams
     the bytes. Proof-artifact signed URLs last at most 5 minutes; defense-recording playback URLs last 30 minutes.
 
@@ -124,7 +125,7 @@ sequenceDiagram
   which bypasses RLS, so every owner-scoped operation checks ownership explicitly (for example
   `get_owned_vbr_project_or_404`). Roles (student, recruiter, admin, reviewer) are resolved by
   `permission_service.py`.
-- **RLS is defence in depth.** RLS is enabled on all tables, including the four proof/video tables
+- **RLS is defence in depth.** RLS is enabled on every table the migrations create, including the four proof/video tables
   added in migration 073; access is API-mediated with the service role. RLS limits what an anon or
   authenticated Supabase key could reach directly. It does **not** constrain the API itself,
   because the API uses the service-role key.

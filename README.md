@@ -42,7 +42,7 @@ flowchart LR
 |---|---|
 | [`apps/web`](apps/web) | Next.js 16 (App Router, React 19, TypeScript, Tailwind) on Vercel: student, recruiter and public pages |
 | [`apps/api`](apps/api) | FastAPI service on Render: evidence analysis, reports, passports, recruiter workspace |
-| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 73 ordered SQL migrations. RLS is enabled on all tables, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
+| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 73 ordered SQL migrations. RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
 | [`apps/extension`](apps/extension) | Chrome Manifest V3 "Website Proof Recorder" |
 | [`packages/shared`](packages/shared) | Recorder contract shared by the extension and the web app's tests |
 | [`docs`](docs) | Specs, design notes, QA and Chrome Web Store material |
@@ -96,7 +96,7 @@ Status key:
   - The API talks to Postgres and Storage with the **service-role key**, which bypasses RLS. So
     ownership and role checks are enforced **in application code** (for example
     `get_owned_vbr_project_or_404`, `permission_service.py`), and the tests cover them.
-  - **Row Level Security.** RLS is enabled on all tables, including the four proof/video tables added in migration 073; access is API-mediated with the service role. RLS is defence in depth against direct Supabase access with the
+  - **Row Level Security.** RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. RLS is defence in depth against direct Supabase access with the
     anon or user key. It is not what protects API requests.
 - **Public surfaces** (passport, report links, Beam links) need no session.
   - Report links use random tokens (`secrets.token_urlsafe(24)`). They stay valid until the owner
@@ -143,6 +143,16 @@ commit `.env` files.
 
 1. Create a Supabase project.
 2. Apply `apps/api/app/db/migrations/001_*.sql` to `073_*.sql` **in numeric order** in the SQL editor.
+   On a **fresh** database this does not yet run cleanly:
+   - `013` fails with `operator does not exist: uuid = text`: the unqualified `session_id` in the
+     `extension_proof_uploads` insert policy binds to `extension_proof_sessions.session_id`. A fix is
+     pending on branch `security/migration-013-fix`.
+   - `033` and `046` alter `project_defense_analysis_results`, which no migration creates (the
+     production table predates the migrations). A bootstrap migration for it is pending, so for now a
+     fresh database needs that table created before `033` is applied.
+   - Once `013` applies, its owner-only policies on `extension_proof_uploads` remain after `061`,
+     next to the service-role policy that `061` adds. This is harmless, because the API uses the
+     service role.
 3. Create the private Storage buckets named by `SUPABASE_VBR_MEDIA_BUCKET` and
    `SUPABASE_PROOF_ARTIFACT_BUCKET` (`.env.example` values `vbr-media` and `proof-artifacts`).
    - Project Defense media and keyframe evidence use further private buckets named by
@@ -219,6 +229,10 @@ See [`apps/extension/README.md`](apps/extension/README.md) for details.
     current system. The root `.env.example` lists variables the apps no longer read; use the
     per-app `.env.example` files.
   - The API's default `APP_NAME` is still the early project name.
+
+## Licence
+
+The repository has no `LICENSE` file, so no licence is granted and default copyright applies.
 
 ## Development notes
 
