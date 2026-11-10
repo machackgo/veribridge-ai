@@ -68,9 +68,15 @@
 -- Transactional and lock-bounded (lock_timeout 5s: fails fast and changes
 -- nothing if storage.objects is busy; retry). Idempotent.
 --
+-- RE-RUNNING 054: migration 054 is idempotent (drop policy if exists + create policy), so
+--   re-applying 054 (e.g. a full 001-073 replay) RECREATES all four policies and re-opens anon
+--   listing; it does not reset the bucket limits set here. After any such replay, run 074b again.
+--
 -- ROLLBACK (WARNING: re-opens anon listing of the bucket, i.e. user-id
 -- enumeration). Exactly 054:36-70 (054:36-39 = public read, 41-70 = owner write),
 -- plus the bucket limits as recorded in PRECONDITIONS step 2 (054 set none):
+--   begin;
+--   set local lock_timeout = '5s';
 --   create policy "passport-avatars: public read"
 --     on storage.objects for select
 --     using (bucket_id = 'passport-avatars');
@@ -101,6 +107,7 @@
 --     );
 --   update storage.buckets set file_size_limit = null, allowed_mime_types = null
 --    where id = 'passport-avatars';   -- or the BEFORE values you recorded
+--   commit;
 -- ============================================================
 
 begin;

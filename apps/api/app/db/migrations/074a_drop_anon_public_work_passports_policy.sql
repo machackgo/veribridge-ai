@@ -47,11 +47,18 @@
 -- of queueing every query behind a long-running reader. Just retry.
 -- Idempotent: `if exists` makes a re-run a no-op.
 --
+-- RE-RUNNING 021: migration 021 is idempotent (drop policy if exists + create policy), so
+--   re-applying 021 (e.g. a full 001-073 replay on a rebuilt database) RECREATES this policy and
+--   re-opens the exposure. After any such replay, run 074a again.
+--
 -- ROLLBACK (WARNING: re-opens the anon exposure described above). Exactly 021:63-66:
+--   begin;
+--   set local lock_timeout = '5s';
 --   create policy "public_work_passports: anon public read"
 --     on public.public_work_passports for select
 --     to anon, authenticated
 --     using (is_public = true);
+--   commit;
 -- ============================================================
 
 begin;
