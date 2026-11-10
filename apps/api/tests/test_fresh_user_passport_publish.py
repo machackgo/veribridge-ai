@@ -25,7 +25,7 @@ from app.api.deps import get_current_user_id, get_db, get_pipeline_db
 from app.core.config import settings
 from app.main import app
 
-FRESH_USER_ID = "fa53f87f-45f4-42e6-a483-473f515000a7"
+FRESH_USER_ID = "7cde6b88-a77d-4b27-a2a7-9ba8397315d2"
 
 
 @pytest.fixture()

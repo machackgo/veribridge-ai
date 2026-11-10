@@ -2243,8 +2243,8 @@ def test_real_unmapped_proof_context_key_fails_the_public_scan() -> None:
 # world-readable by design and must pass; signed/authenticated/token URLs must not.
 
 _AVATAR_PUBLIC_URL = (
-    "https://odyippjqndjcwmfzgcll.supabase.co/storage/v1/object/public/"
-    "passport-avatars/b7606fc7-ecf7-4ff4-bd17-8ae17ca24736/avatar.png?v=1784639812"
+    "https://example-project-ref.supabase.co/storage/v1/object/public/"
+    "passport-avatars/9f990ca5-f83a-48d6-95eb-a9d83863b6ce/avatar.png?v=1784639812"
 )
 
 
@@ -2259,8 +2259,8 @@ def test_public_bucket_avatar_url_is_safe():
 
 
 def test_signed_and_private_storage_urls_still_blocked():
-    base = "https://odyippjqndjcwmfzgcll.supabase.co/storage/v1/object"
-    uid = "b7606fc7-ecf7-4ff4-bd17-8ae17ca24736"
+    base = "https://example-project-ref.supabase.co/storage/v1/object"
+    uid = "9f990ca5-f83a-48d6-95eb-a9d83863b6ce"
     assert contains_unsafe_fields(f"{base}/sign/proof-artifacts/{uid}/x.pdf?token=eyJ.secret.sig") is True
     assert contains_unsafe_fields(f"{base}/authenticated/proof-artifacts/{uid}/x.pdf") is True
     assert contains_unsafe_fields(f"{base}/upload/proof-artifacts/{uid}/x.pdf") is True
