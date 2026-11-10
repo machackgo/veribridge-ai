@@ -16,10 +16,18 @@
 -- Enabling RLS with NO policies denies anon/authenticated direct access and
 -- leaves service-role access unchanged.
 --
--- Idempotent: safe to re-run.
+-- Idempotent: safe to re-run (ENABLE on a table that already has RLS is a
+-- no-op). Runs as one transaction; `if exists` lets the tables that are present
+-- get RLS even where a table was never created (feature not deployed).
+-- lock_timeout bounds the brief ACCESS EXCLUSIVE lock each ALTER needs: if a
+-- long-running query holds the table, the migration fails fast and can be
+-- retried instead of queueing every other query behind it.
 -- ============================================================
 
-alter table public.proof_artifacts enable row level security;
-alter table public.video_proofs enable row level security;
-alter table public.video_proof_transcript_segments enable row level security;
-alter table public.video_proof_frames enable row level security;
+begin;
+set local lock_timeout = '5s';
+alter table if exists public.proof_artifacts enable row level security;
+alter table if exists public.video_proofs enable row level security;
+alter table if exists public.video_proof_transcript_segments enable row level security;
+alter table if exists public.video_proof_frames enable row level security;
+commit;

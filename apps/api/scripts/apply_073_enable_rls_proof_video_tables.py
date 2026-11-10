@@ -14,6 +14,9 @@ Migrations applied (idempotent):
       video_proofs, video_proof_transcript_segments and video_proof_frames,
       so the anon/authenticated roles can no longer reach them directly.
       The API uses the service-role client and is unaffected.
+      The file manages its own transaction (BEGIN ... COMMIT with a 5 s
+      lock_timeout) and uses ALTER TABLE IF EXISTS, so tables that were never
+      created are reported as absent instead of failing the whole run.
 """
 
 from __future__ import annotations
@@ -109,30 +112,35 @@ TABLES = (
 
 migrations_dir = pathlib.Path(__file__).parent.parent / "app" / "db" / "migrations"
 
+# The migration file contains its own BEGIN/COMMIT, so run it in autocommit
+# mode rather than inside psycopg2's implicit transaction.
+conn.autocommit = True
+
 try:
     cur = conn.cursor()
     for filename in MIGRATIONS:
         path = migrations_dir / filename
         if not path.exists():
-            conn.rollback()
             sys.exit(f"Migration file not found: {path}")
         sql = path.read_text()
         cur.execute(sql)
-        conn.commit()
         print(f"  {filename} applied.")
 
     cur.execute(
-        "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace "
-        "where n.nspname = 'public' and c.relkind = 'r' and c.relname = any(%s) "
-        "and not c.relrowsecurity",
+        "select c.relname, c.relrowsecurity from pg_class c "
+        "join pg_namespace n on n.oid = c.relnamespace "
+        "where n.nspname = 'public' and c.relkind in ('r', 'p') and c.relname = any(%s)",
         (list(TABLES),),
     )
-    remaining = [row[0] for row in cur.fetchall()]
+    present = dict(cur.fetchall())
+    absent = [t for t in TABLES if t not in present]
+    remaining = [t for t, rls in present.items() if not rls]
+    if absent:
+        print("Absent (never created, nothing to protect): " + ", ".join(absent))
     if remaining:
         sys.exit(f"RLS still disabled on: {', '.join(remaining)}")
-    print("\nRLS enabled on: " + ", ".join(TABLES))
+    print("\nRLS enabled on: " + (", ".join(t for t in TABLES if t in present) or "(none present)"))
 except Exception as exc:
-    conn.rollback()
     sys.exit(f"Migration failed: {exc}")
 finally:
     conn.close()
