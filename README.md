@@ -42,7 +42,7 @@ flowchart LR
 |---|---|
 | [`apps/web`](apps/web) | Next.js 16 (App Router, React 19, TypeScript, Tailwind) on Vercel: student, recruiter and public pages |
 | [`apps/api`](apps/api) | FastAPI service on Render: evidence analysis, reports, passports, recruiter workspace |
-| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 72 ordered SQL migrations, RLS enabled |
+| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 73 ordered SQL migrations. RLS is enabled on all tables, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
 | [`apps/extension`](apps/extension) | Chrome Manifest V3 "Website Proof Recorder" |
 | [`packages/shared`](packages/shared) | Recorder contract shared by the extension and the web app's tests |
 | [`docs`](docs) | Specs, design notes, QA and Chrome Web Store material |
@@ -96,13 +96,14 @@ Status key:
   - The API talks to Postgres and Storage with the **service-role key**, which bypasses RLS. So
     ownership and role checks are enforced **in application code** (for example
     `get_owned_vbr_project_or_404`, `permission_service.py`), and the tests cover them.
-  - **Row Level Security** is enabled with owner policies. It is defence in depth against direct
-    Supabase access with the anon or user key. It is not what protects API requests.
+  - **Row Level Security.** RLS is enabled on all tables, including the four proof/video tables added in migration 073; access is API-mediated with the service role. RLS is defence in depth against direct Supabase access with the
+    anon or user key. It is not what protects API requests.
 - **Public surfaces** (passport, report links, Beam links) need no session.
   - Report links use random tokens (`secrets.token_urlsafe(24)`). They stay valid until the owner
     unpublishes, and resolve only while the owner's passport is public.
-  - Responses are filtered so they never carry storage paths, signed URLs, emails or internal IDs.
-  - Retained artifacts are streamed by the API, or served through signed URLs that last at most 5 minutes.
+  - Responses are filtered so they never carry storage paths, signed URLs, emails or internal user/auth IDs.
+  - Retained artifacts are streamed by the API. Proof-artifact signed URLs last at most 5 minutes;
+    defense-recording playback URLs last 30 minutes.
 - **Secrets.** Secrets live only in untracked `.env` files and in the hosting dashboards. The web
   app must never receive `SUPABASE_SERVICE_ROLE_KEY`. In production the API refuses its
   development demo-user fallback.
@@ -116,7 +117,7 @@ Node 24.11.1 / npm 11.21.0.
 
 | Suite | Command | Result |
 |---|---|---|
-| API (pytest) | `cd apps/api && pytest` | **5,060 passed, 14 skipped**, 0 failed |
+| API (pytest) | `cd apps/api && pytest` | **5,058 passed, 14 skipped**, 0 failed |
 | Web unit (Vitest) | `cd apps/web && npx vitest run` | **1,943 passed** (72 files) |
 | Web types | `cd apps/web && npx tsc --noEmit` | clean |
 | Extension (node test runner) | `cd apps/extension && npm test` | **76 passed** |
@@ -141,9 +142,14 @@ commit `.env` files.
 ### 1. Database (Supabase)
 
 1. Create a Supabase project.
-2. Apply `apps/api/app/db/migrations/001_*.sql` to `072_*.sql` **in numeric order** in the SQL editor.
+2. Apply `apps/api/app/db/migrations/001_*.sql` to `073_*.sql` **in numeric order** in the SQL editor.
 3. Create the private Storage buckets named by `SUPABASE_VBR_MEDIA_BUCKET` and
-   `SUPABASE_PROOF_ARTIFACT_BUCKET` (defaults `vbr-media` and `proof-artifacts`).
+   `SUPABASE_PROOF_ARTIFACT_BUCKET` (`.env.example` values `vbr-media` and `proof-artifacts`).
+   - Project Defense media and keyframe evidence use further private buckets named by
+     `SUPABASE_DEFENSE_MEDIA_BUCKET` and `SUPABASE_FRAME_EVIDENCE_BUCKET`. These are not in
+     `.env.example` and have no default.
+   - Migration 054 creates the `passport-avatars` bucket, which is public by design (passport
+     photos). Set `SUPABASE_PASSPORT_AVATAR_BUCKET` to that name.
 4. Enable email OTP, and optionally Google, under Supabase Auth.
 
 ### 2. API (`apps/api`)
@@ -199,6 +205,10 @@ See [`apps/extension/README.md`](apps/extension/README.md) for details.
 - **No CI, and no migration runner.** Migrations are applied by hand, in order.
 - **Public report links have no expiry.** Tokens are stored as plain values in
   `vbr_projects.public_report_token`; revocation means unpublishing.
+- **Known issue in website semantic verification.** If the sentence-transformers model is
+  unavailable, expected-output matching falls back to exact signal matching. That fallback can count
+  a negated mention ("no … appeared") as a match. The behaviour is unchanged on this branch and
+  tracked as a separate fix.
 - **The default install is heavy.** It pulls in `sentence-transformers` (and therefore PyTorch).
   Optional OCR, vision, Whisper and LLM backends are documented in `apps/api/requirements.txt` but
   not installed by default.
@@ -217,7 +227,7 @@ author owned the architecture, review, integration, testing and deployment.
 
 Repository evidence:
 
-- all 649 commits on `main` (2026-05-07 to 2026-08-24) are authored by the owner's account;
+- as of `ecfc84a` (2026-08-24), all 649 commits on `main` (from 2026-05-07) are authored by the owner's account;
 - all 95 pull requests were opened by the owner (93 merged);
 - 217 commit messages carry Claude `Co-Authored-By` trailers.
 

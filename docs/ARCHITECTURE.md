@@ -24,7 +24,7 @@ flowchart LR
 
   subgraph Supabase
     AUTH["Auth<br/>(email OTP, Google OAuth)"]
-    DB[("Postgres<br/>72 SQL migrations, RLS")]
+    DB[("Postgres<br/>73 SQL migrations, RLS on all tables")]
     S3[("Storage<br/>vbr-media, proof-artifacts")]
   end
 
@@ -65,10 +65,10 @@ flowchart LR
   against it.
 - **Supabase.**
   - Auth issues the JWTs.
-  - Postgres holds all application data. The schema is `apps/api/app/db/migrations/` (`001` to `072`),
+  - Postgres holds all application data. The schema is `apps/api/app/db/migrations/` (`001` to `073`),
     applied in order.
   - Storage holds recorded media and retained proof artifacts. Buckets are private; the API streams
-    the bytes, or mints signed URLs that last at most 5 minutes.
+    the bytes. Proof-artifact signed URLs last at most 5 minutes; defense-recording playback URLs last 30 minutes.
 
 ## Evidence pipeline
 
@@ -92,7 +92,7 @@ The design rules below are enforced in code:
 - **Qualitative evidence labels, not numeric trust scores, on public surfaces.** See
   `vbr_public_project_report.py` and `public_report_safety_service.py`.
 - **Project evidence is never presented as proof of personal authorship.** Attribution has its own
-  states (`unknown`, `claimed_contributor`, `denied_by_candidate`, `conflicted`, `verified_author`).
+  states (`unknown`, `claimed_contributor`, `verified_contributor`, `denied_by_candidate`, `conflicted`, `verified_author`).
   See `candidate_attribution_service.py` and migration 071.
 - **The deterministic path works with no model access.** LLM synthesis is off by default
   (`LLM_SYNTHESIS_ENABLED=false`, `LLM_SYNTHESIS_PROVIDER=disabled`). Transcription and
@@ -124,9 +124,10 @@ sequenceDiagram
   which bypasses RLS, so every owner-scoped operation checks ownership explicitly (for example
   `get_owned_vbr_project_or_404`). Roles (student, recruiter, admin, reviewer) are resolved by
   `permission_service.py`.
-- **RLS is defence in depth.** RLS is enabled with owner policies on the application tables. Those
-  policies limit what an anon or authenticated Supabase key could read directly. They do **not**
-  constrain the API itself, because the API uses the service-role key.
+- **RLS is defence in depth.** RLS is enabled on all tables, including the four proof/video tables
+  added in migration 073; access is API-mediated with the service role. RLS limits what an anon or
+  authenticated Supabase key could reach directly. It does **not** constrain the API itself,
+  because the API uses the service-role key.
 - **Public surfaces need no session.** These are the public passport `/p/{slug}`, report links
   `/vbr/report/{token}`, and Beam/QR links.
   - Report tokens come from `secrets.token_urlsafe(24)` and are stored in
