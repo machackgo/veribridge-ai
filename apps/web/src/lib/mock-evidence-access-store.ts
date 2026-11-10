@@ -42,7 +42,7 @@ const SAMPLE_REQUESTS: EvidenceAccessRequest[] = [
     id: "sample-wpi-002",
     passportSlug: DEMO_PASSPORT_SLUG,
     requesterName: "WPI Faculty Reviewer",
-    requesterEmail: "faculty@wpi.edu",
+    requesterEmail: "faculty@example.edu",
     company: "Worcester Polytechnic Institute",
     role: "Faculty / Academic Reviewer",
     reason: "Portfolio review for graduate program research credit assessment.",

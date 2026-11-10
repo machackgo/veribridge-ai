@@ -29,7 +29,7 @@ import path from "node:path"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const EDU_EMAIL = "maya.reyes@wpi.edu"
+const EDU_EMAIL = "maya.reyes@example.edu"
 const NON_EDU_EMAIL = "user@gmail.com"
 const VALID_OTP = "48210573" // 8-digit code (matches Supabase Email OTP Length)
 
@@ -256,7 +256,7 @@ test.describe("Login page — OTP screen", () => {
   test("shows masked email address", async ({ page }) => {
     await goToOtpStep(page)
     // Masked email shows domain but obscures some local part
-    await expect(page.getByText(/@wpi\.edu/)).toBeVisible()
+    await expect(page.getByText(/@example\.edu/)).toBeVisible()
   })
 
   test("shows a code sent badge", async ({ page }) => {

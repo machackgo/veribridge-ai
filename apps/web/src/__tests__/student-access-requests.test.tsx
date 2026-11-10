@@ -24,7 +24,7 @@ function makeApproved(overrides?: Partial<StudentAccessRequest>): StudentAccessR
   return {
     id: "req-002",
     requester_name: "WPI Faculty",
-    requester_email: "faculty@wpi.edu",
+    requester_email: "faculty@example.edu",
     requester_organization: "WPI",
     requester_role: "Faculty Reviewer",
     requested_sections: ["documents", "detailed_skill_evidence"],

@@ -32,7 +32,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => ({ get: (_k: string) => "/dashboard" }),
 }))
 
-const EMAIL = "maya.reyes@wpi.edu"
+const EMAIL = "maya.reyes@example.edu"
 const CODE_8 = "48210573"
 
 async function goToOtpStep() {

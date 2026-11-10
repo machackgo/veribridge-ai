@@ -2013,7 +2013,7 @@ export function StudentSettings() {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {[
               { label: "Name", value: "Maya Reyes", disabled: false },
-              { label: ".edu email · verified", value: "maya.reyes@wpi.edu", disabled: true },
+              { label: ".edu email · verified", value: "maya.reyes@example.edu", disabled: true },
               { label: "Major · grad year", value: "", disabled: false },
               { label: "Location preference", value: "", disabled: false },
             ].map((f) => (
