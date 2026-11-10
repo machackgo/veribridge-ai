@@ -3564,7 +3564,7 @@ def _log_skill_evidence_discovery_diagnostics(report: dict[str, Any], *, user_id
     from app.core.config import get_settings
 
     try:
-        if get_settings().environment.strip().lower() == "production":
+        if get_settings().is_production:
             return
     except Exception:  # pragma: no cover - settings failure must never break reports
         return

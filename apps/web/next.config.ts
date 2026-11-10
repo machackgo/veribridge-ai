@@ -7,6 +7,30 @@ import path from "node:path";
 // (two levels up from this config file) rather than apps/web.
 const monorepoRoot = path.resolve(import.meta.dirname, "..", "..");
 
+// Baseline security headers on every route. Deliberately NOT a full
+// Content-Security-Policy (that needs a nonce/hash rollout to avoid breaking
+// Next.js inline scripts): only `frame-ancestors 'none'` is set via CSP, which
+// together with X-Frame-Options blocks clickjacking. No app route is meant to
+// be framed (the extension uses its own popup page, not an iframe of the app).
+// Permissions-Policy keeps camera (recruiter QR scanner), microphone and
+// display-capture (VBR / Project Defense recording) for this origin only and
+// disables a few powerful features the app never uses.
+export const SECURITY_HEADERS: { key: string; value: string }[] = [
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+  {
+    key: "Permissions-Policy",
+    value:
+      "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()",
+  },
+  {
+    key: "Strict-Transport-Security",
+    value: "max-age=63072000; includeSubDomains",
+  },
+];
+
 const nextConfig: NextConfig = {
   turbopack: {
     root: monorepoRoot,
@@ -24,6 +48,10 @@ const nextConfig: NextConfig = {
   // a new filename, not overwriting this one.
   async headers() {
     return [
+      {
+        source: "/:path*",
+        headers: SECURITY_HEADERS,
+      },
       {
         source: "/media/:path*",
         headers: [

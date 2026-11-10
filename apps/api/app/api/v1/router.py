@@ -7,7 +7,6 @@ from app.api.v1.endpoints import (
     skill_evidence_pipelines,
     admin_quality_review,
     admin_notifications,
-    debug,
     document_proof_artifact_sync,
     document_proofs,
     evidence_access_links,
@@ -412,11 +411,8 @@ api_router.include_router(
     prefix="/student/website-proof",
     tags=["website-proof-summary"],
 )
-api_router.include_router(
-    debug.router,
-    prefix="/debug",
-    tags=["debug"],
-)
+# The dev-only debug router is NOT mounted here: create_app() mounts it only
+# outside production (app.main), so its routes do not exist in production.
 api_router.include_router(
     proof_artifacts.router,
     prefix="/proofs",
