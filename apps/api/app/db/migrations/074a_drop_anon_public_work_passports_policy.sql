@@ -1,0 +1,60 @@
+-- ============================================================
+-- VeriBridge AI — Migration 074a (CONDITIONAL): drop the anon read
+-- policy on the legacy public_work_passports table
+-- ============================================================
+--
+-- WHY
+--   Migration 021 (lines 63-66) created
+--     "public_work_passports: anon public read"  FOR SELECT TO anon, authenticated
+--     USING (is_public = true)
+--   so anyone holding the public anon key can list every legacy passport row
+--   with is_public = true straight from PostgREST (GET /rest/v1/public_work_passports),
+--   including user_id and proof_session_id, even when the owner's current
+--   (vbr_work_passports) passport is private and the API would hide the row.
+--   No client needs this policy: the web app and the extension never query
+--   Supabase tables directly (no supabase `.from(...)` / `.rpc(...)` calls in
+--   apps/web or apps/extension; they only use supabase.auth). Every
+--   public_work_passports read and write goes through the FastAPI service,
+--   whose client is the service role (app/api/deps.py get_db ->
+--   get_supabase_client), which bypasses RLS. The owner-only policies
+--   (own row select/insert/update) and "service role all" stay in place.
+--
+-- CONDITIONAL: run only if VERIBRIDGE_PROD_VERIFY_ONE.sql shows this policy in
+--   catalog.policies_watched AND data.public_work_passports_exposure.legacy_public_rows > 0
+--   (or you want the policy gone regardless). Otherwise it is a harmless no-op.
+--
+-- PRECONDITIONS
+--   1. Apply to a STAGING project (or a branch database) first and run the
+--      verification steps there.
+--   2. Take the BEFORE snapshot below and keep it with the change record.
+--
+-- VERIFICATION
+--   Before and after, snapshot the policies:
+--     select policyname, cmd, roles, permissive, qual, with_check
+--       from pg_policies
+--      where schemaname = 'public' and tablename = 'public_work_passports'
+--      order by policyname;
+--   Expected diff: only "public_work_passports: anon public read" disappears
+--   (4 policies remain: own row select / insert / update, service role all).
+--   Then, with the anon key only (no user JWT):
+--     curl -s "$SUPABASE_URL/rest/v1/public_work_passports?select=id&limit=5" \
+--          -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY"
+--   must return [] (it returned rows before if legacy_public_rows > 0).
+--   A public passport page (/p/<slug>) must still render (API path, service role).
+--
+-- Transactional and lock-bounded: DROP POLICY takes an ACCESS EXCLUSIVE lock
+-- on the table; lock_timeout makes it fail fast (and change nothing) instead
+-- of queueing every query behind a long-running reader. Just retry.
+-- Idempotent: `if exists` makes a re-run a no-op.
+--
+-- ROLLBACK (WARNING: re-opens the anon exposure described above). Exactly 021:63-66:
+--   create policy "public_work_passports: anon public read"
+--     on public.public_work_passports for select
+--     to anon, authenticated
+--     using (is_public = true);
+-- ============================================================
+
+begin;
+set local lock_timeout = '5s';
+drop policy if exists "public_work_passports: anon public read" on public.public_work_passports;
+commit;
