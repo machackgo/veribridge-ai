@@ -24,7 +24,7 @@ flowchart LR
 
   subgraph Supabase
     AUTH["Auth<br/>(email OTP, Google OAuth)"]
-    DB[("Postgres<br/>73 SQL migrations, RLS on every migrated table")]
+    DB[("Postgres<br/>75 SQL migration files, RLS on every migrated table")]
     S3[("Storage<br/>vbr-media, proof-artifacts")]
   end
 
@@ -65,11 +65,12 @@ flowchart LR
   against it.
 - **Supabase.**
   - Auth issues the JWTs.
-  - Postgres holds all application data. The schema is `apps/api/app/db/migrations/` (`001` to `073`),
-    applied in order. A fresh database currently needs the workarounds listed under
+  - Postgres holds all application data. The schema is `apps/api/app/db/migrations/` (`001` to `073`, then the
+    conditional hardening migrations `074a` and `074b`), applied in order. A fresh database currently needs the workarounds listed under
     [Local setup](../README.md#1-database-supabase) in the README.
-  - Storage holds recorded media and retained proof artifacts. Buckets are private; the API streams
-    the bytes. Proof-artifact signed URLs last at most 5 minutes; defense-recording playback URLs last 30 minutes.
+  - Storage holds recorded media and retained proof artifacts. All buckets are private except `passport-avatars`, which
+    is public by design (passport photos); `074b` restricts its writes to the server and sets size and
+    type limits. The API streams the bytes of private objects. Proof-artifact signed URLs last at most 5 minutes; defense-recording playback URLs last 30 minutes.
 
 ## Evidence pipeline
 

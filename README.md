@@ -42,7 +42,7 @@ flowchart LR
 |---|---|
 | [`apps/web`](apps/web) | Next.js 16 (App Router, React 19, TypeScript, Tailwind) on Vercel: student, recruiter and public pages |
 | [`apps/api`](apps/api) | FastAPI service on Render: evidence analysis, reports, passports, recruiter workspace |
-| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 73 ordered SQL migrations. RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
+| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 75 ordered SQL migration files (`001`–`073`, plus the conditional hardening migrations `074a` and `074b`). RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
 | [`apps/extension`](apps/extension) | Chrome Manifest V3 "Website Proof Recorder" |
 | [`packages/shared`](packages/shared) | Recorder contract shared by the extension and the web app's tests |
 | [`docs`](docs) | Specs, design notes, QA and Chrome Web Store material |
@@ -112,15 +112,17 @@ These controls have not been independently audited.
 
 ## Tests
 
+TODO-TESTS: replace the results below with the final numbers for the combined state after all security branches merge.
+
 Results from 2026-11-10 on macOS. Python 3.11.14 with `apps/api/requirements.txt` installed.
 Node 24.11.1 / npm 11.21.0.
 
 | Suite | Command | Result |
 |---|---|---|
-| API (pytest) | `cd apps/api && pytest` | **5,058 passed, 14 skipped**, 0 failed |
-| Web unit (Vitest) | `cd apps/web && npx vitest run` | **1,943 passed** (72 files) |
+| API (pytest) | `cd apps/api && pytest` | TODO-TESTS |
+| Web unit (Vitest) | `cd apps/web && npx vitest run` | TODO-TESTS |
 | Web types | `cd apps/web && npx tsc --noEmit` | clean |
-| Extension (node test runner) | `cd apps/extension && npm test` | **76 passed** |
+| Extension (node test runner) | `cd apps/extension && npm test` | TODO-TESTS |
 | Extension types | `cd apps/extension && npm run typecheck` | clean |
 
 Notes:
@@ -142,17 +144,19 @@ commit `.env` files.
 ### 1. Database (Supabase)
 
 1. Create a Supabase project.
-2. Apply `apps/api/app/db/migrations/001_*.sql` to `073_*.sql` **in numeric order** in the SQL editor.
-   On a **fresh** database this does not yet run cleanly:
-   - `013` fails with `operator does not exist: uuid = text`: the unqualified `session_id` in the
-     `extension_proof_uploads` insert policy binds to `extension_proof_sessions.session_id`. A fix is
-     pending on branch `security/migration-013-fix`.
+2. Apply the 75 migration files in `apps/api/app/db/migrations/` in order in the SQL editor:
+   `001_*.sql` to `073_*.sql`, then `074a_*.sql` and `074b_*.sql`. In production, `074a` and `074b`
+   are conditional hardening: apply them only after a check on a staging project (see each file's
+   header).
    - `033` and `046` alter `project_defense_analysis_results`, which no migration creates (the
-     production table predates the migrations). A bootstrap migration for it is pending, so for now a
-     fresh database needs that table created before `033` is applied.
-   - Once `013` applies, its owner-only policies on `extension_proof_uploads` remain after `061`,
-     next to the service-role policy that `061` adds. This is harmless, because the API uses the
-     service role.
+     production table predates the migrations). A bootstrap migration is pending (see
+     `075_bootstrap_note_project_defense_analysis_results.md`), so a fresh database currently needs
+     that table created before `033` is applied.
+   - On a fresh database the migrations leave owner-scoped write policies for signed-in users on 62
+     tables, so a user can write their own rows directly through PostgREST, not only through the
+     API. For example, the `extension_proof_uploads` UPDATE policy from `013`, which `061` leaves in
+     place, has a `WITH CHECK` on `user_id` only, so a user can re-point their own upload at another
+     session. Whether production has these policies is checked by the production verification query.
 3. Create the private Storage buckets named by `SUPABASE_VBR_MEDIA_BUCKET` and
    `SUPABASE_PROOF_ARTIFACT_BUCKET` (`.env.example` values `vbr-media` and `proof-artifacts`).
    - Project Defense media and keyframe evidence use further private buckets named by
