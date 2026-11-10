@@ -468,23 +468,59 @@ def _not_found() -> HTTPException:
     )
 
 
-def resolve_published_project_id(db: Any, token: str) -> str | None:
-    """Project id for an *active* public token, else None.
+def _resolve_visible_project(
+    db: Any, token: str
+) -> tuple[dict[str, Any], EffectiveDisclosure] | None:
+    """The single public-visibility gate for a report token.
 
-    Shares the exact publication/revocation semantics of the public read:
-    a project resolves only while its ``public_report_token`` is set, so a
-    revoked or never-published report can never be referenced (e.g. by the
-    view-tracking endpoint) through a stale token.
+    Returns ``(project, disclosure)`` only when ALL of these hold, else None:
+
+    1. the token is plausibly shaped and matches an *active*
+       ``public_report_token`` (revoked / never-published tokens never resolve);
+    2. the owner's Work Passport is Public — the master privacy switch. The
+       token is preserved across Private/Public toggles, so flipping back to
+       Public restores exactly the reports the student had selected;
+    3. granular disclosure (migration 063) leaves both the project and its
+       report visible to an anonymous recruiter.
+
+    Both the public report GET and the view tracker go through this helper so
+    their gates cannot drift apart. Exceptions (e.g. a disclosure load
+    failure) propagate; every caller must treat them as "not visible".
     """
     if not is_plausible_public_token(token):
         return None
+
     project = _find_project_by_token(db, token)
     if project is None or not project.get("public_report_token"):
         return None
+
     if not owner_passport_is_public(db, project.get("user_id")):
         return None
+
+    owner_id = str(project.get("user_id") or "")
     project_id = str(project.get("id") or "")
-    return project_id or None
+    if not project_id:
+        return None
+
+    disclosure = load_effective_disclosure(db, owner_id, passport_public=True)
+    if not disclosure.report_visible(project_id):
+        return None
+    return project, disclosure
+
+
+def resolve_published_project_id(db: Any, token: str) -> str | None:
+    """Project id for a token whose public report is currently visible, else None.
+
+    Shares the exact gate of the public read (``_resolve_visible_project``):
+    active token, Public passport, and disclosure-visible project + report.
+    A revoked, private or disclosure-hidden report can never be referenced
+    (e.g. by the view-tracking endpoint) through its token.
+    """
+    resolved = _resolve_visible_project(db, token)
+    if resolved is None:
+        return None
+    project, _ = resolved
+    return str(project.get("id") or "") or None
 
 
 def _sanitize_video_chips(chips: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1019,31 +1055,17 @@ def build_public_project_report(db: Any, pipeline_db: Any, token: str) -> dict[s
     preview uses, then projected to public fields and scanned for unsafe
     content as defence in depth.
     """
-    if not is_plausible_public_token(token):
+    # Token, passport master switch and granular disclosure (migration 063)
+    # are all checked by the shared gate. A hidden project or hidden report
+    # 404s exactly like a bad token — non-disclosure. Aspect states below drive
+    # every section, count, link, and access descriptor in this projection.
+    resolved = _resolve_visible_project(db, token)
+    if resolved is None:
         raise _not_found()
-
-    project = _find_project_by_token(db, token)
-    if project is None or not project.get("public_report_token"):
-        raise _not_found()
-
-    # Passport visibility is the master privacy switch: a published report link
-    # only resolves while the owner's Work Passport is Public. The token itself
-    # is preserved across Private/Public toggles, so flipping back to Public
-    # restores exactly the reports the student had selected.
-    if not owner_passport_is_public(db, project.get("user_id")):
-        raise _not_found()
+    project, disclosure = resolved
 
     owner_id = str(project.get("user_id") or "")
     project_id = str(project.get("id") or "")
-
-    # ── Granular disclosure (migration 063) ──────────────────────────────────
-    # The canonical resolver decides, per node, what an anonymous recruiter may
-    # see. A hidden project or hidden report 404s exactly like a bad token —
-    # non-disclosure. Aspect states below drive every section, count, link,
-    # and access descriptor in this projection.
-    disclosure = load_effective_disclosure(db, owner_id, passport_public=True)
-    if not disclosure.report_visible(project_id):
-        raise _not_found()
 
     github_state = disclosure.aspect(project_id, "github_repo")
     github_lines_state = disclosure.aspect(project_id, "github_lines")
