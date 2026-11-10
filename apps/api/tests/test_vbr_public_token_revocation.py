@@ -16,7 +16,10 @@ cover what those files do not:
   - the view tracker applies the SAME gate as the public GET (finding R8):
     a disclosure-hidden report, a hidden project, a private passport and a
     disclosure-loader failure all answer ``recorded: false`` and insert no row;
-  - unauthenticated view inserts are capped per project per UTC day.
+  - unauthenticated view inserts are capped per project per UTC day;
+  - a disclosure DB error fails closed to deny-all on public surfaces (a
+    custom-hidden report must not reappear as recruiter-safe), while the
+    owner's editor and private preview keep working.
 
 All storage is in-memory (dict mode). Tokens are generated at test time.
 """
@@ -30,6 +33,7 @@ from app.services.passport_disclosure import MODE_CUSTOM
 from tests.test_passport_disclosure import (  # noqa: F401  (fixtures)
     _apply,
     _as_anon,
+    _get_disclosure,
     _as_user,
     _make_project,
     _ov,
@@ -44,6 +48,7 @@ from tests.test_passport_disclosure import (  # noqa: F401  (fixtures)
     pipeline_db,
 )
 from tests.test_vbr_project_defense import OTHER_USER_ID, _create_project_defense, _seed_github_proof
+from tests.test_vbr_project_defense import USER_ID as _OWNER_ID
 
 
 def _record_view(client: TestClient, token: str):
@@ -345,3 +350,68 @@ def test_daily_cap_supabase_path(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(RuntimeError):
         record_public_report_view(unknown, "proj-1")
     assert unknown.inserted == []
+
+
+# ── Disclosure DB errors fail closed (no recruiter-safe fallback) ────────────
+
+
+def _break(monkeypatch: pytest.MonkeyPatch, target: str) -> None:
+    import app.services.passport_disclosure as disclosure_module
+
+    def _db_error(*args, **kwargs):
+        raise RuntimeError("transient disclosure DB error")
+
+    monkeypatch.setattr(disclosure_module, target, _db_error)
+
+
+@pytest.mark.parametrize("target", ["_policy_row", "list_overrides"])
+def test_disclosure_db_error_keeps_hidden_report_hidden(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    ctx = _publish_setup(client, mem_store)
+    _set_mode(client, MODE_CUSTOM)
+    _apply(client, _ov("report", ctx["project_id"], "hidden"))
+    _break(monkeypatch, target)
+    _as_anon(client)
+    assert _public_report(client, ctx["token"]).status_code == 404
+    _assert_view_not_recorded(client, mem_store, ctx["token"])
+
+
+@pytest.mark.parametrize("target", ["_policy_row", "list_overrides"])
+def test_disclosure_db_error_keeps_hidden_project_hidden(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    ctx = _publish_setup(client, mem_store)
+    _set_mode(client, MODE_CUSTOM)
+    _apply(client, _ov("project", ctx["project_id"], "hidden"))
+    _break(monkeypatch, target)
+    _as_anon(client)
+    assert _public_report(client, ctx["token"]).status_code == 404
+    _assert_view_not_recorded(client, mem_store, ctx["token"])
+
+
+def test_disclosure_db_error_is_deny_all_then_recovers(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deny-all, not partial: even a visible report is withheld while the
+    policy cannot be read, and serves again once the read succeeds."""
+    ctx = _publish_setup(client, mem_store)
+    _as_anon(client)
+    assert _public_report(client, ctx["token"]).status_code == 200
+    with monkeypatch.context() as patch:
+        _break(patch, "_policy_row")
+        assert _public_report(client, ctx["token"]).status_code == 404
+        _assert_view_not_recorded(client, mem_store, ctx["token"])
+    assert _public_report(client, ctx["token"]).status_code == 200
+
+
+def test_disclosure_policy_error_leaves_owner_flows_working(
+    client: TestClient, mem_store: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner-facing editor and private report preview do not go through
+    the public loader, so a policy read error does not lock the owner out."""
+    ctx = _publish_setup(client, mem_store)
+    _break(monkeypatch, "_policy_row")
+    _as_user(client, ctx.get("user_id") or _OWNER_ID)
+    assert _get_disclosure(client).status_code == 200
+    assert client.get(f"/api/v1/student/vbr/projects/{ctx['project_id']}/report").status_code == 200
