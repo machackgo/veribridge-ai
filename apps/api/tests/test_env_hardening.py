@@ -128,6 +128,19 @@ def test_demo_fallback_allowed_outside_production() -> None:
         "http://app.localhost:3000",
         "http://[::1]:3000",
         "http://0.0.0.0:8000",
+        "null",
+        "https://veribridgeai.com,NULL",
+        "http://127.0.0.2",
+        "http://127.255.255.254:3000",
+        "http://[::ffff:127.0.0.1]",
+        "http://10.0.0.5:3000",
+        "http://172.16.0.1",
+        "http://172.31.255.254",
+        "http://192.168.1.23:3000",
+        "http://169.254.169.254",
+        "http://[fc00::1]",
+        "http://[fd12:3456::1]:3000",
+        "http://[fe80::1]",
     ],
 )
 def test_unsafe_production_cors_rejected(origins: str) -> None:
@@ -141,6 +154,12 @@ def test_unsafe_production_cors_rejected(origins: str) -> None:
 
 def test_explicit_production_cors_accepted() -> None:
     assert _prod().cors_origins == _PROD_ORIGINS.split(",")
+
+
+@pytest.mark.parametrize("origin", ["http://172.15.0.1", "http://172.32.0.1", "https://8.8.8.8"])
+def test_public_ip_origins_not_mistaken_for_private(origin: str) -> None:
+    """Range boundaries: addresses just outside 172.16/12 and public IPs pass."""
+    assert _settings(ENVIRONMENT="production", CORS_ALLOWED_ORIGINS=origin).cors_origins == [origin]
 
 
 def test_localhost_cors_fine_outside_production() -> None:
@@ -275,3 +294,121 @@ def test_create_app_installs_redaction() -> None:
     access.filters = [f for f in access.filters if not isinstance(f, ReportTokenRedactionFilter)]
     create_app()
     assert any(isinstance(f, ReportTokenRedactionFilter) for f in access.filters)
+
+
+
+# ── N6 follow-up: httpx URLs, passport access tokens, tracebacks ─────────────
+
+
+def _capture(logger_name: str, level: int = logging.INFO):
+    """Context manager: a filtered capture handler on ``logger_name``."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        logger = logging.getLogger(logger_name)
+        handler = _ListHandler()
+        handler.addFilter(ReportTokenRedactionFilter())
+        old_level, old_propagate = logger.level, logger.propagate
+        logger.addHandler(handler)
+        logger.setLevel(level)
+        logger.propagate = False
+        try:
+            yield handler
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(old_level)
+            logger.propagate = old_propagate
+
+    return _cm()
+
+
+def test_httpx_request_url_with_postgrest_token_filter_is_redacted() -> None:
+    """Reproduces the leak: httpx logs the Supabase URL (an httpx.URL object,
+    not a str) carrying ``public_report_token=eq.<token>`` at INFO."""
+    import httpx
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=[]))
+    url = (
+        "https://example.supabase.co/rest/v1/vbr_projects"
+        f"?select=%2A&public_report_token=eq.{_FAKE_TOKEN}&limit=1"
+    )
+    with _capture("httpx") as handler, httpx.Client(transport=transport) as http:
+        http.get(url)
+        http.get(f"https://example.supabase.co/rest/v1/grants?access_token=eq.{_FAKE_TOKEN}")
+    assert len(handler.messages) == 2, handler.messages
+    assert all(_FAKE_TOKEN not in m for m in handler.messages)
+    assert f"public_report_token=eq.{REDACTED}" in handler.messages[0]
+    assert "limit=1" in handler.messages[0]
+
+
+def test_httpx_and_httpcore_quieted_by_create_app() -> None:
+    from app.main import create_app
+
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.NOTSET)
+    create_app()
+    for name in ("httpx", "httpcore"):
+        assert logging.getLogger(name).level == logging.WARNING
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/api/v1/public/access/{_FAKE_TOKEN}/evidence",
+        f"/api/v1/public/access/{_FAKE_TOKEN}/skill-evidence-timeline",
+        f"/api/v1/public/access/{_FAKE_TOKEN}",
+    ],
+)
+def test_passport_access_token_path_is_redacted(path: str) -> None:
+    with _capture("app.some.module") as handler:
+        logging.getLogger("app.some.module").info("GET %s", path)
+    assert _FAKE_TOKEN not in handler.messages[0]
+    assert f"/public/access/{REDACTED}" in handler.messages[0]
+
+
+def test_non_string_arg_is_redacted() -> None:
+    class _Url:
+        def __str__(self) -> str:
+            return f"https://api.example.test/api/v1/public/vbr/reports/{_FAKE_TOKEN}"
+
+    with _capture("app.some.module") as handler:
+        logging.getLogger("app.some.module").info("calling %s", _Url())
+    assert _FAKE_TOKEN not in handler.messages[0]
+
+
+def test_exception_traceback_is_redacted() -> None:
+    with _capture("app.some.module") as handler:
+        try:
+            raise RuntimeError(
+                f"lookup failed for /api/v1/public/vbr/reports/{_FAKE_TOKEN} "
+                f"(public_report_token=eq.{_FAKE_TOKEN})"
+            )
+        except RuntimeError:
+            logging.getLogger("app.some.module").exception("unhandled")
+    (message,) = handler.messages
+    assert "Traceback" in message and "RuntimeError" in message
+    assert _FAKE_TOKEN not in message
+
+
+def test_uvicorn_access_formatter_still_works_after_redaction() -> None:
+    """uvicorn's AccessFormatter unpacks record.args as a 5-tuple, so the
+    filter must keep that shape on the access logger."""
+    from uvicorn.logging import AccessFormatter
+
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("203.0.113.7:51000", "GET", f"/api/v1/public/access/{_FAKE_TOKEN}/export", "1.1", 200),
+        None,
+    )
+    assert ReportTokenRedactionFilter().filter(record)
+    formatted = AccessFormatter(
+        '%(client_addr)s - "%(request_line)s" %(status_code)s', use_colors=False
+    ).format(record)
+    assert _FAKE_TOKEN not in formatted
+    assert f"/api/v1/public/access/{REDACTED}/export" in formatted
+    assert "200" in formatted

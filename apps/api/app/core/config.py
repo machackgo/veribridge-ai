@@ -1,3 +1,4 @@
+import ipaddress
 from functools import lru_cache
 from urllib.parse import urlparse
 
@@ -9,9 +10,26 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # running with every production-only guard switched off.
 ALLOWED_ENVIRONMENTS = frozenset({"development", "test", "staging", "production"})
 
-# Hostnames that must never appear in a production CORS allow-list.
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"})
+# Hostnames that must never appear in a production CORS allow-list. IP
+# literals are checked by range in _is_local_origin_host.
+_LOCAL_HOSTNAMES = frozenset({"localhost"})
 _FALSEY_MARKERS = frozenset({"", "0", "false", "no", "off"})
+
+
+def _is_local_origin_host(host: str) -> bool:
+    """True for localhost names and loopback / private / link-local /
+    unspecified IP literals (127.0.0.0/8, ::1, 10/8, 172.16/12, 192.168/16,
+    169.254/16, fc00::/7, fe80::/10, 0.0.0.0, ::)."""
+    host = host.strip().lower().strip("[]")
+    if host in _LOCAL_HOSTNAMES or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
 
 
 class Settings(BaseSettings):
@@ -33,7 +51,8 @@ class Settings(BaseSettings):
     # Production example:
     #   https://veribridgeai.com,https://www.veribridgeai.com
     # When ENVIRONMENT=production startup fails if the list is empty or holds a
-    # wildcard or a localhost / loopback origin (see _enforce_production_guards).
+    # wildcard, "null", or a localhost / loopback / private / link-local origin
+    # (see _enforce_production_guards).
     cors_origins_raw: str = Field(
         default="http://localhost:3000,http://127.0.0.1:3000",
         validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "CORS_ORIGINS"),
@@ -601,7 +620,8 @@ class Settings(BaseSettings):
           so a mis-set ENVIRONMENT cannot expose dev-only behaviour publicly.
         * Production must not enable the DEMO_USER_ID no-token fallback.
         * Production CORS must be an explicit list: not empty, no wildcard
-          (invalid with credentials), no localhost / loopback origins.
+          (invalid with credentials), no "null", no localhost / loopback /
+          private-network / link-local origins.
 
         Messages name the setting only — never its value.
         """
@@ -632,12 +652,19 @@ class Settings(BaseSettings):
                 "https://veribridgeai.com,https://www.veribridgeai.com"
             )
         for origin in origins:
-            host = (urlparse(origin).hostname or origin).strip().lower()
-            if host in _LOOPBACK_HOSTS or host.endswith(".localhost"):
+            if origin.strip().lower() == "null":
                 raise ValueError(
-                    "CORS_ALLOWED_ORIGINS contains a localhost / loopback "
-                    "origin while ENVIRONMENT=production. Remove local "
-                    "development origins from the production allow-list."
+                    "CORS_ALLOWED_ORIGINS contains the 'null' origin while "
+                    "ENVIRONMENT=production. Sandboxed iframes and file:// pages "
+                    "send Origin: null; it must never be allow-listed."
+                )
+            host = urlparse(origin).hostname or origin
+            if _is_local_origin_host(host):
+                raise ValueError(
+                    "CORS_ALLOWED_ORIGINS contains a localhost, loopback, "
+                    "private-network or link-local origin while "
+                    "ENVIRONMENT=production. Remove local development origins "
+                    "from the production allow-list."
                 )
         return self
 

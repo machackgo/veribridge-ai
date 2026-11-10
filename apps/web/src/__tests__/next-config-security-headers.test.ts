@@ -11,7 +11,7 @@ describe("next.config security headers", () => {
     expect(byKey["X-Content-Type-Options"]).toBe("nosniff")
     expect(byKey["Referrer-Policy"]).toBe("strict-origin-when-cross-origin")
     expect(byKey["X-Frame-Options"]).toBe("DENY")
-    expect(byKey["Strict-Transport-Security"]).toBe("max-age=63072000; includeSubDomains")
+    expect(byKey["Strict-Transport-Security"]).toBe("max-age=63072000")
     expect(byKey["Permissions-Policy"]).toContain("camera=(self)")
     expect(byKey["Permissions-Policy"]).toContain("microphone=(self)")
     expect(byKey["Permissions-Policy"]).toContain("display-capture=(self)")

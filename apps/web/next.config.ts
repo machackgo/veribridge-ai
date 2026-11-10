@@ -25,9 +25,12 @@ export const SECURITY_HEADERS: { key: string; value: string }[] = [
     value:
       "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()",
   },
+  // No includeSubDomains yet: it would force HTTPS on every subdomain of the
+  // apex. Add it (and consider preload) only after a subdomain inventory
+  // confirms every subdomain serves HTTPS.
   {
     key: "Strict-Transport-Security",
-    value: "max-age=63072000; includeSubDomains",
+    value: "max-age=63072000",
   },
 ];
 
