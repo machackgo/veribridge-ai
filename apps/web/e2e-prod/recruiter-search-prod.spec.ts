@@ -34,7 +34,7 @@ const QA_IDENTITIES = [
   "Isolation Test",
 ];
 // Slugs of the cleaned (unpublished) QA passports, comma-separated in
-// VB_PROD_QA_SLUGS; the 404 check below is a no-op when it is unset.
+// VB_PROD_QA_SLUGS; the 404 test below is skipped when it is unset.
 const QA_SLUGS = (process.env.VB_PROD_QA_SLUGS ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -125,13 +125,15 @@ test.describe("Recruiter Search V1.5 — production", () => {
     // The mic renders in real Chrome (webkitSpeechRecognition available).
     await expect(page.getByTestId("search-mic")).toBeVisible();
     await page.screenshot({ path: `${SCRATCH}/shots-prod/1-browse.png`, fullPage: true });
+    await browser.close();
+  });
 
-    // The three cleaned QA passports are no longer published (404).
+  test("cleaned QA passports are no longer published (404)", async ({ request }) => {
+    test.skip(QA_SLUGS.length === 0, "VB_PROD_QA_SLUGS not set");
     for (const slug of QA_SLUGS) {
-      const res = await page.request.get(`${API}/api/v1/public/p/${slug}`);
+      const res = await request.get(`${API}/api/v1/public/p/${slug}`);
       expect(res.status(), `QA slug ${slug} should be unpublished`).toBe(404);
     }
-    await browser.close();
   });
 
   test("NLP is independent: bare NLP → honest zero; ML+NLP → close with missing NLP", async () => {

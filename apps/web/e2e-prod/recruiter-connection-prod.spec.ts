@@ -187,6 +187,10 @@ test.describe("recruiter passport connection — production", () => {
     const pub = await fetch(`${API}/api/v1/public/p/${SLUG}`);
     expect(pub.status).toBe(200);
     const text = await pub.text();
+    // Always on: the server's public-safety gate scrubs/refuses every raw email,
+    // so no personal (gmail) or university (.edu) address may ever appear.
+    expect(text).not.toMatch(/[\w.+-]+@(?:[\w-]+\.)*(?:gmail\.com|[\w-]+\.edu)\b/i);
+    // Extra: the owner's specific addresses, when supplied via env.
     for (const email of OWNER_EMAILS) expect(text.toLowerCase()).not.toContain(email);
 
     const anon = await api("GET", "/api/v1/recruiter/connections");
