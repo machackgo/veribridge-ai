@@ -4,7 +4,7 @@ Date: 2026-08-18 · Orchestrator session · Three independent read-only audits (
 
 ## WORKTREE
 
-`/Users/mohammedmubashiruddinfaraz/veribridge-v3-hiring-briefs`
+`<local-worktree>/veribridge-v3-hiring-briefs`
 
 Note: the expected worktree did not exist at session start — the quarantine branch was checked
 out directly in `~/veribridge-ai`. This worktree was created fresh at the quarantine tip.

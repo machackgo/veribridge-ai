@@ -119,7 +119,7 @@ python apps/api/scripts/create_demo_auth_user.py
 The script:
 - Reads `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from `apps/api/.env`
 - Prompts you for a temporary password (not echoed, not stored)
-- Creates `mohammedmubashir@wpi.edu` with `email_confirm = true`
+- Creates the demo account (`VB_DEMO_EMAIL`, default `demo.student@example.edu`) with `email_confirm = true`
 - Prints only the user **ID** and **email** — never prints any key
 - Handles "already exists" gracefully and shows the existing ID
 
@@ -174,7 +174,7 @@ TOKEN=$(curl -s -X POST \
   "https://your-ref.supabase.co/auth/v1/token?grant_type=password" \
   -H "apikey: <SUPABASE_ANON_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"email":"mohammedmubashir@wpi.edu","password":"<your-password>"}' \
+  -d '{"email":"<demo-email>","password":"<your-password>"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
 
 # Use it in subsequent requests

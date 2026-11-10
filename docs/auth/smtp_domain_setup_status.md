@@ -4,7 +4,7 @@ VeriBridge AI currently keeps the real Supabase email OTP flow in place, but pro
 
 ## Current Issue
 
-Resend failed to send the Supabase Auth verification email because the sender domain is not verified yet. The attempted sender used Resend's test setup, but `onboarding@resend.dev` is restricted and cannot send to arbitrary external recipients such as `mohammedmubashir@wpi.edu`.
+Resend failed to send the Supabase Auth verification email because the sender domain is not verified yet. The attempted sender used Resend's test setup, but `onboarding@resend.dev` is restricted and cannot send to arbitrary external recipients such as the owner's university address.
 
 This is expected provider behavior. We should not bypass Resend restrictions or use unverified sender identities for production authentication email.
 
