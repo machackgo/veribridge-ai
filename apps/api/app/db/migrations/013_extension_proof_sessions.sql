@@ -257,7 +257,9 @@ create policy "ext_proof_uploads: own row insert"
     and exists (
       select 1
       from public.extension_proof_sessions eps
-      where eps.id = session_id
+      -- Qualified: an unqualified session_id binds to eps.session_id (the
+      -- sessions table's own text column), not to the upload row.
+      where eps.id = extension_proof_uploads.session_id
         and eps.user_id = (select auth.uid())
     )
   );
