@@ -13,8 +13,8 @@ cover what those files do not:
     another user's report untouched;
   - near-miss tokens (prefix, suffix, case change, padded, implausible shapes)
     never resolve;
-  - a disclosure-hidden report: the GET 404s (already covered) and the view
-    tracker's behaviour is pinned.
+  - a disclosure-hidden report: the GET 404s (already covered); the view
+    tracker should record nothing (strict xfail until finding R8 is fixed).
 
 All storage is in-memory (dict mode). Tokens are generated at test time.
 """
@@ -156,11 +156,19 @@ def test_implausible_token_shapes_404(client: TestClient, mem_store: dict, bad: 
     assert _public_report(client, bad).status_code in (404, 405)
 
 
-def test_disclosure_hidden_report_view_tracker_behaviour(client: TestClient, mem_store: dict) -> None:
-    """GET 404s for a disclosure-hidden report. The view tracker only checks the
-    token and the passport master switch (``resolve_published_project_id``), not
-    ``report_visible``; this test pins that behaviour so a change is deliberate.
-    It is a minor oracle (``recorded: true`` vs ``false``), not a data leak."""
+# Known bug (audit finding R8): the view tracker checks the token and the
+# passport master switch (``resolve_published_project_id``) but not
+# ``disclosure.report_visible``. For a disclosure-hidden report the GET 404s
+# while ``/view`` still answers ``recorded: true`` and writes a view row, which
+# tells a token holder the token is live (an oracle, not a data leak).
+# strict=True: this test starts failing (XPASS) once the route is fixed, so the
+# marker must then be removed and the assertion becomes a regular guard.
+@pytest.mark.xfail(
+    strict=True,
+    reason="R8: /view does not apply the disclosure gate; records views of hidden reports",
+)
+def test_disclosure_hidden_report_view_tracker_records_nothing(client: TestClient, mem_store: dict) -> None:
+    """A disclosure-hidden report 404s on GET and must not record a view."""
     ctx = _publish_setup(client, mem_store)
     _set_mode(client, MODE_CUSTOM)
     _apply(client, _ov("report", ctx["project_id"], "hidden"))
@@ -168,4 +176,4 @@ def test_disclosure_hidden_report_view_tracker_behaviour(client: TestClient, mem
     assert _public_report(client, ctx["token"]).status_code == 404
     view = _record_view(client, ctx["token"])
     assert view.status_code == 200
-    assert view.json() == {"recorded": True}
+    assert view.json() == {"recorded": False}
