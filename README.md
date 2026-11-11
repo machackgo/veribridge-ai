@@ -21,6 +21,16 @@ and organise candidates in a recruiter workspace.
 >   data-backed page are unavailable on the hosted site until it is resumed.
 > - Everything in this repository can still be run locally (see [Local setup](#local-setup)).
 
+## Demo
+
+The repository has no screenshots of the web app or a recorded demo. To see the project:
+
+- the public landing page: <https://veribridgeai.com>;
+- the [Chrome Web Store listing](https://chromewebstore.google.com/detail/veribridge-website-proof/gdogdgnaioldjldljniffcmkcdpdjlme)
+  for the recorder extension, whose store images are kept in
+  [`apps/extension/store-assets`](apps/extension/store-assets);
+- a local instance (see [Local setup](#local-setup)), since the hosted API is suspended.
+
 ## Architecture
 
 ```mermaid
@@ -49,6 +59,21 @@ flowchart LR
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) has the full diagrams: system, evidence pipeline and
 auth flow.
+
+## Project structure
+
+| Path | Contents |
+|---|---|
+| [`apps/api`](apps/api) | FastAPI service: app code in `app/`, SQL migrations in `app/db/migrations/`, tests in `tests/`, maintenance scripts in `scripts/` |
+| [`apps/web`](apps/web) | Next.js web app: routes in `src/app/`, shared UI in `components/`, unit tests in `src/__tests__/`, Playwright specs in `e2e*/`, sample data for prototype pages in `data/`, static assets in `public/` |
+| [`apps/extension`](apps/extension) | Chrome MV3 recorder extension: TypeScript sources in `src/`, tests, release scripts, icons and Chrome Web Store images |
+| [`packages/shared`](packages/shared) | The recorder contract shared by the extension and the web app's tests |
+| [`docs`](docs) | Architecture, specs, security spec, QA checklists, Chrome Web Store material, research notes, and design prototypes (`docs/design`, not deployed) |
+| [`infra`](infra) | Empty placeholders for Docker and GitHub Actions (no CI yet) |
+| [`scripts`](scripts) | Empty placeholder |
+| `V3_RECONCILIATION_AUDIT.md`, `V4_ARCHITECTURE_AUDIT.md`, `V5_ARCHITECTURE_AUDIT.md`, `VBR_T7C_SMOKE_TEST_CHECKLIST.md` | Historical design audits and a manual QA checklist from earlier development phases |
+| `.env.example` | Legacy root environment template; use the per-app `apps/api/.env.example` and `apps/web/.env.example` |
+| [`SECURITY.md`](SECURITY.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) | Vulnerability reporting policy; commit conventions |
 
 ## Features
 
@@ -116,7 +141,8 @@ Status key:
   sends baseline security headers (`nosniff`, `X-Frame-Options: DENY` with `frame-ancestors 'none'`,
   Referrer-Policy, Permissions-Policy, HSTS), not a full Content-Security-Policy.
 
-These controls have not been independently audited.
+These controls have not been independently audited. To report a vulnerability, see
+[`SECURITY.md`](SECURITY.md).
 
 ## Tests
 
