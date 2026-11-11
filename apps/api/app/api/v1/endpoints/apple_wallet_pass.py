@@ -43,7 +43,7 @@ def _require_pass_preview_allowed() -> None:
     Declared as a dependency BEFORE the db dependencies so a disabled
     production server answers the honest 404 without ever touching the DB.
     """
-    if not settings.apple_wallet_enabled and settings.environment.strip().lower() == "production":
+    if not settings.apple_wallet_enabled and settings.is_production:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={

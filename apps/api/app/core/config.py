@@ -1,8 +1,35 @@
+import ipaddress
 from functools import lru_cache
 from urllib.parse import urlparse
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ENVIRONMENT is normalised (stripped, lower-cased) and must be one of these.
+# Anything else (e.g. "prod", "live") fails startup instead of silently
+# running with every production-only guard switched off.
+ALLOWED_ENVIRONMENTS = frozenset({"development", "test", "staging", "production"})
+
+# Hostnames that must never appear in a production CORS allow-list. IP
+# literals are checked by range in _is_local_origin_host.
+_LOCAL_HOSTNAMES = frozenset({"localhost"})
+_FALSEY_MARKERS = frozenset({"", "0", "false", "no", "off"})
+
+
+def _is_local_origin_host(host: str) -> bool:
+    """True for localhost names and loopback / private / link-local /
+    unspecified IP literals (127.0.0.0/8, ::1, 10/8, 172.16/12, 192.168/16,
+    169.254/16, fc00::/7, fe80::/10, 0.0.0.0, ::)."""
+    host = host.strip().lower().strip("[]")
+    if host in _LOCAL_HOSTNAMES or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
 
 
 class Settings(BaseSettings):
@@ -12,14 +39,20 @@ class Settings(BaseSettings):
     api_v1_prefix: str = Field(default="/api/v1", alias="API_V1_PREFIX")
     environment: str = Field(default="development", alias="ENVIRONMENT")
 
+    # Render sets RENDER=true in every service's runtime environment. Used only
+    # as a deployment marker: a Render process that is not ENVIRONMENT=production
+    # fails startup (see _enforce_production_guards).
+    render_marker: str = Field(default="", alias="RENDER")
+
     # ── CORS ─────────────────────────────────────────────────────
     # Comma-separated list of allowed frontend origins.
     # Canonical env var is CORS_ALLOWED_ORIGINS; the older CORS_ORIGINS is
     # still accepted for backward compatibility (CORS_ALLOWED_ORIGINS wins).
     # Production example:
-    #   https://veribridgeai.com,https://www.veribridgeai.com,http://localhost:3000,http://127.0.0.1:3000
-    # A literal "*" wildcard origin is rejected when ENVIRONMENT=production
-    # (see _reject_wildcard_cors_in_production below).
+    #   https://veribridgeai.com,https://www.veribridgeai.com
+    # When ENVIRONMENT=production startup fails if the list is empty or holds a
+    # wildcard, "null", or a localhost / loopback / private / link-local origin
+    # (see _enforce_production_guards).
     cors_origins_raw: str = Field(
         default="http://localhost:3000,http://127.0.0.1:3000",
         validation_alias=AliasChoices("CORS_ALLOWED_ORIGINS", "CORS_ORIGINS"),
@@ -574,25 +607,87 @@ class Settings(BaseSettings):
 
         return v.rstrip("/")  # normalise: strip trailing slash
 
-    @model_validator(mode="after")
-    def _reject_wildcard_cors_in_production(self) -> "Settings":
-        """Fail fast if a wildcard CORS origin is configured in production.
+    @field_validator("environment", mode="before")
+    @classmethod
+    def _normalise_environment(cls, v: object) -> str:
+        """Strip + lower-case ENVIRONMENT and reject unknown values.
 
-        Allowing '*' with allow_credentials=True is both a security hazard and
-        invalid per the CORS spec.  In non-production environments the wildcard
-        is left untouched so local tooling keeps working.
+        " Production " and "PRODUCTION" both mean production; an unknown value
+        such as "prod" fails startup rather than silently disabling every
+        production-only guard.
         """
-        if self.environment.strip().lower() == "production":
-            if any(origin == "*" for origin in self.cors_origins):
+        normalised = str(v if v is not None else "").strip().lower()
+        if normalised not in ALLOWED_ENVIRONMENTS:
+            raise ValueError(
+                "ENVIRONMENT must be one of "
+                f"{', '.join(sorted(ALLOWED_ENVIRONMENTS))} (case-insensitive)."
+            )
+        return normalised
+
+    @model_validator(mode="after")
+    def _enforce_production_guards(self) -> "Settings":
+        """Fail startup on unsafe deployment configurations.
+
+        * A Render process (RENDER set) must run with ENVIRONMENT=production,
+          so a mis-set ENVIRONMENT cannot expose dev-only behaviour publicly.
+        * Production must not enable the DEMO_USER_ID no-token fallback.
+        * Production CORS must be an explicit list: not empty, no wildcard
+          (invalid with credentials), no "null", no localhost / loopback /
+          private-network / link-local origins.
+
+        Messages name the setting only — never its value.
+        """
+        if self.render_marker.strip().lower() not in _FALSEY_MARKERS and not self.is_production:
+            raise ValueError(
+                "RENDER is set (deployed on Render) but ENVIRONMENT is not "
+                "'production'. Set ENVIRONMENT=production for deployed services."
+            )
+        if not self.is_production:
+            return self
+        if self.enable_demo_user_fallback:
+            raise ValueError(
+                "ENABLE_DEMO_USER_FALLBACK must not be true when "
+                "ENVIRONMENT=production."
+            )
+        origins = self.cors_origins
+        if not origins:
+            raise ValueError(
+                "CORS_ALLOWED_ORIGINS is empty while ENVIRONMENT=production. "
+                "Set it to the explicit production origins, e.g. "
+                "https://veribridgeai.com,https://www.veribridgeai.com"
+            )
+        if any("*" in origin for origin in origins):
+            raise ValueError(
+                "Wildcard CORS origin '*' is not allowed when "
+                "ENVIRONMENT=production. Set CORS_ALLOWED_ORIGINS to the "
+                "explicit production origins, e.g. "
+                "https://veribridgeai.com,https://www.veribridgeai.com"
+            )
+        for origin in origins:
+            if origin.strip().lower() == "null":
                 raise ValueError(
-                    "Wildcard CORS origin '*' is not allowed when "
-                    "ENVIRONMENT=production. Set CORS_ALLOWED_ORIGINS to the "
-                    "explicit production origins, e.g. "
-                    "https://veribridgeai.com,https://www.veribridgeai.com"
+                    "CORS_ALLOWED_ORIGINS contains the 'null' origin while "
+                    "ENVIRONMENT=production. Sandboxed iframes and file:// pages "
+                    "send Origin: null; it must never be allow-listed."
+                )
+            host = urlparse(origin).hostname or origin
+            if _is_local_origin_host(host):
+                raise ValueError(
+                    "CORS_ALLOWED_ORIGINS contains a localhost, loopback, "
+                    "private-network or link-local origin while "
+                    "ENVIRONMENT=production. Remove local development origins "
+                    "from the production allow-list."
                 )
         return self
 
     # ── Derived properties ────────────────────────────────────────
+
+    @property
+    def is_production(self) -> bool:
+        """The single production check. Normalises again so a runtime
+        assignment (e.g. a test patching ``settings.environment``) that skips
+        the field validator still compares correctly."""
+        return str(self.environment or "").strip().lower() == "production"
 
     @property
     def cors_origins(self) -> list[str]:

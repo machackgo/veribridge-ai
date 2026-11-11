@@ -46,8 +46,9 @@ Stack: **Vercel** (Next.js web app) · **Render** (FastAPI backend) · **Supabas
 - [ ] Start command (adjust to repo): `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
 - [ ] **Environment variables** (Production):
   - [ ] `ENVIRONMENT=production`
-  - [ ] `CORS_ALLOWED_ORIGINS=https://veribridgeai.com,https://www.veribridgeai.com,http://localhost:3000,http://127.0.0.1:3000`
-        (⚠ a literal `*` is rejected at startup when `ENVIRONMENT=production`)
+  - [ ] `CORS_ALLOWED_ORIGINS=https://veribridgeai.com,https://www.veribridgeai.com`
+        (⚠ startup fails when `ENVIRONMENT=production` and the list is empty or holds `*` or a localhost / 127.0.0.1 origin;
+        it also fails on Render (`RENDER` set) unless `ENVIRONMENT=production`, and if `ENABLE_DEMO_USER_FALLBACK=true` in production)
   - [ ] `FRONTEND_URL=https://veribridgeai.com`
   - [ ] `PUBLIC_APP_URL=https://veribridgeai.com`
   - [ ] `BACKEND_PUBLIC_URL=https://api.veribridgeai.com`

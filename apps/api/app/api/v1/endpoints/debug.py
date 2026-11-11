@@ -30,7 +30,7 @@ router = APIRouter()
 
 
 def _block_in_production() -> None:
-    if settings.environment == "production":
+    if settings.is_production:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Debug endpoints are disabled in production.",

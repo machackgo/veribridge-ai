@@ -70,7 +70,7 @@ def get_pipeline_db(
     if isinstance(db, dict):
         return db  # test-mode dict or explicit override
 
-    if settings.environment == "production":
+    if settings.is_production:
         return db
 
     if not _pipeline_table_checked:
@@ -106,7 +106,7 @@ def _demo_fallback_enabled() -> bool:
     fails closed (401 / anonymous), never silently downgrades to the demo user.
     """
     return (
-        settings.environment != "production"
+        not settings.is_production
         and settings.enable_demo_user_fallback
         and bool(settings.demo_user_id)
     )
