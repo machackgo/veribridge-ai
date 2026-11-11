@@ -13,6 +13,7 @@ from app.schemas.github_proof_submission import (
     GitHubProofSubmissionResponse,
 )
 from app.services.extension_proof_github_analysis_service import analyze_github_repo
+from app.services.evidence_access_tokens import resolve_grant
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
 from app.services.notification_service import NotificationService
 from app.services.public_work_passport_service import (
@@ -27,7 +28,6 @@ _GITHUB_PROOFS = "github_proof_submissions"
 _USERS = "users"
 _SESSIONS = "extension_proof_sessions"
 _PASSPORTS = "public_work_passports"
-_GRANTS = "evidence_access_grants"
 _PROJECT_DEFENSE = "project_defense_analysis_results"
 _AI_DOMAIN = "ai_domain_review_results"
 
@@ -193,12 +193,7 @@ class GitHubProofService:
         ]
 
     def get_protected_github_proofs(self, access_token: str) -> list[GitHubProofPublicResponse]:
-        grant = self._grant_by_token(access_token)
-        if not grant or grant.get("revoked_at"):
-            raise EvidenceAccessDeniedError("Access token is invalid or revoked.")
-        expires_at = _parse_dt(grant.get("expires_at"))
-        if expires_at and expires_at <= _now():
-            raise EvidenceAccessDeniedError("Access token is expired.")
+        grant = resolve_grant(self._client, access_token)
         granted_sections = _normalized_sections(list(grant.get("granted_sections") or []))
         if not (_PROTECTED_SECTION_NAMES & granted_sections):
             raise EvidenceAccessDeniedError("Access grant does not include GitHub proof access.")
@@ -323,16 +318,6 @@ class GitHubProofService:
                     return row
             return None
         result = self._client.table(_PASSPORTS).select("*").eq("public_slug", public_slug).limit(1).execute()
-        rows = getattr(result, "data", []) or []
-        return rows[0] if rows else None
-
-    def _grant_by_token(self, token: str) -> dict[str, Any] | None:
-        if isinstance(self._client, dict):
-            for row in self._client.get(_GRANTS, {}).values():
-                if str(row.get("access_token")) == token:
-                    return row
-            return None
-        result = self._client.table(_GRANTS).select("*").eq("access_token", token).limit(1).execute()
         rows = getattr(result, "data", []) or []
         return rows[0] if rows else None
 
@@ -661,18 +646,6 @@ def make_json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [make_json_safe(item) for item in value]
     return value
-
-
-def _parse_dt(value: Any) -> datetime | None:
-    if value is None or isinstance(value, datetime):
-        return value
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 def _fallback_failure_reason(exc: Exception | None) -> str:
