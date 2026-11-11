@@ -16,7 +16,7 @@ table was created outside the repository in production. As a result:
 ## Where the real DDL must come from
 
 Do not write the `CREATE TABLE` from the code or from guesses. Run
-`VERIBRIDGE_PROD_VERIFY_ONE.sql` against production and use its
+the owner-run, read-only production verification query (kept outside this repository) against production and use its
 `catalog.project_defense_analysis_results` section, which returns the table's
 real column list (name, type, not-null, default, identity, generated),
 constraints, indexes, triggers, RLS flags and policies. A bootstrap migration

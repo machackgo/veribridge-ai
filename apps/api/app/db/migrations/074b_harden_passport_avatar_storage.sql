@@ -29,7 +29,7 @@
 --   2-5 MB uploads fail with a storage error (HTTP 502). To use 2 MB, lower both
 --   constants first, deploy, then change 5242880 to 2097152 below.
 --
--- CONDITIONAL: run if VERIBRIDGE_PROD_VERIFY_ONE.sql lists any of the four
+-- CONDITIONAL: run if the production verification query lists any of the four
 --   policies under catalog.policies_watched (schema storage), or
 --   data.storage_buckets shows passport-avatars with no file_size_limit /
 --   allowed_mime_types. Otherwise it is a harmless no-op.

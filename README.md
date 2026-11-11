@@ -52,7 +52,7 @@ flowchart LR
 |---|---|
 | [`apps/web`](apps/web) | Next.js 16 (App Router, React 19, TypeScript, Tailwind) on Vercel: student, recruiter and public pages |
 | [`apps/api`](apps/api) | FastAPI service on Render: evidence analysis, reports, passports, recruiter workspace |
-| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 75 ordered SQL migration files (`001`–`073`, plus the conditional hardening migrations `074a` and `074b`). RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
+| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 77 ordered SQL migration files (`001`–`073`, then the hardening migrations `074a`–`074d`: `074a`/`074b` conditional policy hardening, `074c` removal of two production-only evidence-access policies, `074d` access-grant lifecycle). RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
 | [`apps/extension`](apps/extension) | Chrome Manifest V3 "Website Proof Recorder" |
 | [`packages/shared`](packages/shared) | Recorder contract shared by the extension and the web app's tests |
 | [`docs`](docs) | Specs, design notes, QA and Chrome Web Store material |
@@ -184,8 +184,8 @@ commit `.env` files.
 ### 1. Database (Supabase)
 
 1. Create a Supabase project.
-2. Apply the 75 migration files in `apps/api/app/db/migrations/` in order in the SQL editor:
-   `001_*.sql` to `073_*.sql`, then `074a_*.sql` and `074b_*.sql`. In production, `074a` and `074b`
+2. Apply the 77 migration files in `apps/api/app/db/migrations/` in order in the SQL editor:
+   `001_*.sql` to `073_*.sql`, then `074a_*.sql` to `074d_*.sql`. In production, `074a` and `074b`
    are conditional hardening: apply them only after a check on a staging project (see each file's
    header).
    - `033` and `046` alter `project_defense_analysis_results`, which no migration creates (the
@@ -254,6 +254,10 @@ In Chrome, open `chrome://extensions`, enable Developer mode, choose **Load unpa
 See [`apps/extension/README.md`](apps/extension/README.md) for details.
 
 ## Known limitations
+
+- **Access-link delivery.** Approving a recruiter's access request issues a new hash-only access token, returned once
+  in the approve response. The web UI does not yet display or send that link, so delivering it to the recruiter is a
+  manual step today.
 
 - **The hosted API is suspended.** Hosted sign-in and every data-backed page are unavailable until it resumes.
 - **No CI, and no migration runner.** Migrations are applied by hand, in order.

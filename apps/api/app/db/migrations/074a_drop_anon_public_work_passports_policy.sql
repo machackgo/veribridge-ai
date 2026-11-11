@@ -19,7 +19,7 @@
 --   get_supabase_client), which bypasses RLS. The owner-only policies
 --   (own row select/insert/update) and "service role all" stay in place.
 --
--- CONDITIONAL: run only if VERIBRIDGE_PROD_VERIFY_ONE.sql shows this policy in
+-- CONDITIONAL: run only if the production verification query shows this policy in
 --   catalog.policies_watched AND data.public_work_passports_exposure.legacy_public_rows > 0
 --   (or you want the policy gone regardless). Otherwise it is a harmless no-op.
 --

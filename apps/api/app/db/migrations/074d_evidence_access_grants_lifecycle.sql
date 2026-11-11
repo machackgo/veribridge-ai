@@ -29,8 +29,8 @@
 -- Preconditions
 --   Migrations 021 and 037 applied. Production may differ from the repo
 --   (see 074c); this migration only drops the policy by its exact 021 name
---   and is a no-op where it is absent. Use VERIBRIDGE_PROD_FIX_GRANTS_LIFECYCLE.sql
---   (guarded, fail-closed) for production instead of this file.
+--   and is a no-op where it is absent. For production, use a guarded, fail-closed script
+--   (exact-definition check before the drop) instead of this file.
 --
 -- Properties
 --   One transaction; lock_timeout bounds the ACCESS EXCLUSIVE locks so the
