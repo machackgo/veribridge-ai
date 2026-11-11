@@ -42,7 +42,7 @@ flowchart LR
 |---|---|
 | [`apps/web`](apps/web) | Next.js 16 (App Router, React 19, TypeScript, Tailwind) on Vercel: student, recruiter and public pages |
 | [`apps/api`](apps/api) | FastAPI service on Render: evidence analysis, reports, passports, recruiter workspace |
-| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 73 ordered SQL migrations. RLS is enabled on all tables, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
+| [`apps/api/app/db/migrations`](apps/api/app/db/migrations) | Postgres schema: 75 ordered SQL migration files (`001`–`073`, plus the conditional hardening migrations `074a` and `074b`). RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. |
 | [`apps/extension`](apps/extension) | Chrome Manifest V3 "Website Proof Recorder" |
 | [`packages/shared`](packages/shared) | Recorder contract shared by the extension and the web app's tests |
 | [`docs`](docs) | Specs, design notes, QA and Chrome Web Store material |
@@ -96,38 +96,54 @@ Status key:
   - The API talks to Postgres and Storage with the **service-role key**, which bypasses RLS. So
     ownership and role checks are enforced **in application code** (for example
     `get_owned_vbr_project_or_404`, `permission_service.py`), and the tests cover them.
-  - **Row Level Security.** RLS is enabled on all tables, including the four proof/video tables added in migration 073; access is API-mediated with the service role. RLS is defence in depth against direct Supabase access with the
+  - **Row Level Security.** RLS is enabled on every table the migrations create, including the four proof/video tables added in migration 073; access is API-mediated with the service role. RLS is defence in depth against direct Supabase access with the
     anon or user key. It is not what protects API requests.
 - **Public surfaces** (passport, report links, Beam links) need no session.
   - Report links use random tokens (`secrets.token_urlsafe(24)`). They stay valid until the owner
     unpublishes, and resolve only while the owner's passport is public.
+  - Disclosure fails closed: if the owner's disclosure settings cannot be read, every public surface
+    treats the passport as private (the report 404s and its `/view` tracker records nothing).
   - Responses are filtered so they never carry storage paths, signed URLs, emails or internal user/auth IDs.
   - Retained artifacts are streamed by the API. Proof-artifact signed URLs last at most 5 minutes;
     defense-recording playback URLs last 30 minutes.
 - **Secrets.** Secrets live only in untracked `.env` files and in the hosting dashboards. The web
   app must never receive `SUPABASE_SERVICE_ROLE_KEY`. In production the API refuses its
   development demo-user fallback.
+- **Deployment guards.** `ENVIRONMENT` is normalised and must be a known value, and a Render process
+  must run as `production`. In production the API refuses to start if the demo fallback is enabled
+  or `CORS_ALLOWED_ORIGINS` is empty or contains a wildcard, `null` or a local/private origin; it
+  does not mount the docs or debug routes, and public report and access tokens are redacted from its logs. The web app
+  sends baseline security headers (`nosniff`, `X-Frame-Options: DENY` with `frame-ancestors 'none'`,
+  Referrer-Policy, Permissions-Policy, HSTS), not a full Content-Security-Policy.
 
 These controls have not been independently audited.
 
 ## Tests
 
-Results from 2026-11-10 on macOS. Python 3.11.14 with `apps/api/requirements.txt` installed.
+Results for the merged state as of 2026-11-10 (all security branches merged), on macOS. Python 3.11.14 with `apps/api/requirements.txt` installed.
 Node 24.11.1 / npm 11.21.0.
 
 | Suite | Command | Result |
 |---|---|---|
-| API (pytest) | `cd apps/api && pytest` | **5,058 passed, 14 skipped**, 0 failed |
-| Web unit (Vitest) | `cd apps/web && npx vitest run` | **1,943 passed** (72 files) |
+| API (pytest) | `cd apps/api && pytest` | **5,151 passed, 14 skipped**, 0 failed (with the MiniLM model available; see notes) |
+| Web unit (Vitest) | `cd apps/web && npx vitest run` | **1,946 passed** (73 files) |
 | Web types | `cd apps/web && npx tsc --noEmit` | clean |
+| Web production build | `cd apps/web && npm run build` | succeeds |
 | Extension (node test runner) | `cd apps/extension && npm test` | **76 passed** |
 | Extension types | `cd apps/extension && npm run typecheck` | clean |
+| Extension store build | `cd apps/extension && npm run build:release` | succeeds |
 
 Notes:
 
 - API tests use an in-memory store and make no Supabase calls. Some semantic-verification tests
   download the `all-MiniLM-L6-v2` model on first run. Tests for optional backends (Tesseract and
-  other local OCR/vision providers) are skipped when those packages are not installed.
+  other local OCR/vision providers) are skipped when those packages are not installed: the 14 skips
+  are 11 OCR tests that need `pytesseract` and 3 opt-in smoke tests that need
+  `VISUAL_REASONING_ENABLED=true`.
+- If the `all-MiniLM-L6-v2` model cannot be downloaded or loaded (offline, no cache), one test fails:
+  `test_website_semantic_verification_service.py::test_recruiter_summary_is_cautious_when_output_mismatch_exists`
+  (5,150 passed, 1 failed). That failure is the known fallback defect listed under Known limitations; the
+  test is intentionally left unchanged.
 - Playwright suites exist in `apps/web/e2e` (mocked), `apps/web/e2e-local` (local stack) and
   `apps/web/e2e-prod` (the live site; it needs QA sessions and `VB_PROD_REPORT_TOKEN_*`). None of
   them were part of the results above, and the production suites cannot run while the API is suspended.
@@ -142,7 +158,19 @@ commit `.env` files.
 ### 1. Database (Supabase)
 
 1. Create a Supabase project.
-2. Apply `apps/api/app/db/migrations/001_*.sql` to `073_*.sql` **in numeric order** in the SQL editor.
+2. Apply the 75 migration files in `apps/api/app/db/migrations/` in order in the SQL editor:
+   `001_*.sql` to `073_*.sql`, then `074a_*.sql` and `074b_*.sql`. In production, `074a` and `074b`
+   are conditional hardening: apply them only after a check on a staging project (see each file's
+   header).
+   - `033` and `046` alter `project_defense_analysis_results`, which no migration creates (the
+     production table predates the migrations). A bootstrap migration is pending (see
+     `075_bootstrap_note_project_defense_analysis_results.md`), so a fresh database currently needs
+     that table created before `033` is applied.
+   - On a fresh database the migrations leave owner-scoped write policies for signed-in users on 62
+     tables, so a user can write their own rows directly through PostgREST, not only through the
+     API. For example, the `extension_proof_uploads` UPDATE policy from `013`, which `061` leaves in
+     place, has a `WITH CHECK` on `user_id` only, so a user can re-point their own upload at another
+     session. Whether production has these policies is checked by the production verification query.
 3. Create the private Storage buckets named by `SUPABASE_VBR_MEDIA_BUCKET` and
    `SUPABASE_PROOF_ARTIFACT_BUCKET` (`.env.example` values `vbr-media` and `proof-artifacts`).
    - Project Defense media and keyframe evidence use further private buckets named by
@@ -219,6 +247,10 @@ See [`apps/extension/README.md`](apps/extension/README.md) for details.
     current system. The root `.env.example` lists variables the apps no longer read; use the
     per-app `.env.example` files.
   - The API's default `APP_NAME` is still the early project name.
+
+## Licence
+
+The repository has no `LICENSE` file, so no licence is granted and default copyright applies.
 
 ## Development notes
 
