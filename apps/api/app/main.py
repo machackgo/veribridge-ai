@@ -5,8 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.api.v1.endpoints import debug as debug_endpoints
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.log_redaction import install_report_token_redaction, quiet_http_client_loggers
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +83,17 @@ def _log_visual_reasoning_config() -> None:
 
 
 def create_app() -> FastAPI:
+    # Public report tokens are bearer secrets carried in URL paths; strip them
+    # from uvicorn access/error logs and from this module's request logging.
+    # httpx logs every Supabase request URL (``public_report_token=eq.<token>``)
+    # at INFO, so it is raised to WARNING.
+    install_report_token_redaction()
+    quiet_http_client_loggers()
+
     # Interactive API docs + schema are development conveniences: in
     # production they enumerate the full route surface to anonymous callers,
     # so they are disabled there.
-    expose_docs = settings.environment != "production"
+    expose_docs = not settings.is_production
     app = FastAPI(
         title=settings.app_name,
         version=settings.app_version,
@@ -102,7 +111,9 @@ def create_app() -> FastAPI:
         # Public surfaces honor the Passport visibility switch; forbidding
         # browser/CDN caching keeps Public → Private revocation immediate.
         response = await call_next(request)
-        if request.url.path.startswith(f"{settings.api_v1_prefix}/public/"):
+        # Use the raw ASGI path, not request.url (which is built from the Host
+        # header; see Starlette CVE-2026-48710 / CVE-2026-54282).
+        if request.scope.get("path", "").startswith(f"{settings.api_v1_prefix}/public/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -116,9 +127,22 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
+    # Dev-only debug endpoints are not mounted at all in production (their
+    # handlers also 403 there, as defence in depth).
+    if not settings.is_production:
+        app.include_router(
+            debug_endpoints.router,
+            prefix=f"{settings.api_v1_prefix}/debug",
+            tags=["debug"],
+        )
+
     @app.on_event("startup")
     async def on_startup() -> None:
         logging.basicConfig(level=logging.INFO)
+        # Re-run after basicConfig so the root handler it may have just
+        # created (which app.* loggers propagate to) also redacts.
+        install_report_token_redaction()
+        quiet_http_client_loggers()
         _log_visual_reasoning_config()
 
     return app

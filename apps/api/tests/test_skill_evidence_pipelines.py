@@ -1173,8 +1173,8 @@ class TestVisibilityPersistenceEndpoints:
 
 # ── Dev fallback ID persistence tests ─────────────────────────────────────────
 
-# UUID that matches the DEMO_USER_ID set in apps/api/.env for local dev.
-DEV_FALLBACK_ID = "836d5bc3-3b1b-4bae-8c8b-104fc220ac95"
+# Synthetic stand-in for the DEMO_USER_ID set in apps/api/.env for local dev.
+DEV_FALLBACK_ID = "207e4e01-1a1b-41d6-bede-8f99651b7623"
 
 
 class TestDevFallbackPersistence:

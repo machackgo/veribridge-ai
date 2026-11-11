@@ -4,7 +4,7 @@
 // classification, deadline behavior, and late-response acceptance.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-const OWNER_USER_ID = "42b0fe06-b9f3-4809-8647-2008ee7b678f"
+const OWNER_USER_ID = "44e338a4-218c-484e-89ef-bc07ceecf33f"
 
 vi.mock("@/lib/supabase/client", () => ({
   createSupabaseBrowserClient: () => ({

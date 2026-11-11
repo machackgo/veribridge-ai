@@ -279,7 +279,7 @@ class TestMainIntegration:
         from scripts import create_demo_auth_user as script
         mock_user = MagicMock()
         mock_user.id = "test-uuid-123"
-        mock_user.email = "mohammedmubashir@wpi.edu"
+        mock_user.email = script.DEMO_EMAIL
         mock_response = MagicMock()
         mock_response.user = mock_user
         mock_client = MagicMock()
@@ -305,7 +305,7 @@ class TestMainIntegration:
         from scripts import create_demo_auth_user as script
         existing_user = MagicMock()
         existing_user.id = "existing-uuid-abc"
-        existing_user.email = "mohammedmubashir@wpi.edu"
+        existing_user.email = script.DEMO_EMAIL
         mock_client = MagicMock()
         # create_user raises "already registered" error
         mock_client.auth.admin.create_user.side_effect = Exception(

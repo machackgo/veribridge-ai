@@ -30,7 +30,7 @@ export default function UniversityLayout({ children }: { children: ReactNode }) 
       accountNav={accountNav}
       persona={{
         name: "WPI Career Center",
-        detail: "career-dev@wpi.edu",
+        detail: "career-dev@example.edu",
         initials: "W",
         badge: "Institutional · DPA",
         avatarBg: "#9b1414",

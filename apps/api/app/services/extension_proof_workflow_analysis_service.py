@@ -1466,7 +1466,7 @@ def _build_visual_reasoning_session_summary_from_db(
         # ── Read-time re-validation ──────────────────────────────────────────
         # Re-check stored "analyzed" observations against frame OCR context.
         # This catches observations stored before the write-time gate was
-        # strengthened (e.g., session 7795b731 stored with the old validator
+        # strengthened (e.g., a production session stored with the old validator
         # that lacked Gapminder/map/bubble terms in _APP_UI_TERMS).
         _ocr_raw = row.get("ocr_text")
         _ocr_parts: list[str] = []

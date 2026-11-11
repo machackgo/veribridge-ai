@@ -192,7 +192,9 @@ class TestDependencyHandling:
             provider._ocr_engine = None
             provider._available = None
 
-        import pytesseract
+        # pytesseract is an optional OCR backend (commented out in
+        # requirements.txt); skip rather than error when it is not installed.
+        pytesseract = pytest.importorskip("pytesseract")
         with patch.object(pytesseract, "get_tesseract_version",
                           side_effect=Exception("tesseract binary not found")):
             # Re-init with fresh state so it tries again

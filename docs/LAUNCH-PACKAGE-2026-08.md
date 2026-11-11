@@ -65,8 +65,8 @@ Key invariants:
 
 | Tier | Where | How | State |
 |---|---|---|---|
-| Backend | Render service `veribridge-api` (`srv-d9fgdnrrjlhs73aa8dq0`) | Auto-deploy **off**; trigger via `POST /v1/services/<id>/deploys` with `commitId` | Deploy `dep-d9p737vqj5pc73djrta0` live 2026-08-04 23:16 UTC |
-| Frontend | Vercel project `veribridge-web` (root `apps/web`) | `npx vercel deploy --prod --archive=tgz --yes` from repo root | `dpl_G5aNduCsNgF3dXTjQr6ahfUg7NSS` aliased to veribridgeai.com |
+| Backend | Render service `veribridge-api` (`<render-service-id>`) | Auto-deploy **off**; trigger via `POST /v1/services/<id>/deploys` with `commitId` | Deploy `<render-deploy-id>` live 2026-08-04 23:16 UTC |
+| Frontend | Vercel project `veribridge-web` (root `apps/web`) | `npx vercel deploy --prod --archive=tgz --yes` from repo root | `<vercel-deployment-id>` aliased to veribridgeai.com |
 | Database | Supabase Postgres | Numbered migrations `apps/api/app/db/migrations/` (runner needs URL-decoded password) | Schema at 064; 2026-08 access-policy repair verified no-op |
 | Auth email | Resend custom SMTP | Supabase Auth → SMTP settings | Domain verified; end-to-end delivery confirmed |
 

@@ -588,7 +588,7 @@ class TestConsistencyCheckerEdgeCases:
 
 
 # ── Regression tests: Gapminder and data visualization context ────────────────
-# Covers the live failure in session 7795b731-2fcf-4b52-8bc1-9b72f6be8f1f where
+# Covers the live failure in a production session where
 # Qwen returned "person wearing red shirt and black pants standing in front of
 # white wall" for a Gapminder Tools recording.
 

@@ -65,16 +65,12 @@ class TestCorsAllowedOrigins:
         s = make_settings(CORS_ORIGINS="http://localhost:3000,http://127.0.0.1:3000")
         assert s.cors_origins == ["http://localhost:3000", "http://127.0.0.1:3000"]
 
-    def test_production_full_origin_set_accepted(self) -> None:
+    def test_production_explicit_origin_set_accepted(self) -> None:
         s = make_settings(
             ENVIRONMENT="production",
-            CORS_ALLOWED_ORIGINS=(
-                "https://veribridgeai.com,https://www.veribridgeai.com,"
-                "http://localhost:3000,http://127.0.0.1:3000"
-            ),
+            CORS_ALLOWED_ORIGINS="https://veribridgeai.com,https://www.veribridgeai.com",
         )
-        assert "https://veribridgeai.com" in s.cors_origins
-        assert "https://www.veribridgeai.com" in s.cors_origins
+        assert s.cors_origins == ["https://veribridgeai.com", "https://www.veribridgeai.com"]
 
     def test_wildcard_rejected_in_production(self) -> None:
         import pydantic

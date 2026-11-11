@@ -4,16 +4,29 @@ import * as fs from "fs";
 // Recruiter Evidence Discovery V1.6 — PRODUCTION verification against
 // veribridgeai.com. Throwaway QA recruiter sessions minted for this run
 // (deleted after). Corpus ground truth (2026-08-18): exactly ONE
-// discoverable candidate — Mohammed Mubashir Uddin Faraz (ZwC_0l8HutI) with
+// discoverable candidate — the owner's passport (VB_PROD_CANDIDATE_SLUG) with
 // Machine Learning / FastAPI / Python evidence; NO Data Engineering
 // evidence, NO NLP evidence.
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/e52d8d20-2420-4d65-b7dc-a59d237c9c98/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME. The suite is skipped when any is
+// unset (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+// VB_PROD_CANDIDATE_NAME = the candidate's displayed name (first + second
+// name); assertions use it, or its first word, as a substring.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_prod_sessions.json` : "";
+const CANDIDATE_SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+const CANDIDATE_NAME = (process.env.VB_PROD_CANDIDATE_NAME ?? "").trim();
+const CANDIDATE_FIRST_NAME = CANDIDATE_NAME.split(/\s+/)[0] ?? "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    CANDIDATE_SLUG &&
+    CANDIDATE_NAME,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH, VB_PROD_CANDIDATE_SLUG, VB_PROD_CANDIDATE_NAME to run this suite.");
 const BASE = "https://veribridgeai.com";
 const API = "https://veribridge-api.onrender.com";
-const CANDIDATE_SLUG = "ZwC_0l8HutI";
 const QA_IDENTITIES = [
   "QA Student One-Forty-Eight",
   "QA-PROOF-TO-BEAM-E2E",
@@ -21,9 +34,9 @@ const QA_IDENTITIES = [
 ];
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { rec1: Session; rec2: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_prod_sessions.json`, "utf8"),
-);
+const qa: { rec1: Session; rec2: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const consoleErrors: string[] = [];
 const serverErrors: string[] = [];
@@ -108,7 +121,7 @@ test.describe("Recruiter Evidence Discovery — production", () => {
     await searchFor(page, "show me proof of machine learning");
     await expect(page.getByTestId("evidence-results")).toBeVisible({ timeout: 30_000 });
     const group = page.getByTestId("evidence-group-card").first();
-    await expect(page.getByTestId("evidence-group-name")).toContainText("Mohammed Mubashir");
+    await expect(page.getByTestId("evidence-group-name")).toContainText(CANDIDATE_NAME);
     expect(await page.getByTestId("evidence-item").count()).toBeGreaterThanOrEqual(1);
     const firstItem = page.getByTestId("evidence-item").first();
     await expect(firstItem).toContainText("Machine Learning");
@@ -166,7 +179,7 @@ test.describe("Recruiter Evidence Discovery — production", () => {
     await browser.close();
   });
 
-  test("evidence-type request + specific candidate: GitHub proof of Python; Mohammed's FastAPI proof", async () => {
+  test("evidence-type request + specific candidate: GitHub proof of Python; the candidate's FastAPI proof", async () => {
     test.setTimeout(180_000);
     const { browser, page } = await newRecruiterPage(qa.rec1);
     await openSearch(page);
@@ -177,11 +190,11 @@ test.describe("Recruiter Evidence Discovery — production", () => {
     expect(body).toContain("GitHub Proof");
     await page.screenshot({ path: `${SCRATCH}/shots-prod/e6-github-python.png`, fullPage: true });
 
-    await searchFor(page, "show me Mohammed's FastAPI proof");
+    await searchFor(page, `show me ${CANDIDATE_FIRST_NAME}'s FastAPI proof`);
     await expect(page.getByTestId("evidence-results")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("evidence-group-name")).toContainText("Mohammed Mubashir");
+    await expect(page.getByTestId("evidence-group-name")).toContainText(CANDIDATE_NAME);
     await expect(page.getByTestId("evidence-item").first()).toContainText("FastAPI");
-    await page.screenshot({ path: `${SCRATCH}/shots-prod/e7-mohammed-fastapi.png`, fullPage: true });
+    await page.screenshot({ path: `${SCRATCH}/shots-prod/e7-candidate-fastapi.png`, fullPage: true });
     await browser.close();
   });
 
@@ -242,7 +255,7 @@ test.describe("Recruiter Evidence Discovery — production", () => {
     await expect(group.getByTestId("search-result-saved")).toBeVisible({ timeout: 30_000 });
     await page.goto(`${BASE}/recruiters/workspace`, { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("workspace-candidate-card").first()).toBeVisible({ timeout: 45_000 });
-    await expect(page.locator("body")).toContainText("Mohammed Mubashir");
+    await expect(page.locator("body")).toContainText(CANDIDATE_NAME);
     await page.screenshot({ path: `${SCRATCH}/shots-prod/e10-saved-workspace.png`, fullPage: true });
     await browser.close();
   });
@@ -314,7 +327,7 @@ test.describe("Recruiter Evidence Discovery — production", () => {
     await openSearch(page);
     await searchFor(page, "find me someone with FastAPI");
     await expect(page.getByTestId("search-result-card").first()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId("search-result-name").first()).toContainText("Mohammed Mubashir");
+    await expect(page.getByTestId("search-result-name").first()).toContainText(CANDIDATE_NAME);
     await expect(page.getByTestId("evidence-results")).toHaveCount(0);
     await page.screenshot({ path: `${SCRATCH}/shots-prod/e13-candidate-regression.png`, fullPage: true });
     await browser.close();

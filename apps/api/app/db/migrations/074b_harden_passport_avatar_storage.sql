@@ -1,0 +1,123 @@
+-- ============================================================
+-- VeriBridge AI — Migration 074b (CONDITIONAL): harden the
+-- passport-avatars storage bucket
+-- ============================================================
+--
+-- WHY
+--   Migration 054 (lines 36-70) created four storage.objects policies for the
+--   public `passport-avatars` bucket:
+--     "passport-avatars: public read"   FOR SELECT (roles: public) USING (bucket_id = 'passport-avatars')
+--     "passport-avatars: owner insert"  FOR INSERT TO authenticated (first folder = auth.uid())
+--     "passport-avatars: owner update"  FOR UPDATE TO authenticated (same)
+--     "passport-avatars: owner delete"  FOR DELETE TO authenticated (same)
+--   The public-read policy is not needed to serve the photos (a PUBLIC bucket
+--   serves /storage/v1/object/public/... without consulting RLS), but it lets
+--   anyone with the anon key LIST the bucket, and object names start with the
+--   owner's user id, so it enumerates user ids. The owner write policies are
+--   unused: the only writer is the FastAPI service
+--   (app/services/passport_avatar_service.py set_avatar / clear_avatar, called
+--   from app/api/v1/endpoints/vbr_work_passport.py with get_db = the service-role
+--   client), and the service role bypasses RLS. The web app and the extension
+--   never call supabase `.storage` (they only use supabase.auth).
+--   The bucket also has no size or type limit at the storage layer; this sets
+--   both to what the API already enforces (MAX_AVATAR_BYTES = 5 MB; JPEG, PNG,
+--   WebP in ALLOWED_CONTENT_TYPES).
+--
+--   Size limit: 5242880 (5 MB), NOT 2 MB. The API (MAX_AVATAR_BYTES) and the web
+--   client (PASSPORT_PHOTO_MAX_BYTES) both accept photos up to 5 MB, and the
+--   bucket limit applies to service-role uploads too, so a 2 MB limit would make
+--   2-5 MB uploads fail with a storage error (HTTP 502). To use 2 MB, lower both
+--   constants first, deploy, then change 5242880 to 2097152 below.
+--
+-- CONDITIONAL: run if the production verification query lists any of the four
+--   policies under catalog.policies_watched (schema storage), or
+--   data.storage_buckets shows passport-avatars with no file_size_limit /
+--   allowed_mime_types. Otherwise it is a harmless no-op.
+--
+-- NOTE "must be owner of table objects": on newer Supabase projects
+--   storage.objects is owned by supabase_storage_admin and the SQL Editor role
+--   may not be allowed to DROP POLICY on it. If this migration fails with that
+--   error, nothing is changed (single transaction). Remove the four policies in
+--   Dashboard -> Storage -> Policies (bucket passport-avatars) instead, and run
+--   only the UPDATE statement below on its own (or set the limits in Dashboard ->
+--   Storage -> passport-avatars -> Edit bucket).
+--
+-- PRECONDITIONS
+--   1. Apply to a STAGING project first and run the verification steps there.
+--   2. Record the BEFORE state:
+--        select policyname, cmd, roles, permissive, qual, with_check from pg_policies
+--         where schemaname = 'storage' and tablename = 'objects' order by policyname;
+--        select id, public, file_size_limit, allowed_mime_types from storage.buckets
+--         where id = 'passport-avatars';
+--   3. Note one existing avatar public URL (from the app) for the check below.
+--
+-- VERIFICATION
+--   * pg_policies snapshot (query above) after: the four "passport-avatars: ..."
+--     policies are gone; other buckets' policies unchanged.
+--   * The known avatar URL
+--       $SUPABASE_URL/storage/v1/object/public/passport-avatars/<path>
+--     still returns 200 (curl -s -o /dev/null -w '%{http_code}' <url>).
+--   * Anon list returns []:
+--       curl -s -X POST "$SUPABASE_URL/storage/v1/object/list/passport-avatars" \
+--            -H "apikey: $ANON_KEY" -H "Authorization: Bearer $ANON_KEY" \
+--            -H "Content-Type: application/json" -d '{"prefix":"","limit":100}'
+--   * Anon GET /rest/v1/public_work_passports?select=id returns [] (074a).
+--   * Upload and remove a profile photo through the app (service-role path);
+--     a 4 MB JPEG must still upload.
+--
+-- Transactional and lock-bounded (lock_timeout 5s: fails fast and changes
+-- nothing if storage.objects is busy; retry). Idempotent.
+--
+-- RE-RUNNING 054: migration 054 is idempotent (drop policy if exists + create policy), so
+--   re-applying 054 (e.g. a full 001-073 replay) RECREATES all four policies and re-opens anon
+--   listing; it does not reset the bucket limits set here. After any such replay, run 074b again.
+--
+-- ROLLBACK (WARNING: re-opens anon listing of the bucket, i.e. user-id
+-- enumeration). Exactly 054:36-70 (054:36-39 = public read, 41-70 = owner write),
+-- plus the bucket limits as recorded in PRECONDITIONS step 2 (054 set none):
+--   begin;
+--   set local lock_timeout = '5s';
+--   create policy "passport-avatars: public read"
+--     on storage.objects for select
+--     using (bucket_id = 'passport-avatars');
+--   create policy "passport-avatars: owner insert"
+--     on storage.objects for insert
+--     to authenticated
+--     with check (
+--       bucket_id = 'passport-avatars'
+--       and (storage.foldername(name))[1] = (select auth.uid())::text
+--     );
+--   create policy "passport-avatars: owner update"
+--     on storage.objects for update
+--     to authenticated
+--     using (
+--       bucket_id = 'passport-avatars'
+--       and (storage.foldername(name))[1] = (select auth.uid())::text
+--     )
+--     with check (
+--       bucket_id = 'passport-avatars'
+--       and (storage.foldername(name))[1] = (select auth.uid())::text
+--     );
+--   create policy "passport-avatars: owner delete"
+--     on storage.objects for delete
+--     to authenticated
+--     using (
+--       bucket_id = 'passport-avatars'
+--       and (storage.foldername(name))[1] = (select auth.uid())::text
+--     );
+--   update storage.buckets set file_size_limit = null, allowed_mime_types = null
+--    where id = 'passport-avatars';   -- or the BEFORE values you recorded
+--   commit;
+-- ============================================================
+
+begin;
+set local lock_timeout = '5s';
+drop policy if exists "passport-avatars: public read" on storage.objects;
+drop policy if exists "passport-avatars: owner insert" on storage.objects;
+drop policy if exists "passport-avatars: owner update" on storage.objects;
+drop policy if exists "passport-avatars: owner delete" on storage.objects;
+update storage.buckets
+   set file_size_limit = 5242880,
+       allowed_mime_types = array['image/jpeg', 'image/png', 'image/webp']
+ where id = 'passport-avatars';
+commit;

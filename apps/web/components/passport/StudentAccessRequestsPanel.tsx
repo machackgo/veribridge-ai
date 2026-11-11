@@ -70,7 +70,7 @@ const MOCK_REQUESTS: StudentAccessRequest[] = [
   {
     id: "req-wpi-002",
     requester_name: "WPI Faculty Reviewer",
-    requester_email: "faculty@wpi.edu",
+    requester_email: "faculty@example.edu",
     requester_organization: "Worcester Polytechnic Institute",
     requester_role: "Faculty / Academic Reviewer",
     requested_sections: ["documents", "detailed_skill_evidence"],

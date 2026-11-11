@@ -1165,7 +1165,7 @@ def debug_visual_reasoning_frames(
 
     Never returns: frame_storage_path, raw bytes, signed URLs, access tokens.
     """
-    if settings.environment == "production":
+    if settings.is_production:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Debug endpoint not available in production.",

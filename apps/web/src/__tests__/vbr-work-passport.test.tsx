@@ -1484,7 +1484,7 @@ describe("PrivatePassportView — Proof Attachment Intelligence moved to Proof V
     const initial = makeIntelligencePassport()
     initial.unattached_proof_summary!.suggestions[0] = {
       ...initial.unattached_proof_summary!.suggestions[0],
-      proof_id: "fe658e5c-f8c5-47b8-8ff5-2c3a135b09b5",
+      proof_id: "b9c57061-a7af-4347-b4f8-5416a04eef45",
       likely_project_id: "proj-1",
       relationship_state: "vault_only",
     }
@@ -1523,7 +1523,7 @@ describe("PrivatePassportView — Proof Attachment Intelligence moved to Proof V
 
     await waitFor(() =>
       expect(confirmWebsiteProofProjectRelationship).toHaveBeenCalledWith({
-        proof_id: "fe658e5c-f8c5-47b8-8ff5-2c3a135b09b5",
+        proof_id: "b9c57061-a7af-4347-b4f8-5416a04eef45",
         project_id: "proj-1",
       }),
     )
@@ -1539,7 +1539,7 @@ describe("PrivatePassportView — Proof Attachment Intelligence moved to Proof V
       ...initial.unattached_proof_summary!.suggestions[0],
       proof_type: "Document Proof",
       proof_title: "VeriBridge Rich Document Proof Test",
-      proof_id: "cb738b3e-73db-4e40-b359-f907106bb997",
+      proof_id: "819ca8b1-2ff7-49bb-9e92-c85b90c32e29",
       likely_project_title: "Skill Evidence Tracker",
       relationship_state: "vault_only",
     }
@@ -1569,7 +1569,7 @@ describe("PrivatePassportView — Proof Attachment Intelligence moved to Proof V
     await waitFor(() =>
       expect(confirmProofProjectRelationship).toHaveBeenCalledWith({
         proof_type: "document",
-        proof_id: "cb738b3e-73db-4e40-b359-f907106bb997",
+        proof_id: "819ca8b1-2ff7-49bb-9e92-c85b90c32e29",
         project_id: "proj-1",
       }),
     )
@@ -4563,7 +4563,7 @@ describe("PrivatePassportView — Proof Relationship UX consistency", () => {
 
 // ── Skills Evidence Map wiring regressions (skill-evidence-map-fix) ────────────
 //
-// Root cause proved against the real dev user (836d5bc3): the Proof Vault summary
+// Root cause proved against the real dev user (DEMO_USER_ID): the Proof Vault summary
 // carries a `project_count` that counts duplicate-attempt `vbr_projects` rows
 // (e.g. 24 rows for 2 real projects), and the map used to fold it into the
 // connected-project count — so a skill with ZERO resolvable project edges rendered

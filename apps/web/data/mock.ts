@@ -1,7 +1,7 @@
 export const student = {
   name: "Maya Reyes",
   initials: "MR",
-  email: "maya.reyes@wpi.edu",
+  email: "maya.reyes@example.edu",
   school: "WPI",
   major: "Computer Science",
   gradYear: "2026",

@@ -8,11 +8,9 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.serialization import make_json_safe
+from app.services.evidence_access_tokens import resolve_grant
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
-from app.services.public_work_passport_service import (
-    EvidenceAccessDeniedError,
-    PublicWorkPassportNotFoundError,
-)
+from app.services.public_work_passport_service import PublicWorkPassportNotFoundError
 from app.services.skill_evidence_timeline_service import SkillEvidenceTimelineService
 from app.services.work_passport_analytics_service import WorkPassportAnalyticsService
 from app.services.work_passport_status_service import WorkPassportStatusService
@@ -23,7 +21,6 @@ _SESSIONS = "extension_proof_sessions"
 _SKILL_EVIDENCE = "skill_evidence"
 _USERS = "users"
 _PROFILES = "student_profiles"
-_GRANTS = "evidence_access_grants"
 _REQUESTS = "evidence_access_requests"
 _AI_DOMAIN = "ai_domain_review_results"
 _VERSIONS = "proof_evidence_versions"
@@ -116,12 +113,7 @@ class WorkPassportExportService:
         return payload
 
     def build_protected_export_payload(self, access_token: str) -> dict[str, Any]:
-        grant = self._grant_by_token(access_token)
-        if not grant or grant.get("revoked_at"):
-            raise EvidenceAccessDeniedError("Access token is invalid or revoked.")
-        expires_at = _parse_dt(grant.get("expires_at"))
-        if expires_at and expires_at <= _now():
-            raise EvidenceAccessDeniedError("Access token is expired.")
+        grant = resolve_grant(self._client, access_token)
         passport_id = grant.get("passport_id")
         if not passport_id and grant.get("access_request_id"):
             request = self._first_where(_REQUESTS, "id", str(grant["access_request_id"]))
@@ -282,9 +274,6 @@ class WorkPassportExportService:
         if not row or str(row.get("user_id")) != user_id:
             raise ExtensionProofSessionNotFoundError(proof_session_id)
         return row
-
-    def _grant_by_token(self, token: str) -> dict[str, Any] | None:
-        return self._first_where(_GRANTS, "access_token", token)
 
     def _active_version(self, user_id: str, proof_session_id: str) -> dict[str, Any] | None:
         versions = self._rows_by_session(_VERSIONS, user_id, proof_session_id)
