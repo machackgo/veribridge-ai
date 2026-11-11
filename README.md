@@ -151,7 +151,7 @@ Node 24.11.1 / npm 11.21.0.
 
 | Suite | Command | Result |
 |---|---|---|
-| API (pytest) | `cd apps/api && pytest` | **5,151 passed, 14 skipped**, 0 failed (with the MiniLM model available; see notes) |
+| API (pytest) | `cd apps/api && pytest` | **5,180 passed, 14 skipped**, 0 failed (with the MiniLM model available; see notes) |
 | Web unit (Vitest) | `cd apps/web && npx vitest run` | **1,946 passed** (73 files) |
 | Web types | `cd apps/web && npx tsc --noEmit` | clean |
 | Web production build | `cd apps/web && npm run build` | succeeds |
@@ -168,7 +168,7 @@ Notes:
   `VISUAL_REASONING_ENABLED=true`.
 - If the `all-MiniLM-L6-v2` model cannot be downloaded or loaded (offline, no cache), one test fails:
   `test_website_semantic_verification_service.py::test_recruiter_summary_is_cautious_when_output_mismatch_exists`
-  (5,150 passed, 1 failed). That failure is the known fallback defect listed under Known limitations; the
+  (5,179 passed, 1 failed). That failure is the known fallback defect listed under Known limitations; the
   test is intentionally left unchanged.
 - Playwright suites exist in `apps/web/e2e` (mocked), `apps/web/e2e-local` (local stack) and
   `apps/web/e2e-prod` (the live site; it needs QA sessions and `VB_PROD_REPORT_TOKEN_*`). None of
