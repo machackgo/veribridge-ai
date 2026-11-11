@@ -1,6 +1,6 @@
 # Contributing
 
-This project is in its initial setup phase. Keep changes small, clear, and aligned with the monorepo structure.
+Keep changes small, clear, and aligned with the monorepo structure.
 
 ## Branch Rules
 
@@ -49,6 +49,6 @@ Recommended commit types:
 
 ## Local Environment
 
-- Use `.env.example` as the source for required environment variables.
+- Use the per-app templates `apps/api/.env.example` and `apps/web/.env.example` for required environment variables.
 - Keep real `.env` files local.
 - Never commit generated dependency folders, build outputs, or local cache files.

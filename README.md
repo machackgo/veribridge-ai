@@ -13,12 +13,16 @@ per claimed skill, with an explicit statement of how the candidate relates to th
 student decides what to publish on a public **Work Passport**. Recruiters search published passports
 and organise candidates in a recruiter workspace.
 
-> **Service status (2026-11-10).**
-> - The landing page at <https://veribridgeai.com> is live.
+> **Service status (2026-11-11).**
+> - The website at <https://veribridgeai.com> is live in **portfolio-preview mode**: a banner on
+>   every page says the backend is paused. The landing page and its product demonstration (clearly
+>   labelled sample data), the recruiter and extension information pages, the privacy policy and
+>   the sample university dashboards work without the API.
 > - The [Chrome Web Store listing](https://chromewebstore.google.com/detail/veribridge-website-proof/gdogdgnaioldjldljniffcmkcdpdjlme)
 >   for the recorder extension is live.
-> - The hosted API (Render) is **suspended** and returns `503`. Sign-up, sign-in and every
->   data-backed page are unavailable on the hosted site until it is resumed.
+> - The hosted API (Render) is **suspended** and returns `503`. Workspaces after sign-in, shared
+>   reports and passports, and every other data-backed page are unavailable on the hosted site until
+>   it is resumed; those pages say so instead of failing silently.
 > - Everything in this repository can still be run locally (see [Local setup](#local-setup)).
 
 ## Demo
@@ -71,7 +75,7 @@ auth flow.
 | [`docs`](docs) | Architecture, specs, security spec, QA checklists, Chrome Web Store material, research notes, and design prototypes (`docs/design`, not deployed) |
 | [`infra`](infra) | Empty placeholders for Docker and GitHub Actions (no CI yet) |
 | [`scripts`](scripts) | Empty placeholder |
-| `V3_RECONCILIATION_AUDIT.md`, `V4_ARCHITECTURE_AUDIT.md`, `V5_ARCHITECTURE_AUDIT.md`, `VBR_T7C_SMOKE_TEST_CHECKLIST.md` | Historical design audits and a manual QA checklist from earlier development phases |
+| [`docs/history`](docs/history) | Historical design audits and a manual QA checklist from earlier development phases |
 | `.env.example` | Legacy root environment template; use the per-app `apps/api/.env.example` and `apps/web/.env.example` |
 | [`SECURITY.md`](SECURITY.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) | Vulnerability reporting policy; commit conventions |
 
@@ -200,8 +204,8 @@ commit `.env` files.
 3. Create the private Storage buckets named by `SUPABASE_VBR_MEDIA_BUCKET` and
    `SUPABASE_PROOF_ARTIFACT_BUCKET` (`.env.example` values `vbr-media` and `proof-artifacts`).
    - Project Defense media and keyframe evidence use further private buckets named by
-     `SUPABASE_DEFENSE_MEDIA_BUCKET` and `SUPABASE_FRAME_EVIDENCE_BUCKET`. These are not in
-     `.env.example` and have no default.
+     `SUPABASE_DEFENSE_MEDIA_BUCKET` and `SUPABASE_FRAME_EVIDENCE_BUCKET`. They are in
+     `apps/api/.env.example`, empty by default; leaving one empty disables that feature.
    - Migration 054 creates the `passport-avatars` bucket, which is public by design (passport
      photos). Set `SUPABASE_PASSPORT_AVATAR_BUCKET` to that name.
 4. Enable email OTP, and optionally Google, under Supabase Auth.
@@ -240,6 +244,9 @@ Variables in `apps/web/.env.example`:
 - `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_API_BASE_URL` (e.g. `http://localhost:8000`)
 - `NEXT_PUBLIC_APP_URL`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - optional: `NEXT_PUBLIC_RECORDER_EXTENSION_STORE_URL`, `NEXT_PUBLIC_OTP_CODE_LENGTH`
+- optional: `NEXT_PUBLIC_SERVICE_STATUS=paused` shows the site-wide "backend paused" banner and
+  replaces raw network errors with a paused-service message (set on the hosted site while the API
+  is suspended; leave empty otherwise)
 
 ### 4. Extension (`apps/extension`)
 

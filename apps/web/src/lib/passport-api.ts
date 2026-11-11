@@ -7,6 +7,7 @@
 
 import { fetchAPI } from "./api"
 import { PUBLIC_API_BASE } from "./api-base"
+import { publicApiFetch } from "./service-status"
 import {
   withRecruiterTokenHeader,
   clearRecruiterSession,
@@ -42,7 +43,7 @@ async function recruiterApiJson<T>(path: string, init?: RequestInit): Promise<T>
     "Content-Type": "application/json",
     ...((init?.headers as Record<string, string>) ?? {}),
   })
-  const res = await fetch(`${API_BASE_URL}${path}`, { ...init, headers })
+  const res = await publicApiFetch(`${API_BASE_URL}${path}`, { ...init, headers })
 
   if (res.status === 401) {
     clearRecruiterSession()

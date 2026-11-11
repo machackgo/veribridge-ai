@@ -129,6 +129,7 @@ export function DashboardShell({
     <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--ink)", fontFamily: "'Inter', system-ui, sans-serif" }}>
       {/* ── Navbar ── */}
       <nav
+        className="dash-shell-navbar"
         style={{
           position: "sticky",
           top: 0,
@@ -160,11 +161,11 @@ export function DashboardShell({
             </span>
           </Link>
           {/* Centered nav links */}
-          <div style={{ display: "flex", gap: 4, flex: 1, justifyContent: "center" }}>
+          <div className="dash-shell-links" style={{ display: "flex", gap: 4, flex: 1, justifyContent: "center" }}>
             {[
-              { label: "Platform", href: "/#platform" },
+              { label: "Platform", href: "/#how" },
               { label: "Students", href: "/dashboard" },
-              { label: "Recruiters", href: "/recruiter" },
+              { label: "Recruiters", href: "/recruiters" },
               { label: "Universities", href: "/university" },
             ].map((link) => (
               <Link
@@ -207,6 +208,7 @@ export function DashboardShell({
 
       {/* ── Page layout ── */}
       <div
+        className="dash-shell-grid"
         style={{
           maxWidth: 1480,
           margin: "0 auto",
@@ -218,6 +220,7 @@ export function DashboardShell({
       >
         {/* ── Sidebar ── */}
         <aside
+          className="dash-shell-aside"
           style={{
             position: "sticky",
             top: 80,

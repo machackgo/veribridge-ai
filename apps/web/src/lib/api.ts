@@ -2,6 +2,7 @@
 
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 import { PUBLIC_API_BASE } from "@/lib/api-base"
+import { NETWORK_UNREACHABLE_MESSAGE, unreachableMessage } from "@/lib/service-status"
 
 const API_BASE = PUBLIC_API_BASE
 
@@ -71,8 +72,7 @@ export const AUTH_SESSION_MISSING_CODE = "auth_session_missing"
  * (connection drop, DNS failure, CORS block). The browser's own rejection is a
  * bare `TypeError: Failed to fetch`, which must never reach the UI verbatim.
  */
-export const NETWORK_UNREACHABLE_MESSAGE =
-  "We couldn't reach the VeriBridge server. Check your connection and try again."
+export { NETWORK_UNREACHABLE_MESSAGE }
 
 function authSessionMissingResponse(): Response {
   return new Response(
@@ -186,7 +186,7 @@ export async function fetchAPI(
     // Transport failure — no HTTP response exists. Surface a stable, friendly,
     // retryable message instead of the browser's raw "Failed to fetch".
     console.error(`fetchAPI transport failure for ${path}:`, err)
-    throw new Error(NETWORK_UNREACHABLE_MESSAGE, { cause: err })
+    throw new Error(unreachableMessage(), { cause: err })
   }
 
   // A request body (stream/FormData) may not be replayable — only retry

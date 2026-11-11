@@ -2,6 +2,7 @@
 
 import { fetchAPI } from "@/lib/api"
 import { PUBLIC_API_BASE } from "@/lib/api-base"
+import { publicApiFetch } from "@/lib/service-status"
 
 // Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
 // fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
@@ -2305,7 +2306,7 @@ export async function getVBRProjectReport(projectId: string): Promise<VBRStudent
 export async function getPublicVBRReport(
   publicToken: string,
 ): Promise<VBRPublicReportResponse | null> {
-  const response = await fetch(
+  const response = await publicApiFetch(
     `${API_BASE}/api/v1/public/vbr/legacy-reports/${encodeURIComponent(publicToken)}`,
     {
       headers: { "Content-Type": "application/json" },
@@ -2503,7 +2504,7 @@ export async function unpublishVBRProjectReport(projectId: string): Promise<Proj
 export async function getPublicVBRProjectReport(
   publicToken: string,
 ): Promise<PublicVBRProjectReport | null> {
-  const response = await fetch(
+  const response = await publicApiFetch(
     `${API_BASE}/api/v1/public/vbr/reports/${encodeURIComponent(publicToken)}`,
     {
       headers: { "Content-Type": "application/json" },
@@ -3694,7 +3695,7 @@ export async function updatePassportProfile(
 export async function getPublicWorkPassportBySlug(
   slug: string,
 ): Promise<PublicWorkPassport | null> {
-  const response = await fetch(`${API_BASE}/api/v1/public/p/${encodeURIComponent(slug)}`, {
+  const response = await publicApiFetch(`${API_BASE}/api/v1/public/p/${encodeURIComponent(slug)}`, {
     headers: { "Content-Type": "application/json" },
     cache: "no-store",
   })
@@ -3827,7 +3828,7 @@ export async function getPublicSkillReport(
   slug: string,
   skill: string,
 ): Promise<PublicSkillReport | null> {
-  const response = await fetch(
+  const response = await publicApiFetch(
     `${API_BASE}/api/v1/public/p/${encodeURIComponent(slug)}/skills/${encodeURIComponent(skill)}`,
     { headers: { "Content-Type": "application/json" }, cache: "no-store" },
   )

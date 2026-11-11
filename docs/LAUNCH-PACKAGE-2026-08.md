@@ -1,5 +1,8 @@
 # VeriBridge AI — MVP Launch Package (2026-08)
 
+> **Historical document (August 2026).** It records the state at that launch. The hosted API is
+> currently suspended; see the service status in the [root README](../README.md).
+
 **Status: READY FOR LAUNCH** · Deployed commit `acb845746f9f46f0b4235e5ef8f312d7ab8bc912` (PR #82 → `main`) · Verified in production 2026-08-05 00:45 UTC
 
 VeriBridge AI turns student work into verified, recruiter-ready evidence. Students

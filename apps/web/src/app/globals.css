@@ -477,3 +477,23 @@ html {
   .vb-module-card:hover   { transform: none; box-shadow: none; }
   .vb-row-item            { transition: none; }
 }
+
+/* DashboardShell (prototype role previews): single-column layout on narrow
+   screens. Inline styles set the desktop layout, so these need !important. */
+@media (max-width: 860px) {
+  .dash-shell-navbar > div { padding: 12px 16px !important; gap: 12px !important; }
+  .dash-shell-links { display: none !important; }
+  .dash-shell-navbar > div > a:last-child { margin-left: auto; }
+  .dash-shell-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    padding: 16px 16px 56px !important;
+    gap: 16px !important;
+  }
+  .dash-shell-aside { position: static !important; }
+  /* Card grids inside the shell stack; deliberately wide tables (min-width,
+     inside their own scroll container) are left alone. */
+  .dash-shell-grid main div[style*="grid-template-columns"]:not([style*="min-width"]) {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .dash-shell-grid main { overflow-wrap: anywhere; }
+}

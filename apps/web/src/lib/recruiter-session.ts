@@ -19,6 +19,7 @@
 "use client"
 
 import { PUBLIC_API_BASE } from "./api-base"
+import { publicApiFetch } from "@/lib/service-status"
 
 // Prefer NEXT_PUBLIC_API_URL (production domain, e.g. https://api.veribridgeai.com);
 // fall back to the legacy NEXT_PUBLIC_API_BASE_URL, then to local dev.
@@ -39,7 +40,7 @@ const EMAIL_KEY = "vb_recruiter_email"
  * Throws a user-facing Error if the backend rejects the request.
  */
 export async function createRecruiterSession(email: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/api/v1/public/recruiter/sessions`, {
+  const res = await publicApiFetch(`${API_BASE}/api/v1/public/recruiter/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ requester_email: email }),

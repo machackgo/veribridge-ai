@@ -1,9 +1,11 @@
 "use client"
 
 import type { ReactNode } from "react"
+import Link from "next/link"
 
 import type { PassportIdentity } from "@/lib/vbr-api"
 import { KeystoneMark } from "../brand"
+import { SERVICE_PAUSED_MESSAGE } from "@/lib/service-status"
 
 // ── Design tokens (match globals.css variables) ──────────────────────────
 
@@ -239,12 +241,21 @@ export function EmptyState({
 }
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  // A paused hosted service is an expected state, not a fault: say so calmly
+  // and point visitors at what still works.
+  const paused = message === SERVICE_PAUSED_MESSAGE
   return (
     <div style={{ padding: "32px 24px", textAlign: "center" }}>
-      <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
-      <p style={{ fontWeight: 600, fontSize: 14, color: TOKEN.rose, marginBottom: 6 }}>Something went wrong</p>
+      <div style={{ fontSize: 32, marginBottom: 10 }}>{paused ? "⏸️" : "⚠️"}</div>
+      <p style={{ fontWeight: 600, fontSize: 14, color: paused ? TOKEN.ink : TOKEN.rose, marginBottom: 6 }}>
+        {paused ? "Temporarily unavailable" : "Something went wrong"}
+      </p>
       <p style={{ fontSize: 12, color: TOKEN.muted, maxWidth: 320, margin: "0 auto 16px" }}>{message}</p>
-      {onRetry && <Btn variant="secondary" size="sm" onClick={onRetry}>Try again</Btn>}
+      {paused ? (
+        <Link href="/" style={{ fontSize: 13, fontWeight: 600, color: TOKEN.indigo }}>Go to the home page</Link>
+      ) : (
+        onRetry && <Btn variant="secondary" size="sm" onClick={onRetry}>Try again</Btn>
+      )}
     </div>
   )
 }

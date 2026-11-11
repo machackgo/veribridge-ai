@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { getPublicVBRReport, type VBRPublicReportResponse } from "@/lib/vbr-api"
 import { KeystoneMark } from "../../../../components/brand"
+import { SERVICE_PAUSED, SERVICE_PAUSED_MESSAGE } from "@/lib/service-status"
 
 const JUDGMENT_LABELS: Record<string, string> = {
   demonstrated: "Demonstrated",
@@ -111,7 +112,9 @@ export default function PublicVBRReportPage() {
               fontSize: 14,
             }}
           >
-            Something went wrong while loading this report. Please try again later.
+            {SERVICE_PAUSED
+              ? SERVICE_PAUSED_MESSAGE
+              : "Something went wrong while loading this report. Please try again later."}
           </div>
         )}
 

@@ -29,9 +29,9 @@ export default function UniversityLayout({ children }: { children: ReactNode }) 
       insightsLabel="Reports"
       accountNav={accountNav}
       persona={{
-        name: "WPI Career Center",
+        name: "Sample University Career Center",
         detail: "career-dev@example.edu",
-        initials: "W",
+        initials: "S",
         badge: "Institutional · DPA",
         avatarBg: "#9b1414",
         avatarShape: "square",

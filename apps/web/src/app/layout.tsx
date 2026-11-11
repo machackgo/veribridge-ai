@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ServiceStatusBanner } from "@/components/ServiceStatusBanner";
 
 export const metadata: Metadata = {
   title: "VeriBridge AI",
@@ -22,7 +23,10 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <ServiceStatusBanner />
+        {children}
+      </body>
     </html>
   );
 }
