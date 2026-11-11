@@ -10,8 +10,9 @@ from app.schemas.skill_evidence_timeline import (
     SkillEvidenceRecord,
     SkillEvidenceTimelineResponse,
 )
+from app.services.evidence_access_tokens import resolve_grant
 from app.services.extension_proof_service import ExtensionProofSessionNotFoundError
-from app.services.public_work_passport_service import EvidenceAccessDeniedError, PublicWorkPassportNotFoundError
+from app.services.public_work_passport_service import PublicWorkPassportNotFoundError
 from app.services.verification_readiness_service import compute_readiness_report
 
 _SESSIONS = "extension_proof_sessions"
@@ -25,7 +26,6 @@ _DEFENSE = "project_defense_analysis_results"
 _AI_DOMAIN = "ai_domain_review_results"
 _VERSIONS = "proof_evidence_versions"
 _PASSPORTS = "public_work_passports"
-_GRANTS = "evidence_access_grants"
 
 _SECTION_TO_TYPES = {
     "workflow_analysis": {"workflow"},
@@ -70,12 +70,7 @@ class SkillEvidenceTimelineService:
         return _public_timeline(timeline)
 
     def get_protected_skill_evidence_timeline(self, access_token: str) -> SkillEvidenceTimelineResponse:
-        grant = self._grant_by_token(access_token)
-        if not grant or grant.get("revoked_at"):
-            raise EvidenceAccessDeniedError("Access token is invalid or revoked.")
-        expires_at = _parse_dt(grant.get("expires_at"))
-        if expires_at and expires_at <= _now():
-            raise EvidenceAccessDeniedError("Access token is expired.")
+        grant = resolve_grant(self._client, access_token)
         allowed_types = _allowed_evidence_types(list(grant.get("granted_sections") or []))
         timeline = self._build_timeline(str(grant["user_id"]), str(grant["proof_session_id"]))
         return _protected_timeline(timeline, allowed_types)
@@ -209,16 +204,6 @@ class SkillEvidenceTimelineService:
                     return row
             return None
         result = self._client.table(_PASSPORTS).select("*").eq("public_slug", public_slug).limit(1).execute()
-        rows = getattr(result, "data", []) or []
-        return rows[0] if rows else None
-
-    def _grant_by_token(self, token: str) -> dict[str, Any] | None:
-        if isinstance(self._client, dict):
-            for row in self._client.get(_GRANTS, {}).values():
-                if str(row.get("access_token")) == token:
-                    return row
-            return None
-        result = self._client.table(_GRANTS).select("*").eq("access_token", token).limit(1).execute()
         rows = getattr(result, "data", []) or []
         return rows[0] if rows else None
 
@@ -671,18 +656,6 @@ def _allowed_evidence_types(sections: list[str]) -> set[str]:
 def _latest_date(values: list[Any]) -> Any:
     present = [value for value in values if value]
     return max(present, default=None)
-
-
-def _parse_dt(value: Any) -> datetime | None:
-    if value is None or isinstance(value, datetime):
-        return value
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed
 
 
 def _now() -> datetime:

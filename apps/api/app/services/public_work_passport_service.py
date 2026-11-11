@@ -10,6 +10,12 @@ from typing import Any
 from uuid import uuid4
 
 from app.core.serialization import make_json_safe
+from app.services.evidence_access_tokens import (
+    EvidenceAccessDeniedError,
+    mint_token,
+    needs_rotation,
+    resolve_grant,
+)
 from app.schemas.public_work_passport import (
     AccessRequestCreate,
     AccessRequestDecision,
@@ -116,8 +122,8 @@ class EvidenceAccessGrantNotFoundError(LookupError):
     """Access grant not found for the scoped student."""
 
 
-class EvidenceAccessDeniedError(PermissionError):
-    """Access token is missing, expired, revoked, or otherwise invalid."""
+# EvidenceAccessDeniedError lives in app.services.evidence_access_tokens and is
+# re-exported from this module (imported above) for existing callers.
 
 
 class RecruiterRequesterProfileNotFoundError(LookupError):
@@ -344,14 +350,17 @@ class PublicWorkPassportService:
         )
         self._save(_REQUESTS, request)
         existing = self._grant_by_request(str(request["id"]))
-        # Generate a new plaintext token only on first approval.
-        # Store only the SHA-256 hash — never store the plaintext in the DB.
-        if existing:
-            plaintext_token: str | None = None  # not re-emitted after first creation
-            token_hash = existing.get("access_token_hash") or _hash_token(str(existing.get("access_token") or ""))
+        # Only the SHA-256 hash is stored; the plaintext is returned once, in
+        # this response. A revoked or expired grant, or a row still holding a
+        # legacy plaintext token / "revoked-" marker, is never re-activated:
+        # it gets a NEW credential. Only a still-active, hash-only grant keeps
+        # its token (scope/expiry update), which is then not re-emitted.
+        plaintext_token: str | None
+        if existing is None or needs_rotation(existing, now):
+            plaintext_token, token_hash = mint_token()
         else:
-            plaintext_token = _new_token()
-            token_hash = _hash_token(plaintext_token)
+            plaintext_token = None
+            token_hash = str(existing["access_token_hash"])
         grant = {
             "id": existing.get("id") if existing else str(uuid4()),
             "access_request_id": str(request["id"]),
@@ -359,8 +368,8 @@ class PublicWorkPassportService:
             "proof_session_id": str(request["proof_session_id"]),
             "requester_email": str(request["requester_email"]),
             "granted_sections": sections,
-            # access_token is kept for legacy back-compat (NULL for new grants)
-            "access_token": existing.get("access_token") if existing else None,
+            # Plaintext is never stored; rotation also clears legacy values.
+            "access_token": None,
             "access_token_hash": token_hash,
             "expires_at": body.expires_at,
             "revoked_at": None,
@@ -399,6 +408,7 @@ class PublicWorkPassportService:
                 **requester_identity,
                 "granted_sections": sections,
                 "expires_at": body.expires_at.isoformat() if body.expires_at else None,
+                "credential_issued": plaintext_token is not None,
             },
         )
         self._write_notification_event(
@@ -512,13 +522,7 @@ class PublicWorkPassportService:
         return _grant_response(saved)
 
     def get_protected_evidence(self, access_token: str) -> ProtectedEvidenceResponse:
-        grant = self._grant_by_token(access_token)
-        if not grant or grant.get("revoked_at"):
-            raise EvidenceAccessDeniedError("Access token is invalid or revoked.")
-        expires_at = _parse_dt(grant.get("expires_at"))
-        if expires_at and expires_at <= _now():
-            self._write_access_expired_event(grant)
-            raise EvidenceAccessDeniedError("Access token is expired.")
+        grant = resolve_grant(self._client, access_token, on_expired=self._write_access_expired_event)
         user_id = str(grant["user_id"])
         session_id = str(grant["proof_session_id"])
         session = self._get_session(user_id, session_id)
@@ -837,20 +841,6 @@ class PublicWorkPassportService:
 
     def _grant_by_request(self, request_id: str) -> dict[str, Any] | None:
         return self._first_where(_GRANTS, "access_request_id", request_id)
-
-    def _grant_by_token(self, token: str) -> dict[str, Any] | None:
-        """Look up a grant by token.
-
-        For new grants the hash is stored in ``access_token_hash``.
-        For legacy grants (pre-migration) the plaintext is in ``access_token``.
-        Both lookup paths are supported for backward compatibility.
-        """
-        token_hash = _hash_token(token)
-        row = self._first_where(_GRANTS, "access_token_hash", token_hash)
-        if row:
-            return row
-        # Legacy fallback: rows back-filled or created before migration 037
-        return self._first_where(_GRANTS, "access_token", token)
 
     def _row_by_session(self, table: str, user_id: str, session_id: str) -> dict[str, Any] | None:
         rows = self._rows_by_session(table, user_id, session_id)
@@ -1344,10 +1334,11 @@ def _request_response(row: dict[str, Any]) -> EvidenceAccessRequestResponse:
 def _grant_response(row: dict[str, Any], *, plaintext_token: str | None = None) -> EvidenceAccessGrantResponse:
     """Build a grant response.
 
-    *plaintext_token* is set only when a brand-new grant is created
-    (``approve_request`` first call).  On re-approvals or revocations the
-    plaintext is no longer available and ``access_token`` is returned as
-    ``None`` so the token is never re-exposed after initial issuance.
+    *plaintext_token* is set only when ``approve_request`` issues a credential:
+    on first approval, and on re-approval of a grant that was revoked, expired
+    or still held a legacy plaintext token (a NEW token; the old one stays
+    invalid). Re-approving a still-active grant, revoking, or re-reading returns
+    ``access_token`` as ``None``; an issued token is never re-exposed.
     """
     return EvidenceAccessGrantResponse(
         id=str(row["id"]),
@@ -1580,15 +1571,6 @@ def _private_url(url: str) -> bool:
     return any(host in url.lower() for host in ("localhost", "127.0.0.1", "192.168.", "10."))
 
 
-def _new_token() -> str:
-    return f"vbpa_{secrets.token_urlsafe(32)}"
-
-
-def _hash_token(plaintext: str) -> str:
-    """Return the SHA-256 hex digest of a bearer token for safe DB storage."""
-    return sha256(plaintext.encode("utf-8")).hexdigest()
-
-
 def _dedupe(values: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -1597,14 +1579,6 @@ def _dedupe(values: list[str]) -> list[str]:
             seen.add(value)
             out.append(value)
     return out
-
-
-def _parse_dt(value: Any) -> datetime | None:
-    if value is None or isinstance(value, datetime):
-        return value
-    if isinstance(value, str) and value:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return None
 
 
 def _now() -> datetime:
