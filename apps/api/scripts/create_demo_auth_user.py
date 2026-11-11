@@ -139,8 +139,9 @@ def _validate_supabase_url(url: str) -> None:
 
 # ── 3. Create or find the auth user ──────────────────────────────────────────
 
-DEMO_EMAIL = "mohammedmubashir@wpi.edu"
-DEMO_FULL_NAME = "Mohammed Mubashir Uddin Faraz"
+# Override with VB_DEMO_EMAIL / VB_DEMO_FULL_NAME to target a real account.
+DEMO_EMAIL = os.environ.get("VB_DEMO_EMAIL", "demo.student@example.edu")
+DEMO_FULL_NAME = os.environ.get("VB_DEMO_FULL_NAME", "Demo Student")
 
 
 def _find_existing_user(admin_client, email: str):
@@ -303,7 +304,7 @@ def _print_success(user, created: bool) -> None:
     print()
     print("         curl -s -X PUT http://localhost:8000/api/v1/student/profile \\")
     print("           -H 'Content-Type: application/json' \\")
-    print("           -d '{\"full_name\":\"Mohammed Mubashir Uddin Faraz\"," )
+    print(f"           -d '{{\"full_name\":\"{DEMO_FULL_NAME}\"," )
     print('                "university":"WPI","degree":"M.S.","major":"Computer Science"}\' \\')
     print("           | python3 -m json.tool")
     print()

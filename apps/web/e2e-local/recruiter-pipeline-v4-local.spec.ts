@@ -37,15 +37,21 @@ import * as fs from "fs";
 // "NLP required" brief yields proven Python/FastAPI rows AND a guaranteed
 // "No published evidence" gap row in the interview checklist.
 
-const SCRATCH =
-  process.env.QA_SCRATCH ??
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/490bf054-308f-41f9-95b8-d657b80a7c6b/scratchpad";
+// The QA session dir is NOT committed: set QA_SCRATCH to the directory
+// holding qa_rig_sessions.json. The suite is skipped when it is unset/missing.
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_rig_sessions.json` : "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE),
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH to run this suite.");
 const BASE = "http://localhost:3000";
 
 type Session = { email: string; user_id: string; access_token: string; refresh_token: string };
-const qa: { rec3: Session; rec1?: Session; rec2?: Session; cookie_name: string } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_rig_sessions.json`, "utf8"),
-);
+const qa: { rec3: Session; rec1?: Session; rec2?: Session; cookie_name: string } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({} as never);
 
 const STAGE_WALK = ["reviewing", "shortlisted", "contacted", "interview"] as const;
 

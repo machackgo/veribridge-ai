@@ -5,10 +5,19 @@ import * as fs from "fs";
 // workspace redesign — against veribridgeai.com. Uses the same pre-minted
 // throwaway QA recruiter sessions as recruiter-connection-prod.spec.ts.
 
-const SCRATCH =
-  "/private/tmp/claude-501/-Users-mohammedmubashiruddinfaraz-veribridge-ai/aea5d64b-2d85-4a7a-a6b3-837ae0a78bfc/scratchpad";
+// The QA session dir and the candidate under test are NOT committed: set
+// QA_SCRATCH, VB_PROD_CANDIDATE_SLUG. The suite is skipped when any is
+// unset (same pattern as VB_PROD_REPORT_TOKEN_* in claim-attribution).
+const SLUG = process.env.VB_PROD_CANDIDATE_SLUG ?? "";
+const SCRATCH = process.env.QA_SCRATCH ?? "";
+const SESSIONS_FILE = SCRATCH ? `${SCRATCH}/qa_sessions.json` : "";
+const CONFIGURED = Boolean(
+  SESSIONS_FILE &&
+    fs.existsSync(SESSIONS_FILE) &&
+    SLUG,
+);
+test.skip(!CONFIGURED, "Set QA_SCRATCH and VB_PROD_CANDIDATE_SLUG to run this suite.");
 const BASE = "https://veribridgeai.com";
-const SLUG = "ZwC_0l8HutI";
 const FAKE = ["Maya Reyes", "Jordan Kim", "Arjun Singh", "Stripe Early Talent"];
 
 type QaUser = {
@@ -19,9 +28,9 @@ type QaUser = {
   cookie_chunks: string[];
 };
 
-const sessions: { users: QaUser[] } = JSON.parse(
-  fs.readFileSync(`${SCRATCH}/qa_sessions.json`, "utf8"),
-);
+const sessions: { users: QaUser[] } = CONFIGURED
+  ? JSON.parse(fs.readFileSync(SESSIONS_FILE, "utf8"))
+  : ({ users: [] } as { users: QaUser[] });
 const [recA] = sessions.users;
 
 function cookiesFor(user: QaUser) {

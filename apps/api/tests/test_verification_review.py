@@ -514,7 +514,7 @@ class TestAdminEndpoints:
         invite_r = client.post(
             f"/api/v1/admin/verification-reviews/{review_id}/invite-reviewer",
             params={
-                "reviewer_email": "prof.smith@wpi.edu",
+                "reviewer_email": "prof.smith@example.edu",
                 "reviewer_name": "Prof. Smith",
                 "reviewer_role": "faculty_reviewer",
                 "reviewer_field": "Machine Learning",

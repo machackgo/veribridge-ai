@@ -30,8 +30,8 @@ from app.services.vbr_student_report import build_student_vbr_report
 from app.services.vbr_work_passport_service import build_private_passport
 from tests.test_vbr_project_defense import USER_ID
 
-TODO_SESSION_ID = "edd33708-350b-4458-b94d-613d3c8e700a"
-REACTPLAY_SESSION_ID = "1a68aac8-19ab-4c84-927c-fdfbdf06241f"
+TODO_SESSION_ID = "8d9419ac-3b44-416a-9494-f79cc655a76c"
+REACTPLAY_SESSION_ID = "00832fa7-8b5c-4fd3-b849-6d592ef6001b"
 
 TODO_SITE = "https://no2ehi.github.io/simple-todo-app-react/"
 REACTPLAY_SITE = "https://reactplay.io/"

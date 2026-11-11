@@ -20,7 +20,7 @@ from app.services.vbr_work_passport_service import build_private_passport
 from app.services.student_proof_vault_service import collect_skill_report, collect_vault_items
 from tests.test_vbr_project_defense import USER_ID
 
-REAL_SESSION_ID = "fe658e5c-f8c5-47b8-8ff5-2c3a135b09b5"
+REAL_SESSION_ID = "b9c57061-a7af-4347-b4f8-5416a04eef45"
 MIGRATION_058 = (
     Path(__file__).parents[1]
     / "app/db/migrations/058_canonical_evidence_relationships.sql"
