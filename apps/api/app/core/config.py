@@ -95,6 +95,18 @@ class Settings(BaseSettings):
         alias="ENABLE_DEMO_USER_FALLBACK",
     )
 
+    # ── Public report view tracking ──────────────────────────────
+    # Upper bound on view rows the unauthenticated
+    # POST /public/vbr/reports/{token}/view endpoint may insert per project per
+    # UTC day. Past the cap the endpoint answers ``recorded: false`` and writes
+    # nothing, so a token holder cannot flood the analytics table. Counts are
+    # analytics only (never trust signals); 0 disables recording entirely.
+    public_report_view_daily_cap: int = Field(
+        default=1000,
+        ge=0,
+        alias="PUBLIC_REPORT_VIEW_DAILY_CAP",
+    )
+
     # ── Database (direct Postgres connection) ────────────────────
     # Used by async SQLAlchemy — NOT the same as SUPABASE_URL.
     database_url: SecretStr = Field(

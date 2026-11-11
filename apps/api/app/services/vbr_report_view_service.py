@@ -7,11 +7,17 @@ stored — never the referrer URL, IP address, or raw user-agent string.
 Tracking is strictly best-effort: the caller (the public view endpoint)
 treats *any* persistence failure as a no-op so analytics can never block or
 break report access.
+
+Because the endpoint is unauthenticated, inserts are capped per project per
+UTC day (``settings.public_report_view_daily_cap``). The client-supplied
+dedupe key is attacker-chosen, so it only collapses honest rerenders; the
+daily cap is what bounds the table growth a token holder can cause.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -70,6 +76,52 @@ def classify_user_agent(user_agent: Any) -> str:
     return "desktop"
 
 
+def _utc_day_start(now: datetime | None = None) -> datetime:
+    current = now or datetime.now(UTC)
+    return current.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _parse_viewed_at(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def _views_today(db: Any, project_id: str, day_start: datetime) -> int:
+    """Rows already recorded for ``project_id`` since ``day_start`` (UTC)."""
+    if isinstance(db, dict):
+        count = 0
+        for existing in db.setdefault(_VIEWS_TABLE, {}).values():
+            if existing.get("project_id") != project_id:
+                continue
+            viewed_at = _parse_viewed_at(existing.get("viewed_at"))
+            # Rows without a parseable timestamp count against the cap
+            # (fail closed rather than let them escape it).
+            if viewed_at is None or viewed_at >= day_start:
+                count += 1
+        return count
+
+    result = (
+        db.table(_VIEWS_TABLE)
+        .select("id", count="exact")
+        .eq("project_id", project_id)
+        .gte("viewed_at", day_start.isoformat())
+        .limit(1)
+        .execute()
+    )
+    count = getattr(result, "count", None)
+    if not isinstance(count, int):
+        # Unknown count: fail closed so the cap can never be silently bypassed.
+        raise RuntimeError("view count unavailable")
+    return count
+
+
 def record_public_report_view(
     db: Any,
     project_id: str,
@@ -82,9 +134,13 @@ def record_public_report_view(
     """Insert one view event for an already-resolved published project.
 
     Returns True when a new row was recorded, False when the event was
-    deduplicated. Persistence errors propagate — the endpoint catches them so
-    tracking failures never surface to the recruiter.
+    deduplicated or the project's daily cap is reached. Persistence errors
+    propagate — the endpoint catches them so tracking failures never surface
+    to the recruiter.
     """
+    cap = int(settings.public_report_view_daily_cap)
+    if cap <= 0:
+        return False
     row = {
         "id": str(uuid4()),
         "project_id": project_id,
@@ -93,6 +149,7 @@ def record_public_report_view(
         "ua_class": classify_user_agent(user_agent),
         "dedupe_key": normalize_dedupe_key(dedupe_key),
     }
+    day_start = _utc_day_start()
 
     if isinstance(db, dict):
         table = db.setdefault(_VIEWS_TABLE, {})
@@ -102,7 +159,10 @@ def record_public_report_view(
             for existing in table.values()
         ):
             return False
-        table[row["id"]] = row
+        if _views_today(db, project_id, day_start) >= cap:
+            return False
+        # Dict mode has no column default; mirror ``viewed_at default now()``.
+        table[row["id"]] = {**row, "viewed_at": datetime.now(UTC).isoformat()}
         return True
 
     if row["dedupe_key"] is not None:
@@ -116,6 +176,9 @@ def record_public_report_view(
         )
         if getattr(existing, "data", []) or []:
             return False
+
+    if _views_today(db, project_id, day_start) >= cap:
+        return False
 
     db.table(_VIEWS_TABLE).insert(row).execute()
     return True

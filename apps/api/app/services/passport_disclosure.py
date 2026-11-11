@@ -276,15 +276,22 @@ def _default_policy(user_id: str) -> dict[str, Any]:
     }
 
 
-def get_policy(db: Any, user_id: str) -> dict[str, Any]:
+def get_policy(db: Any, user_id: str, *, strict: bool = False) -> dict[str, Any]:
     """The user's policy row, or the recruiter-safe default when absent.
 
     Never creates a row — reads must stay side-effect free (public request
-    paths call this). Lookup errors fail closed to the safe default.
+    paths call this). With ``strict=False`` (the owner-facing editor) a lookup
+    error degrades to the recruiter-safe default so the editor still renders.
+    Public surfaces load through ``load_effective_disclosure``, which passes
+    ``strict=True``: there a lookup error must NOT fall back to the
+    recruiter-safe default, because that default would re-expose any project
+    or report the owner hid in custom mode.
     """
     try:
         row = _policy_row(db, user_id)
-    except Exception:  # pragma: no cover - defensive
+    except Exception:
+        if strict:
+            raise
         logger.warning("[Disclosure] Policy lookup failed; using recruiter-safe default.")
         row = None
     if not isinstance(row, dict):
@@ -956,7 +963,13 @@ def load_effective_disclosure(
     *,
     passport_public: bool | None = None,
 ) -> EffectiveDisclosure:
-    """Load one owner's effective disclosure. Fails closed on any error.
+    """Load one owner's effective disclosure for PUBLIC surfaces.
+
+    Fails closed on any error: if the policy or overrides cannot be read, the
+    result is a deny-all disclosure (``passport_public=False``), so nothing is
+    public until the read succeeds. Falling back to the recruiter-safe default
+    with no overrides would instead re-expose projects / reports the owner hid
+    in custom mode during a transient DB failure.
 
     ``passport_public`` may be passed when the caller already resolved the
     passport row (public builders do); otherwise it is looked up here.
@@ -978,12 +991,18 @@ def load_effective_disclosure(
         passport_public = owner_passport_is_public(db, uid)
 
     try:
-        policy = get_policy(db, uid)
+        policy = get_policy(db, uid, strict=True)
         overrides = list_overrides(db, uid)
-    except Exception:  # pragma: no cover - defensive
-        logger.warning("[Disclosure] Load failed; failing closed to recruiter-safe.")
-        policy = _default_policy(uid)
-        overrides = {}
+    except Exception:
+        logger.warning("[Disclosure] Load failed; failing closed to deny-all.")
+        return EffectiveDisclosure(
+            user_id=uid,
+            passport_public=False,
+            mode=MODE_RECRUITER_SAFE,
+            disclosure_version=1,
+            overrides={},
+            passport_project_ids=(),
+        )
 
     mode = str(policy.get("mode") or MODE_RECRUITER_SAFE)
     # Every project-keyed public answer is scoped to the projects actually ON
