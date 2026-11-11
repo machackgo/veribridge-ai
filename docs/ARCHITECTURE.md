@@ -24,7 +24,7 @@ flowchart LR
 
   subgraph Supabase
     AUTH["Auth<br/>(email OTP, Google OAuth)"]
-    DB[("Postgres<br/>77 SQL migration files, RLS on every migrated table")]
+    DB[("Postgres<br/>78 SQL migration files, RLS on every migrated table")]
     S3[("Storage<br/>vbr-media, proof-artifacts")]
   end
 
@@ -66,7 +66,7 @@ flowchart LR
 - **Supabase.**
   - Auth issues the JWTs.
   - Postgres holds all application data. The schema is `apps/api/app/db/migrations/` (`001` to `073`, then the
-    hardening migrations `074a`–`074d`), applied in order. A fresh database currently needs the workarounds listed under
+    hardening migrations `074a`–`074e`), applied in order. A fresh database currently needs the workarounds listed under
     [Local setup](../README.md#1-database-supabase) in the README.
   - Storage holds recorded media and retained proof artifacts. All buckets are private except `passport-avatars`, which
     is public by design (passport photos); `074b` restricts its writes to the server and sets size and
