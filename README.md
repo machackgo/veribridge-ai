@@ -287,7 +287,25 @@ See [`apps/extension/README.md`](apps/extension/README.md) for details.
 
 ## Licence
 
-The repository has no `LICENSE` file, so no licence is granted and default copyright applies.
+The source code is released under the [MIT License](LICENSE), Copyright (c) 2026 Mohammed Mubashir Uddin Faraz.
+
+**Not covered by the MIT License** (all rights reserved unless stated otherwise):
+
+- **Brand and media.** The VeriBridge name, the Keystone V logo and other brand marks, and the launch film:
+  `apps/web/public/brand/`, `apps/web/public/media/`, `apps/web/src/app/{favicon.ico,icon.svg,apple-icon.png}`,
+  `apps/extension/icons/` and `apps/extension/store-assets/`. The licence grants no trademark rights.
+- **Figma design reference** (`docs/design/figma-landing-page/`). It is a Figma Make export kept for reference only
+  and is not part of the apps.
+
+**Third-party notices.**
+
+- The shadcn/ui components in `docs/design/figma-landing-page/src/app/components/ui/` stay under their own MIT
+  License (Copyright (c) 2023 shadcn). The notice is kept in
+  [`docs/design/figma-landing-page/ATTRIBUTIONS.md`](docs/design/figma-landing-page/ATTRIBUTIONS.md).
+- Dependencies are installed from npm and PyPI, not vendored. Each one keeps its own licence. For example,
+  `sharp`'s prebuilt libvips binaries are LGPL-3.0-or-later.
+- Web fonts (Inter, JetBrains Mono, Schibsted Grotesk) load from Google Fonts under the SIL Open Font License. They
+  are not included in the repository.
 
 ## Development notes
 
