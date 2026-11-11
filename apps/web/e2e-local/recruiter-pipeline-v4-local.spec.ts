@@ -13,7 +13,7 @@ import * as fs from "fs";
 // cross-role stage independence → recruiter isolation smoke → zero console
 // errors / zero 5xx.
 //
-// CONTRACT TESTIDS this spec depends on (V4_ARCHITECTURE_AUDIT.md — the
+// CONTRACT TESTIDS this spec depends on (docs/history/V4_ARCHITECTURE_AUDIT.md — the
 // integration pass must reconcile these against the real frontend):
 //   brief-stage-bar, brief-stage-pill-{status}, brief-stage-section-{status}
 //   brief-candidate-stage-select   (accessible <select>, option VALUES are

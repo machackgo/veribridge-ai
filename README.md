@@ -22,7 +22,7 @@ and organise candidates in a recruiter workspace.
 >   for the recorder extension is live.
 > - The hosted API (Render) is **suspended** and returns `503`. Workspaces after sign-in, shared
 >   reports and passports, and every other data-backed page are unavailable on the hosted site until
->   it is resumed; those pages say so instead of failing silently.
+>   it is resumed; they show an "unavailable" message rather than a raw error.
 > - Everything in this repository can still be run locally (see [Local setup](#local-setup)).
 
 ## Demo

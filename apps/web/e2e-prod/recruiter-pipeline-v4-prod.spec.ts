@@ -16,7 +16,7 @@ import * as fs from "fs";
 // LLM provider: generated questions must be the deterministic set with
 // honest provenance.
 //
-// CONTRACT TESTIDS (V4_ARCHITECTURE_AUDIT.md; reconcile at integration):
+// CONTRACT TESTIDS (docs/history/V4_ARCHITECTURE_AUDIT.md; reconcile at integration):
 //   brief-stage-bar, brief-stage-pill-{status}, brief-stage-section-{status},
 //   brief-candidate-stage-select (option values = raw status keys),
 //   brief-candidate-interview-link, brief-comparison-empty,
