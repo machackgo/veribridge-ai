@@ -8,8 +8,10 @@ import { test, expect, chromium, devices } from "@playwright/test";
 // demonstrated in <project>") or the retired "Authorship explanation" tier.
 //
 // Unauthenticated public surfaces only — no QA session minting required.
-// Tokens are the live published project-report tokens as of 2026-08-24; a
-// rotated/unpublished token surfaces as a skipped case, never a false pass.
+// Report tokens are NOT committed: supply published project-report tokens via
+// VB_PROD_REPORT_TOKEN_1..3 (cases below, in order). Unset cases are filtered
+// out, and the whole suite is skipped when none is set. A rotated/unpublished
+// token surfaces as a skipped case, never a false pass.
 
 const BASE = "https://veribridgeai.com";
 const API = "https://veribridge-api.onrender.com";
@@ -24,23 +26,30 @@ type Case = {
 const CASES: Case[] = [
   {
     name: "MULTIUSER-149-MARKDOWN-STUDIO",
-    token: "3jrLOblpz4p3hu3p8oznklP4bQlzgEj9",
+    token: process.env.VB_PROD_REPORT_TOKEN_1 ?? "",
     expectState: "claimed_contributor",
     expectLabel: "Contribution claimed (unverified)",
   },
   {
     name: "Boston Smart Accident Risk Rerouting",
-    token: "ZF5rU20TbxlW8JdNwuKulwwwBJ9ZQHUQ",
+    token: process.env.VB_PROD_REPORT_TOKEN_2 ?? "",
     expectState: "unknown",
     expectLabel: "Contribution not established",
   },
   {
     name: "VeriBridge",
-    token: "m6s2lUVkDKYG3U-vM9evqh_FhEd47o_7",
+    token: process.env.VB_PROD_REPORT_TOKEN_3 ?? "",
     expectState: "unknown",
     expectLabel: "Contribution not established",
   },
 ];
+
+const CONFIGURED_CASES = CASES.filter((c) => c.token.trim().length > 0);
+
+test.skip(
+  CONFIGURED_CASES.length === 0,
+  "Set VB_PROD_REPORT_TOKEN_1..3 to published report tokens to run this production suite.",
+);
 
 // Wording that must never reach a recruiter surface: it reads as a claim about
 // the CANDIDATE while being derived from PROJECT-level artifact evidence.
@@ -48,7 +57,7 @@ const FORBIDDEN = ["was implemented and demonstrated", "authorship explanation"]
 
 test("public report API carries an explicit candidate-attribution block", async ({ request }) => {
   let checked = 0;
-  for (const c of CASES) {
+  for (const c of CONFIGURED_CASES) {
     const resp = await request.get(`${API}/api/v1/public/vbr/reports/${c.token}`);
     if (resp.status() === 404) continue; // unpublished / passport made private
     expect(resp.status(), `${c.name} API status`).toBe(200);
@@ -82,7 +91,7 @@ test("public report page renders the candidate-relationship block, no ambiguous 
   let rendered = 0;
 
   try {
-    for (const c of CASES) {
+    for (const c of CONFIGURED_CASES) {
       const ctx = await browser.newContext({ ...devices["Desktop Chrome"] });
       const page = await ctx.newPage();
       page.on("console", (m) => {

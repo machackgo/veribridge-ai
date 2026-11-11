@@ -574,7 +574,7 @@ describe("V1.0.1 retest — start resilience and grounded upload state", () => {
     const active = session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" })
     saveActiveExtensionProofSession({
       sessionId: active.id,
-      form: { websiteUrl: active.website_url ?? "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
+      form: { websiteUrl: active.website_url ?? "", githubUrl: "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
       configRevision: 1,
       savedAt: "2026-08-20T05:00:00Z",
     })
@@ -606,7 +606,7 @@ describe("V1.0.1 retest — start resilience and grounded upload state", () => {
     const active = session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" })
     saveActiveExtensionProofSession({
       sessionId: active.id,
-      form: { websiteUrl: active.website_url ?? "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
+      form: { websiteUrl: active.website_url ?? "", githubUrl: "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
       configRevision: 1,
       savedAt: "2026-08-20T05:00:00Z",
     })
@@ -634,7 +634,7 @@ describe("V1.0.1 retest — start resilience and grounded upload state", () => {
     const active = session({ ...FRESH, status: "recording", started_at: "2026-08-20T05:00:20Z" })
     saveActiveExtensionProofSession({
       sessionId: active.id,
-      form: { websiteUrl: active.website_url ?? "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
+      form: { websiteUrl: active.website_url ?? "", githubUrl: "", skillName: "Research", proofObjective: active.proof_objective ?? "" },
       configRevision: 1,
       savedAt: "2026-08-20T05:00:00Z",
     })
