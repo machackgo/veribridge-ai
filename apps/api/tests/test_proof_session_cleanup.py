@@ -49,7 +49,7 @@ from app.services.proof_session_cleanup_service import (
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-NOISY_SESSION = "d592f7fb-6aee-47d6-a549-a7192268574e"
+NOISY_SESSION = "11111111-2222-4333-8444-555555555555"
 OTHER_SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 PIPELINE_A = str(uuid4())
 PIPELINE_B = str(uuid4())

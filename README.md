@@ -165,7 +165,7 @@ Notes:
   download the `all-MiniLM-L6-v2` model on first run. Tests for optional backends (Tesseract and
   other local OCR/vision providers) are skipped when those packages are not installed: the 14 skips
   are 11 OCR tests that need `pytesseract` and 3 opt-in smoke tests that need
-  `VISUAL_REASONING_ENABLED=true`.
+  `VISUAL_REASONING_ENABLED=true`. One media test additionally skips when `ffmpeg` is not on `PATH`.
 - If the `all-MiniLM-L6-v2` model cannot be downloaded or loaded (offline, no cache), one test fails:
   `test_website_semantic_verification_service.py::test_recruiter_summary_is_cautious_when_output_mismatch_exists`
   (5,179 passed, 1 failed). That failure is the known fallback defect listed under Known limitations; the

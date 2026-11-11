@@ -111,7 +111,9 @@ def create_app() -> FastAPI:
         # Public surfaces honor the Passport visibility switch; forbidding
         # browser/CDN caching keeps Public → Private revocation immediate.
         response = await call_next(request)
-        if request.url.path.startswith(f"{settings.api_v1_prefix}/public/"):
+        # Use the raw ASGI path, not request.url (which is built from the Host
+        # header; see Starlette CVE-2026-48710 / CVE-2026-54282).
+        if request.scope.get("path", "").startswith(f"{settings.api_v1_prefix}/public/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 

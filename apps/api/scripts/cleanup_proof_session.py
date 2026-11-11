@@ -7,20 +7,20 @@ Usage
     cd apps/api
 
     # Dry-run (safe — prints counts only):
-    python scripts/cleanup_proof_session.py --session-id d592f7fb-6aee-47d6-a549-a7192268574e
+    python scripts/cleanup_proof_session.py --session-id <session-uuid>
 
     # Soft archive (sets extension_proof_sessions.status = 'expired' AND
     # detaches the project linkage: session metadata project edge moved to
     # detached_project_id, proof_project_relationships rows downgraded to
     # vault_only with a provenance trail — nothing is deleted):
-    python scripts/cleanup_proof_session.py --session-id d592f7fb-... --archive
+    python scripts/cleanup_proof_session.py --session-id <session-uuid> --archive
 
     # Export backup JSON then delete (requires --confirm):
     python scripts/cleanup_proof_session.py \\
-        --session-id d592f7fb-... \\
+        --session-id <session-uuid> \\
         --delete \\
         --confirm \\
-        --backup-path /tmp/session_backup_d592f7fb.json
+        --backup-path /tmp/session_backup_<session-id>.json
 
 Reads DATABASE_URL from apps/api/.env or the environment.
 """
@@ -43,7 +43,6 @@ if _env_path.exists():
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
 
-_NOISY_SESSION = "d592f7fb-6aee-47d6-a549-a7192268574e"
 
 # ── CLI args ───────────────────────────────────────────────────────────────────
 
@@ -52,8 +51,8 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument(
     "--session-id",
-    default=_NOISY_SESSION,
-    help=f"Proof session UUID to target (default: {_NOISY_SESSION})",
+    required=True,
+    help="Proof session UUID to target (required)",
 )
 parser.add_argument(
     "--archive",

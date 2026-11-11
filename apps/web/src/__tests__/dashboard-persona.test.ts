@@ -25,7 +25,7 @@ describe("student dashboard persona", () => {
   });
 
   // Regression: the sidebar persona must come from the session, never a hardcoded
-  // identity. A real logged-in student previously saw "Maya Reyes / maya.reyes@wpi.edu" (old mock persona).
+  // identity. A real logged-in student previously saw "Maya Reyes / maya.reyes@example.edu" (old mock persona).
   it("does not hardcode a demo identity in the student dashboard layout", () => {
     expect(layoutSource).not.toMatch(/Maya Reyes/i);
     expect(layoutSource).not.toMatch(/maya\.reyes@(wpi|example)\.edu/i);
