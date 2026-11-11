@@ -258,7 +258,7 @@ function ReadinessChart() {
       <div style={{ display: "flex", gap: 16, fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ width: 12, height: 12, borderRadius: 2, background: "var(--purple)", display: "inline-block" }} />
-          WPI &apos;26
+          Class of &apos;26
         </span>
         <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ width: 12, height: 12, borderRadius: 2, background: "#c4b5fd", display: "inline-block" }} />
@@ -396,10 +396,10 @@ function DeptOutcomesTable() {
 // ── Employer engagement ────────────────────────────────────────────────────
 
 const employers = [
-  { name: "Stripe", initials: "St", bg: "#000", views: 186, invites: 24, hires: 8, growth: "+34%" },
-  { name: "Linear", initials: "Li", bg: "#5e6ad2", views: 142, invites: 18, hires: 5, growth: "+22%" },
-  { name: "Vercel", initials: "Ve", bg: "#171717", views: 128, invites: 15, hires: 4, growth: "+18%" },
-  { name: "Anthropic", initials: "An", bg: "#c84b31", views: 96, invites: 11, hires: 3, growth: "+12%" },
+  { name: "Sample Fintech Co.", initials: "SF", bg: "#000", views: 186, invites: 24, hires: 8, growth: "+34%" },
+  { name: "Sample Dev Tools Co.", initials: "SD", bg: "#5e6ad2", views: 142, invites: 18, hires: 5, growth: "+22%" },
+  { name: "Sample Cloud Co.", initials: "SC", bg: "#171717", views: 128, invites: 15, hires: 4, growth: "+18%" },
+  { name: "Sample AI Lab", initials: "SA", bg: "#c84b31", views: 96, invites: 11, hires: 3, growth: "+12%" },
 ];
 
 function EmployerTable() {
@@ -748,7 +748,7 @@ export function UniversityEmployers() {
       <PageHeader
         crumb="University console · Employer Trends"
         title="Employer engagement"
-        lede="Companies actively engaging with WPI talent — views, invites, and hiring outcomes."
+        lede="Companies actively engaging with your students — views, invites, and hiring outcomes."
         action={<Btn variant="secondary" onClick={() => show("Export coming soon.")}>↓ Export</Btn>}
       />
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 20 }}>
@@ -756,7 +756,7 @@ export function UniversityEmployers() {
           <EmployerTable />
           <div style={{ ...card, marginTop: 20 }}>
             <div style={{ fontWeight: 700, fontSize: 16, color: "var(--ink)", marginBottom: 14 }}>Employer actions</div>
-            {["Invite Stripe to WPI proof fair", "Send Docker gap cohort report", "Create employer-ready backend cohort list", "Schedule recruiter feedback session"].map((item) => (
+            {["Invite employers to a proof fair", "Send Docker gap cohort report", "Create employer-ready backend cohort list", "Schedule recruiter feedback session"].map((item) => (
               <button
                 key={item}
                 type="button"

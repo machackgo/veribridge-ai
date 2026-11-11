@@ -1,41 +1,23 @@
-# VeriBridge AI Documentation
+# Documentation
 
-This folder contains project documentation for architecture, roadmap planning, and implementation decisions.
+Start with the [root README](../README.md) (overview, feature status, local setup) and
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-## Structure
-
-```text
-docs/
-  architecture/    # System design, architecture decisions, and technical notes
-  roadmap/         # Product roadmap and milestone planning
-```
-
-## Architecture Docs
-
-Use `docs/architecture/` for documents that explain how the system is designed and why major technical choices were made.
-
-Recommended future documents:
-
-- `system-overview.md`
-- `frontend-architecture.md`
-- `backend-architecture.md`
-- `database-design.md`
-- `ai-integration-strategy.md`
-- `deployment-strategy.md`
-
-## Roadmap Docs
-
-Use `docs/roadmap/` for product planning and milestone tracking.
-
-The initial roadmap file should be placed here:
-
-```text
-docs/roadmap/CareerProof_AI_12_Month_Roadmap.html
-```
-
-## Documentation Guidelines
-
-- Keep docs concise and decision-focused.
-- Record tradeoffs when choosing architecture patterns.
-- Update docs when implementation changes the system design.
-- Avoid storing credentials, private keys, or production secrets in documentation.
+| Path | Contents |
+|---|---|
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | System architecture: web, API, extension, database, storage, auth |
+| [`SECURITY_SPEC.md`](SECURITY_SPEC.md) | Security model and requirements |
+| [`SPEC.md`](SPEC.md), [`UI_SPEC.md`](UI_SPEC.md) | Product and UI specifications |
+| [`architecture/`](architecture) | Design plans: API, database schema, evidence access flow, proof architecture, AI prompts |
+| [`auth/`](auth) | Local auth testing and email-domain setup notes |
+| [`chrome-web-store/`](chrome-web-store) | Recorder extension listing, publication runbook and QA evidence |
+| [`product/`](product) | Product notes: skill-proof evidence, student onboarding |
+| [`qa/`](qa) | Front-end QA checklist |
+| [`data-repairs/`](data-repairs) | One-off data repair notes |
+| [`research/`](research) | Background research on external data sources |
+| [`design/`](design) | Design prototypes (not deployed) |
+| [`roadmap/`](roadmap) | Early roadmap (uses the project's former name, CareerProof AI) |
+| [`templates/`](templates) | Document templates |
+| [`history/`](history) | Historical design audits and a manual QA checklist from earlier phases |
+| [`LAUNCH-PACKAGE-2026-08.md`](LAUNCH-PACKAGE-2026-08.md), [`MVP_LAUNCH_READINESS_CHECKLIST.md`](MVP_LAUNCH_READINESS_CHECKLIST.md), [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md) | Historical launch records |
+| [`apple-wallet-pass-setup.md`](apple-wallet-pass-setup.md) | Apple Wallet pass setup |

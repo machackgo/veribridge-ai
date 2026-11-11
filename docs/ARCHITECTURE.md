@@ -54,7 +54,7 @@ flowchart LR
   Supabase client only for authentication (`src/lib/supabase/`).
   `src/proxy.ts` redirects unauthenticated users away from `/student/**`, `/dashboard/**` and
   `/onboarding`. That redirect is a UX gate; the security boundary is the API.
-- **API (`apps/api`).** FastAPI app with 72 router registrations under `/api/v1`
+- **API (`apps/api`).** FastAPI app with 71 router registrations under `/api/v1`
   (`app/api/v1/router.py`). Business logic lives in `app/services/`. Unit tests run against an
   in-memory dict store, so they never touch Supabase.
 - **Extension (`apps/extension`).** Chrome Manifest V3, the "VeriBridge Website Proof Recorder".
